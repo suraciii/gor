@@ -1,0 +1,9 @@
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+.DS_Store
+
+# 模拟测试的失败复现种子与轨迹
+/testdata/sim-failures/
