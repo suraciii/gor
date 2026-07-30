@@ -49,8 +49,12 @@ func (a *account) Balance(ctx context.Context) (int64, error) {
 注册：
 
 ```go
-gor.Register[Account](rt, func() Account { return &account{} })
+gor.Register[Account](rt, func(b *gor.Binder) Account {
+    return &account{balance: gor.NewState[int64](b, "balance")}
+})
 ```
+
+`b` 是运行时递进来的，用来把状态格子接到存储上。除此之外工厂就是一个普通的构造函数。
 
 方法体里没有锁，因为不需要——同一个 key 上不会有第二个调用同时在跑。
 
@@ -66,6 +70,8 @@ balance, err := acct.Deposit(ctx, 100)
 ## 状态
 
 `gor.State[T]` 是状态的载体。`Get()` 读内存里的当前值，`Set()` 写并持久化。
+
+一个实体可以有多个格子，名字用来区分它们。它们一起存成一条记录，所以任何一个格子写入都会更新整个实体的版本。
 
 **并发语义要说清楚**：在集群模式下，运行时**不保证**同一时刻全世界只有一个 `Account("alice")` 在跑。节点故障与网络分区期间存在双激活窗口。因此 `Set()` 带乐观并发检查，冲突时返回错误而不是静默覆盖。
 

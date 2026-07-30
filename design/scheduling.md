@@ -16,7 +16,7 @@ type Box struct {
 
 type call struct {
     fn    func(ctx context.Context) (any, error)
-    reply chan result
+    reply chan result   // 容量 1
     ctx   context.Context
 }
 
@@ -30,6 +30,10 @@ func (b *Box) run() {
 ```
 
 串行性由「只有一个 goroutine 在跑循环体」直接给出。没有锁，没有自定义调度器。
+
+**`reply` 必须有容量 1。** 调用方超时后就不再读这个 channel 了（[runtime.md](runtime.md)：超时意味着调用方不再等待，不意味着实体停止执行）。如果 `reply` 无缓冲，这次发送会永远挂住 —— 不是挂住一个调用，是挂住整个 mailbox 的循环，这个实体从此死了。容量 1 让发送永不阻塞，结果没人取就随 channel 一起被回收。
+
+不用 `select` 加 `ctx.Done()` 代替：那样每次回复都要多写一个分支，而它要防的事情用一个缓冲位就防住了。
 
 预估整个 `mail` 包在 100 行量级。对比：Orleans 的 `Scheduler/` 实测 823 行，其中 `WorkItemGroup` 336 行——因为 .NET 需要实现一个自定义 `TaskScheduler` 来保证 `await` 之后回到同一个逻辑执行上下文。Go 里 goroutine 天然是执行上下文，这个问题不存在。
 

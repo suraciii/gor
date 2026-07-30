@@ -49,6 +49,30 @@ type Record struct {
 
 不做云厂商专有存储（DynamoDB / Azure Tables 那类）。Orleans 花在这上面的代码实测约 2.6 万行，是它体积的重要来源，收益对本项目不成立。
 
+## State 怎么跟运行时接上
+
+`gor.State[T]` 要知道自己属于哪个 Identity、写哪个 store、当前 ETag 是多少。用户写的 struct 里它只是一个字段，工厂函数 `func() Account { return &account{} }` 没有地方把这些交给它。
+
+解法是工厂多收一个参数：
+
+```go
+gor.Register[Account](rt, func(b *gor.Binder) Account {
+    return &account{balance: gor.NewState[int64](b, "balance")}
+})
+```
+
+`NewState` 把这个格子登记到 binder 上，运行时激活实体时按登记表读一次 store、把值分发到各个格子。
+
+**否决了反射扫结构体字段回填。** 它能让工厂保持 `func() Account`，用户少写一行，但代价是要用 `unsafe` 去写未导出字段，而且用户看不出这个字段是怎么活过来的。少写的那一行不值这个价。
+
+## 一个实体一条记录
+
+`Store.Read` 按 Identity 返回一条记录，所以一个实体的所有 `State` 格子合起来编码成一条记录：一个 JSON 对象，key 是 `NewState` 时给的名字。
+
+这就是名字存在的理由——只有一个格子时它确实是多余的，但有第二个格子时就必须有东西区分它们，而为「只有一个格子」开一条免名字的特例只会让两种形态在存储里长得不一样。
+
+任何一个格子 `Set()` 都重写整条记录。于是 **ETag 是实体级的**，不是字段级的——这正是双激活防护需要的粒度：两个激活改的哪怕是不同字段，也必须有一个撞冲突。
+
 ## 序列化实体状态
 
 用户状态怎么变成 `[]byte`：默认 JSON。
