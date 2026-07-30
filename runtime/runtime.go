@@ -1,0 +1,382 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/suraciii/gor/clock"
+	"github.com/suraciii/gor/mail"
+)
+
+var (
+	ErrTypeNotRegistered  = errors.New("entity type is not registered")
+	ErrRuntimeClosed      = errors.New("runtime closed")
+	ErrRemoteNotSupported = errors.New("remote invocation is not implemented")
+)
+
+type Identity struct {
+	Type string
+	Key  string
+}
+
+type Node struct {
+	Local bool
+}
+
+type Locator interface {
+	Locate(context.Context, Identity) (Node, error)
+}
+
+type LocalLocator struct{}
+
+func (LocalLocator) Locate(context.Context, Identity) (Node, error) {
+	return Node{Local: true}, nil
+}
+
+type Dispatch func(context.Context, any, string, []any, any) error
+
+type Registration struct {
+	Factory  func() any
+	Dispatch Dispatch
+}
+
+type Config struct {
+	Clock            clock.Clock
+	MailboxCapacity  int
+	Locator          Locator
+	IdleTimeout      time.Duration
+	EvictionInterval time.Duration
+}
+
+type Runtime struct {
+	clock           clock.Clock
+	mailboxCapacity int
+	locator         Locator
+	idleTimeout     time.Duration
+
+	mu            sync.Mutex
+	closed        bool
+	registrations map[string]Registration
+	activations   map[Identity]*activation
+	pending       map[Identity]*entry
+
+	stop         chan struct{}
+	ticker       clock.Ticker
+	evictionDone chan struct{}
+}
+
+type ActivationState uint8
+
+const (
+	ActivationActivating ActivationState = iota
+	ActivationActive
+	ActivationDeactivating
+	ActivationStopped
+)
+
+type activation struct {
+	id       Identity
+	instance any
+	mailbox  *mail.Box
+	lastUsed time.Time
+	calls    int
+	state    ActivationState
+	done     chan struct{}
+}
+
+type entry struct {
+	ready chan struct{}
+	act   *activation
+	err   error
+}
+
+func New(config Config) *Runtime {
+	r := &Runtime{
+		clock:           config.Clock,
+		mailboxCapacity: config.MailboxCapacity,
+		locator:         config.Locator,
+		idleTimeout:     config.IdleTimeout,
+		registrations:   make(map[string]Registration),
+		activations:     make(map[Identity]*activation),
+		pending:         make(map[Identity]*entry),
+		stop:            make(chan struct{}),
+		evictionDone:    make(chan struct{}),
+	}
+	if config.IdleTimeout > 0 && config.EvictionInterval > 0 {
+		r.ticker = config.Clock.NewTicker(config.EvictionInterval)
+		go r.evictLoop()
+	} else {
+		close(r.evictionDone)
+	}
+	return r
+}
+
+func (r *Runtime) Register(name string, registration Registration) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.registrations[name]; exists {
+		return fmt.Errorf("entity type %q is already registered", name)
+	}
+	r.registrations[name] = registration
+	return nil
+}
+
+func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args []any, reply any) error {
+	node, err := r.locator.Locate(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !node.Local {
+		return ErrRemoteNotSupported
+	}
+
+	registration, err := r.registration(id.Type)
+	if err != nil {
+		return err
+	}
+	for {
+		act, err := r.activationFor(ctx, id, registration)
+		if err != nil {
+			return err
+		}
+		if !r.admit(act) {
+			continue
+		}
+		_, err = act.mailbox.Call(ctx, func(callCtx context.Context) (any, error) {
+			defer r.callFinished(act)
+			return nil, r.dispatch(registration, act, callCtx, method, args, reply)
+		})
+		if errors.Is(err, mail.ErrOverloaded) || errors.Is(err, mail.ErrClosed) {
+			r.callFinished(act)
+		}
+		return err
+	}
+}
+
+func (r *Runtime) Close() {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.closed = true
+	close(r.stop)
+	activations := make([]*activation, 0, len(r.activations))
+	for _, act := range r.activations {
+		beginDeactivation(act)
+		activations = append(activations, act)
+	}
+	ticker := r.ticker
+	r.mu.Unlock()
+
+	if ticker != nil {
+		ticker.Stop()
+	}
+	for _, act := range activations {
+		act.mailbox.Close()
+	}
+	for _, act := range activations {
+		<-act.mailbox.Done()
+		r.finishDeactivation(act)
+	}
+	<-r.evictionDone
+}
+
+func (r *Runtime) registration(name string) (Registration, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return Registration{}, ErrRuntimeClosed
+	}
+	registration, ok := r.registrations[name]
+	if !ok {
+		return Registration{}, fmt.Errorf("%w: %s", ErrTypeNotRegistered, name)
+	}
+	return registration, nil
+}
+
+func (r *Runtime) activationFor(ctx context.Context, id Identity, registration Registration) (*activation, error) {
+	for {
+		r.mu.Lock()
+		if r.closed {
+			r.mu.Unlock()
+			return nil, ErrRuntimeClosed
+		}
+		if act, ok := r.activations[id]; ok {
+			switch act.state {
+			case ActivationActive:
+				r.mu.Unlock()
+				return act, nil
+			case ActivationDeactivating:
+				done := act.done
+				r.mu.Unlock()
+				select {
+				case <-done:
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			case ActivationStopped:
+				delete(r.activations, id)
+			}
+		}
+		if pending, ok := r.pending[id]; ok {
+			ready := pending.ready
+			r.mu.Unlock()
+			select {
+			case <-ready:
+				if pending.err != nil {
+					return nil, pending.err
+				}
+				return pending.act, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+
+		pending := &entry{ready: make(chan struct{})}
+		r.pending[id] = pending
+		r.mu.Unlock()
+		return r.createActivation(id, registration, pending)
+	}
+}
+
+func (r *Runtime) createActivation(id Identity, registration Registration, pending *entry) (act *activation, err error) {
+	defer func() {
+		if value := recover(); value != nil {
+			act = nil
+			err = fmt.Errorf("activation factory panicked: %v", value)
+		}
+		r.mu.Lock()
+		delete(r.pending, id)
+		pending.act = act
+		pending.err = err
+		if err == nil && !r.closed {
+			r.activations[id] = act
+		}
+		close(pending.ready)
+		r.mu.Unlock()
+	}()
+
+	act = r.activate(id, registration)
+	return act, nil
+}
+
+func (r *Runtime) activate(id Identity, registration Registration) *activation {
+	act := &activation{
+		id:    id,
+		state: ActivationActivating,
+		done:  make(chan struct{}),
+	}
+	act.instance = registration.Factory()
+	act.mailbox = mail.New(r.mailboxCapacity)
+	act.lastUsed = r.clock.Now()
+	act.state = ActivationActive
+	return act
+}
+
+func (r *Runtime) admit(act *activation) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if act.state != ActivationActive {
+		return false
+	}
+	act.lastUsed = r.clock.Now()
+	act.calls++
+	return true
+}
+
+func (r *Runtime) callFinished(act *activation) {
+	r.mu.Lock()
+	act.calls--
+	r.mu.Unlock()
+}
+
+func (r *Runtime) dispatch(registration Registration, act *activation, ctx context.Context, method string, args []any, reply any) (err error) {
+	defer func() {
+		if value := recover(); value != nil {
+			err = fmt.Errorf("entity method panicked: %v", value)
+			r.stopAfterPanic(act)
+		}
+	}()
+	return registration.Dispatch(ctx, act.instance, method, args, reply)
+}
+
+func (r *Runtime) evictLoop() {
+	defer close(r.evictionDone)
+	for {
+		select {
+		case now := <-r.ticker.C():
+			r.evict(now)
+		case <-r.stop:
+			return
+		}
+	}
+}
+
+func (r *Runtime) evict(now time.Time) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	victims := make([]*activation, 0)
+	for _, act := range r.activations {
+		if act.state == ActivationActive && act.calls == 0 && !now.Before(act.lastUsed.Add(r.idleTimeout)) && beginDeactivation(act) {
+			victims = append(victims, act)
+		}
+	}
+	r.mu.Unlock()
+
+	for _, act := range victims {
+		act.mailbox.Close()
+		go r.waitForDeactivation(act)
+	}
+}
+
+func (r *Runtime) stopAfterPanic(act *activation) {
+	r.mu.Lock()
+	started := beginDeactivation(act)
+	r.mu.Unlock()
+	if !started {
+		return
+	}
+	act.mailbox.Close()
+	go r.waitForDeactivation(act)
+}
+
+func (r *Runtime) waitForDeactivation(act *activation) {
+	<-act.mailbox.Done()
+	r.finishDeactivation(act)
+}
+
+func (r *Runtime) finishDeactivation(act *activation) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !finishDeactivation(act) {
+		return
+	}
+	if current, ok := r.activations[act.id]; ok && current == act {
+		delete(r.activations, act.id)
+	}
+}
+
+func beginDeactivation(act *activation) bool {
+	if act.state != ActivationActive {
+		return false
+	}
+	act.state = ActivationDeactivating
+	return true
+}
+
+func finishDeactivation(act *activation) bool {
+	if act.state != ActivationDeactivating {
+		return false
+	}
+	act.state = ActivationStopped
+	close(act.done)
+	return true
+}

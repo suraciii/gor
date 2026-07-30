@@ -1,0 +1,475 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"sync/atomic"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/suraciii/gor/clock"
+	"github.com/suraciii/gor/mail"
+)
+
+type testEntity struct{}
+
+type testClock struct {
+	now   atomic.Int64
+	ticks chan time.Time
+}
+
+type testTicker struct {
+	channel <-chan time.Time
+}
+
+func newTestClock() *testClock {
+	clock := &testClock{ticks: make(chan time.Time, 8)}
+	clock.now.Store(time.Unix(0, 0).UnixNano())
+	return clock
+}
+
+func (c *testClock) Now() time.Time {
+	return time.Unix(0, c.now.Load())
+}
+
+func (c *testClock) NewTicker(time.Duration) clock.Ticker {
+	return testTicker{channel: c.ticks}
+}
+
+func (c *testClock) Advance(d time.Duration) {
+	now := c.now.Add(int64(d))
+	c.ticks <- time.Unix(0, now)
+}
+
+func (t testTicker) C() <-chan time.Time {
+	return t.channel
+}
+
+func (testTicker) Stop() {}
+
+func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 4, Locator: LocalLocator{}})
+		defer rt.Close()
+
+		factoryStarted := make(chan struct{})
+		releaseFactory := make(chan struct{})
+		var factoryCalls atomic.Int32
+		if err := rt.Register("account", Registration{
+			Factory: func() any {
+				factoryCalls.Add(1)
+				close(factoryStarted)
+				<-releaseFactory
+				return &testEntity{}
+			},
+			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+				if method != "Ping" {
+					return errors.New("unknown method")
+				}
+				*(reply.(*int)) = int(factoryCalls.Load())
+				if instance == nil {
+					return errors.New("missing instance")
+				}
+				return nil
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		firstDone := make(chan error, 1)
+		secondDone := make(chan error, 1)
+		firstReply := new(int)
+		secondReply := new(int)
+		go func() {
+			firstDone <- rt.Invoke(context.Background(), id, "Ping", nil, firstReply)
+		}()
+		synctest.Wait()
+		<-factoryStarted
+		go func() {
+			secondDone <- rt.Invoke(context.Background(), id, "Ping", nil, secondReply)
+		}()
+		synctest.Wait()
+		if got := factoryCalls.Load(); got != 1 {
+			t.Fatalf("factory calls while activation is pending = %d, want 1", got)
+		}
+
+		close(releaseFactory)
+		synctest.Wait()
+		if err := <-firstDone; err != nil {
+			t.Fatalf("first invocation error = %v", err)
+		}
+		if err := <-secondDone; err != nil {
+			t.Fatalf("second invocation error = %v", err)
+		}
+		if *firstReply != 1 || *secondReply != 1 {
+			t.Fatalf("replies = %d, %d; want both calls to see one activation", *firstReply, *secondReply)
+		}
+	})
+}
+
+func TestRuntime_DifferentKeysRunConcurrently(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2, Locator: LocalLocator{}})
+		defer rt.Close()
+
+		entered := make(chan struct{}, 2)
+		release := make(chan struct{})
+		if err := rt.Register("account", Registration{
+			Factory: func() any { return &testEntity{} },
+			Dispatch: func(_ context.Context, instance any, method string, _ []any, _ any) error {
+				if method != "Block" {
+					return errors.New("unknown method")
+				}
+				_ = instance.(*testEntity)
+				entered <- struct{}{}
+				<-release
+				return nil
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		firstDone := make(chan error, 1)
+		secondDone := make(chan error, 1)
+		go func() {
+			firstDone <- rt.Invoke(context.Background(), Identity{Type: "account", Key: "alice"}, "Block", nil, nil)
+		}()
+		go func() {
+			secondDone <- rt.Invoke(context.Background(), Identity{Type: "account", Key: "bob"}, "Block", nil, nil)
+		}()
+
+		synctest.Wait()
+		select {
+		case <-entered:
+		default:
+			t.Fatal("no call entered")
+		}
+		select {
+		case <-entered:
+		default:
+			t.Fatal("different keys did not execute concurrently")
+		}
+
+		close(release)
+		synctest.Wait()
+		if err := <-firstDone; err != nil {
+			t.Fatalf("first invocation error = %v", err)
+		}
+		if err := <-secondDone; err != nil {
+			t.Fatalf("second invocation error = %v", err)
+		}
+	})
+}
+
+func TestRuntime_EvictsIdleActivationAndReactivates(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fakeClock := newTestClock()
+		rt := New(Config{
+			Clock:            fakeClock,
+			MailboxCapacity:  2,
+			Locator:          LocalLocator{},
+			IdleTimeout:      10 * time.Second,
+			EvictionInterval: time.Second,
+		})
+		defer rt.Close()
+
+		var factoryCalls atomic.Int32
+		if err := rt.Register("account", Registration{
+			Factory: func() any { return int(factoryCalls.Add(1)) },
+			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+				if method != "Value" {
+					return errors.New("unknown method")
+				}
+				*(reply.(*int)) = int(instance.(int))
+				return nil
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); err != nil {
+			t.Fatal(err)
+		}
+		fakeClock.Advance(11 * time.Second)
+		synctest.Wait()
+		if got := factoryCalls.Load(); got != 1 {
+			t.Fatalf("factory calls before reactivation = %d, want 1", got)
+		}
+
+		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); err != nil {
+			t.Fatal(err)
+		}
+		if got := factoryCalls.Load(); got != 2 {
+			t.Fatalf("factory calls after reactivation = %d, want 2", got)
+		}
+	})
+}
+
+func TestRuntime_CloseWaitsForRunningCall(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		if err := rt.Register("account", Registration{
+			Factory: func() any { return &testEntity{} },
+			Dispatch: func(_ context.Context, _ any, _ string, _ []any, _ any) error {
+				close(started)
+				<-release
+				return nil
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		callDone := make(chan error, 1)
+		go func() {
+			callDone <- rt.Invoke(context.Background(), Identity{Type: "account", Key: "alice"}, "Run", nil, nil)
+		}()
+		synctest.Wait()
+		<-started
+		closeDone := make(chan struct{})
+		go func() {
+			rt.Close()
+			close(closeDone)
+		}()
+		synctest.Wait()
+		select {
+		case <-closeDone:
+			t.Fatal("runtime close returned before running call completed")
+		default:
+		}
+		close(release)
+		synctest.Wait()
+		if err := <-callDone; err != nil {
+			t.Fatalf("running call error = %v", err)
+		}
+		<-closeDone
+	})
+}
+
+func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2, Locator: LocalLocator{}})
+		defer rt.Close()
+
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var factoryCalls atomic.Int32
+		if err := rt.Register("account", Registration{
+			Factory: func() any { return int(factoryCalls.Add(1)) },
+			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+				switch method {
+				case "Panic":
+					close(entered)
+					<-release
+					panic("broken state")
+				case "Value":
+					*(reply.(*int)) = int(instance.(int))
+					return nil
+				default:
+					return errors.New("unknown method")
+				}
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		panicDone := make(chan error, 1)
+		queuedDone := make(chan error, 1)
+		go func() { panicDone <- rt.Invoke(context.Background(), id, "Panic", nil, nil) }()
+		synctest.Wait()
+		<-entered
+		go func() { queuedDone <- rt.Invoke(context.Background(), id, "Value", nil, new(int)) }()
+		synctest.Wait()
+		close(release)
+		synctest.Wait()
+		if err := <-panicDone; err == nil {
+			t.Fatal("panic call returned nil error")
+		}
+		if err := <-queuedDone; !errors.Is(err, mail.ErrClosed) {
+			t.Fatalf("queued call error = %v, want ErrClosed", err)
+		}
+
+		var value int
+		if err := rt.Invoke(context.Background(), id, "Value", nil, &value); err != nil {
+			t.Fatalf("new activation call error = %v", err)
+		}
+		if value != 2 || factoryCalls.Load() != 2 {
+			t.Fatalf("reactivated value/count = %d/%d, want 2/2", value, factoryCalls.Load())
+		}
+	})
+}
+
+func TestRuntime_FactoryPanicReleasesActivationWaiters(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		defer rt.Close()
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		if err := rt.Register("account", Registration{
+			Factory: func() any {
+				close(started)
+				<-release
+				panic("factory failure")
+			},
+			Dispatch: func(context.Context, any, string, []any, any) error { return nil },
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		creatorDone := make(chan error, 1)
+		waiterDone := make(chan error, 1)
+		go func() {
+			creatorDone <- rt.Invoke(context.Background(), id, "Value", nil, nil)
+		}()
+		synctest.Wait()
+		<-started
+		go func() { waiterDone <- rt.Invoke(context.Background(), id, "Value", nil, nil) }()
+		synctest.Wait()
+		close(release)
+		synctest.Wait()
+
+		if err := <-creatorDone; err == nil {
+			t.Fatal("factory panic did not become an error for creator")
+		}
+		if err := <-waiterDone; err == nil {
+			t.Fatal("activation waiter returned nil after factory panic")
+		}
+	})
+}
+
+func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		defer rt.Close()
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var factoryCalls atomic.Int32
+		if err := rt.Register("account", Registration{
+			Factory: func() any { return int(factoryCalls.Add(1)) },
+			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+				switch method {
+				case "Block":
+					close(started)
+					<-release
+					return nil
+				case "Value":
+					*(reply.(*int)) = int(instance.(int))
+					return nil
+				default:
+					return errors.New("unknown method")
+				}
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		oldDone := make(chan error, 1)
+		go func() { oldDone <- rt.Invoke(context.Background(), id, "Block", nil, nil) }()
+		synctest.Wait()
+		<-started
+
+		rt.mu.Lock()
+		old := rt.activations[id]
+		if !beginDeactivation(old) {
+			rt.mu.Unlock()
+			t.Fatal("activation did not enter deactivating state")
+		}
+		rt.mu.Unlock()
+		old.mailbox.Close()
+		go rt.waitForDeactivation(old)
+
+		newDone := make(chan struct {
+			value int
+			err   error
+		}, 1)
+		go func() {
+			var value int
+			err := rt.Invoke(context.Background(), id, "Value", nil, &value)
+			newDone <- struct {
+				value int
+				err   error
+			}{value: value, err: err}
+		}()
+		synctest.Wait()
+		select {
+		case <-newDone:
+			t.Fatal("call completed before old activation finished deactivating")
+		default:
+		}
+
+		close(release)
+		synctest.Wait()
+		if err := <-oldDone; err != nil {
+			t.Fatalf("old call error = %v", err)
+		}
+		result := <-newDone
+		if result.err != nil {
+			t.Fatalf("reactivated call error = %v", result.err)
+		}
+		if result.value != 2 || factoryCalls.Load() != 2 {
+			t.Fatalf("reactivated value/count = %d/%d, want 2/2", result.value, factoryCalls.Load())
+		}
+	})
+}
+
+func TestRuntime_SerializesConcurrentCallsPerKey(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2, Locator: LocalLocator{}})
+		defer rt.Close()
+
+		firstStarted := make(chan struct{})
+		secondStarted := make(chan struct{})
+		release := make(chan struct{})
+		if err := rt.Register("account", Registration{
+			Factory: func() any { return &testEntity{} },
+			Dispatch: func(_ context.Context, _ any, method string, _ []any, _ any) error {
+				if method != "Block" {
+					return errors.New("unknown method")
+				}
+				select {
+				case <-firstStarted:
+					close(secondStarted)
+				default:
+					close(firstStarted)
+				}
+				<-release
+				return nil
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		firstDone := make(chan error, 1)
+		secondDone := make(chan error, 1)
+		go func() { firstDone <- rt.Invoke(context.Background(), id, "Block", nil, nil) }()
+		synctest.Wait()
+		<-firstStarted
+		go func() { secondDone <- rt.Invoke(context.Background(), id, "Block", nil, nil) }()
+		synctest.Wait()
+		select {
+		case <-secondStarted:
+			t.Fatal("second call ran before first call completed")
+		default:
+		}
+
+		close(release)
+		synctest.Wait()
+		if err := <-firstDone; err != nil {
+			t.Fatalf("first invocation error = %v", err)
+		}
+		if err := <-secondDone; err != nil {
+			t.Fatalf("second invocation error = %v", err)
+		}
+	})
+}
