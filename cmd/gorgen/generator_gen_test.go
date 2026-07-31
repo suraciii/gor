@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,6 +35,29 @@ func TestGenerateFixtureBuilds(t *testing.T) {
 	build.Dir = root
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build generated package: %v\n%s", err, output)
+	}
+}
+
+func TestGeneratedFixtureMatchesCommittedOutput(t *testing.T) {
+	root := moduleRoot(t)
+	fixtureRoot := filepath.Join(root, "cmd", "gorgen", "testfixture", "endtoend")
+	outputDir, err := os.MkdirTemp(fixtureRoot, "generated-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(outputDir) })
+
+	runGorgen(t, root, "./cmd/gorgen/testfixture/endtoend/domain", outputDir)
+	got, err := os.ReadFile(filepath.Join(outputDir, "generated.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join(fixtureRoot, "gorgen", "generated.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("generated output differs from committed fixture:\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
 
@@ -76,6 +100,47 @@ func TestGenerateRejectsPackageWithoutEntity(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "contains no gor:entity interfaces") {
 		t.Fatalf("error = %s, want missing-entity error", output)
+	}
+}
+
+func TestGeneratedFixtureRejectsWrongParameterType(t *testing.T) {
+	root := moduleRoot(t)
+	fixtureRoot := filepath.Join(root, "cmd", "gorgen", "testfixture", "endtoend")
+	outputDir, err := os.MkdirTemp(fixtureRoot, "typecheck-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(outputDir) })
+
+	wrongSource := `package gorgen
+
+import (
+	"context"
+
+	"github.com/suraciii/gor"
+	"github.com/suraciii/gor/cmd/gorgen/testfixture/endtoend/domain"
+)
+
+func wrongParameterType(rt *gor.Runtime) {
+	_, _ = gor.Ref[domain.Account](rt, "alice").Deposit(context.Background(), "wrong")
+}
+`
+	if err := os.WriteFile(filepath.Join(outputDir, "wrong.go"), []byte(wrongSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buildPath, err := filepath.Rel(root, outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "./"+filepath.ToSlash(buildPath))
+	command.Dir = root
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("go build accepted a string argument for Deposit")
+	}
+	message := string(output)
+	if !strings.Contains(message, "cannot use") || !strings.Contains(message, "int64") {
+		t.Fatalf("go build error = %s, want a string-to-int64 type mismatch", message)
 	}
 }
 
