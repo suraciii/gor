@@ -98,7 +98,7 @@ func renderImports(model Model) []renderImport {
 		case "context", "fmt", "github.com/suraciii/gor", model.SourceImportPath:
 			continue
 		}
-		imports = append(imports, renderImport{Name: imported.Name, Path: imported.Path})
+		imports = append(imports, renderImport(imported))
 	}
 	sort.Slice(imports, func(i, j int) bool { return imports[i].Path < imports[j].Path })
 	return imports
