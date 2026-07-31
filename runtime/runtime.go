@@ -39,8 +39,23 @@ func (LocalLocator) Locate(context.Context, Identity) (Node, error) {
 type Dispatch func(context.Context, any, string, []any, any) error
 
 type Registration struct {
-	Factory  func() any
+	Factory  func(context.Context, Identity) (any, error)
 	Dispatch Dispatch
+}
+
+type Discard struct {
+	Err error
+}
+
+func (d Discard) Error() string {
+	if d.Err == nil {
+		return "activation discarded"
+	}
+	return d.Err.Error()
+}
+
+func (d Discard) Unwrap() error {
+	return d.Err
 }
 
 type Config struct {
@@ -240,11 +255,11 @@ func (r *Runtime) activationFor(ctx context.Context, id Identity, registration R
 		pending := &entry{ready: make(chan struct{})}
 		r.pending[id] = pending
 		r.mu.Unlock()
-		return r.createActivation(id, registration, pending)
+		return r.createActivation(ctx, id, registration, pending)
 	}
 }
 
-func (r *Runtime) createActivation(id Identity, registration Registration, pending *entry) (act *activation, err error) {
+func (r *Runtime) createActivation(ctx context.Context, id Identity, registration Registration, pending *entry) (act *activation, err error) {
 	defer func() {
 		if value := recover(); value != nil {
 			act = nil
@@ -261,21 +276,25 @@ func (r *Runtime) createActivation(id Identity, registration Registration, pendi
 		r.mu.Unlock()
 	}()
 
-	act = r.activate(id, registration)
-	return act, nil
+	act, err = r.activate(ctx, id, registration)
+	return act, err
 }
 
-func (r *Runtime) activate(id Identity, registration Registration) *activation {
+func (r *Runtime) activate(ctx context.Context, id Identity, registration Registration) (*activation, error) {
 	act := &activation{
 		id:    id,
 		state: ActivationActivating,
 		done:  make(chan struct{}),
 	}
-	act.instance = registration.Factory()
+	instance, err := registration.Factory(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	act.instance = instance
 	act.mailbox = mail.New(r.mailboxCapacity)
 	act.lastUsed = r.clock.Now()
 	act.state = ActivationActive
-	return act
+	return act, nil
 }
 
 func (r *Runtime) admit(act *activation) bool {
@@ -299,10 +318,16 @@ func (r *Runtime) dispatch(registration Registration, act *activation, ctx conte
 	defer func() {
 		if value := recover(); value != nil {
 			err = fmt.Errorf("entity method panicked: %v", value)
-			r.stopAfterPanic(act)
+			r.stopActivation(act)
 		}
 	}()
-	return registration.Dispatch(ctx, act.instance, method, args, reply)
+	err = registration.Dispatch(ctx, act.instance, method, args, reply)
+	var discard Discard
+	if errors.As(err, &discard) {
+		r.stopActivation(act)
+		return discard.Err
+	}
+	return err
 }
 
 func (r *Runtime) evictLoop() {
@@ -337,7 +362,7 @@ func (r *Runtime) evict(now time.Time) {
 	}
 }
 
-func (r *Runtime) stopAfterPanic(act *activation) {
+func (r *Runtime) stopActivation(act *activation) {
 	r.mu.Lock()
 	started := beginDeactivation(act)
 	r.mu.Unlock()
