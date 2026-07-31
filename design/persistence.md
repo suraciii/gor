@@ -76,6 +76,37 @@ gor.Register[Account](rt, func(b *gor.Binder) Account {
 
 **否决了反射扫结构体字段回填。** 它能让工厂保持 `func() Account`，用户少写一行，但代价是要用 `unsafe` 去写未导出字段，而且用户看不出这个字段是怎么活过来的。少写的那一行不值这个价。
 
+## runtime 不导入 store
+
+`runtime` 和 `store` 在架构图里是兄弟，谁也不导入谁。但 `Binder` 要同时够到两边：Identity 只有 `runtime` 在激活时才知道，`Store` 是 `gor` 组装配置时注入的。
+
+解法是工厂由 `runtime` 调用、由 `gor` 提供：
+
+```go
+type Registration struct {
+    Factory  func(context.Context, Identity) (any, error)
+    Dispatch Dispatch
+}
+```
+
+`runtime` 把 Identity 交出去，拿回一个不透明的实例。它不知道实例里挂着一个 Binder，也不知道构造过程读了一次存储。`gor` 是唯一同时看得见 `runtime` 和 `store` 的包，两个 Identity 类型的转换就发生在这一处。
+
+工厂现在能返回错误——激活时读存储可能失败。这跟工厂 panic 合并成同一条路径：激活没建成，错误返回给调用方。
+
+## 冲突怎么传回运行时
+
+`Set()` 撞 `ErrConflict` 时要停用激活，但 `runtime` 不认识 `ErrConflict`，也不该认识。
+
+不能靠错误往上冒。用户的方法完全可以吞掉这个错误返回 nil，而那时缓存的 ETag 已经过期了。停用必须与用户代码怎么处理错误无关。
+
+所以 `Set()` 立刻在 Binder 上打一个标记，`gor` 的分发包装在每次调用结束后检查它，把结果包成 `runtime` 认得的形状：
+
+```go
+type Discard struct{ Err error }
+```
+
+`runtime` 看到 `Discard` 就停用这个激活，并把 `Err` 原样返回给调用方。它只知道「实体说自己不能再用了」，不知道为什么。这跟 panic 后停用走同一条路径。
+
 ## 一个实体一条记录
 
 `Store.Read` 按 Identity 返回一条记录，所以一个实体的所有 `State` 格子合起来编码成一条记录：一个 JSON 对象，key 是 `NewState` 时给的名字。

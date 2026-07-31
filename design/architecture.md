@@ -27,6 +27,8 @@ type Locator interface {
 }
 ```
 
+`runtime` 同样不导入 `store`——实体状态由 `gor` 在工厂闭包里读写，`runtime` 只交出 Identity、拿回一个不透明的实例（见 [persistence.md](persistence.md)）。
+
 单节点模式注入一个恒返回本节点的实现。这不是为了「留扩展点」，是为了让第 1 到 5 步能在完全没有分布式代码的前提下被完整验证。
 
 ## 包职责
