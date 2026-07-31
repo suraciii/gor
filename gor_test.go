@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -142,6 +143,68 @@ func TestRegister_LoadsAndPersistsState(t *testing.T) {
 	})
 }
 
+func TestRuntime_RestartRestoresStateFromMemoryStore(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		backend := store.NewMemory()
+		id := Identity{Type: TypeName[Account](), Key: "alice"}
+
+		first := New(WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
+		registerAccount(t, first)
+		var written int64
+		if err := first.Invoke(context.Background(), id, "Deposit", []any{int64(42)}, &written); err != nil {
+			t.Fatalf("first Deposit invoke error = %v", err)
+		}
+		first.Close()
+
+		second := New(WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
+		registerAccount(t, second)
+		defer second.Close()
+		var restored int64
+		if err := second.Invoke(context.Background(), id, "Balance", nil, &restored); err != nil {
+			t.Fatalf("restarted Balance invoke error = %v", err)
+		}
+		if restored != 42 {
+			t.Fatalf("restored balance = %d, want 42", restored)
+		}
+	})
+}
+
+func TestRuntime_RestartRestoresStateFromSQLite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gor.db")
+	firstStore, err := store.OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite first: %v", err)
+	}
+	first := New(WithStore(firstStore), WithIdleTimeout(0), WithEvictionInterval(0))
+	registerAccount(t, first)
+	var written int64
+	if err := first.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Deposit", []any{int64(42)}, &written); err != nil {
+		first.Close()
+		firstStore.Close()
+		t.Fatalf("first Deposit invoke error = %v", err)
+	}
+	first.Close()
+	if err := firstStore.Close(); err != nil {
+		t.Fatalf("Close first store: %v", err)
+	}
+
+	secondStore, err := store.OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite second: %v", err)
+	}
+	second := New(WithStore(secondStore), WithIdleTimeout(0), WithEvictionInterval(0))
+	registerAccount(t, second)
+	defer second.Close()
+	defer secondStore.Close()
+	var restored int64
+	if err := second.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Balance", nil, &restored); err != nil {
+		t.Fatalf("restarted Balance invoke error = %v", err)
+	}
+	if restored != 42 {
+		t.Fatalf("restored balance = %d, want 42", restored)
+	}
+}
+
 func dispatchAccountWithWrappedError(ctx context.Context, instance Account, method string, args []any, reply any) error {
 	err := dispatchAccount(ctx, instance, method, args, reply)
 	if err != nil {
@@ -226,5 +289,14 @@ func dispatchAccount(ctx context.Context, instance Account, method string, args 
 		return nil
 	default:
 		return errors.New("unknown method")
+	}
+}
+
+func registerAccount(t *testing.T, rt *Runtime) {
+	t.Helper()
+	if err := Register[Account](rt, func(b *Binder) Account {
+		return &account{value: NewState[int64](b, "value")}
+	}, dispatchAccount); err != nil {
+		t.Fatal(err)
 	}
 }
