@@ -34,34 +34,14 @@ func (a *account) Balance(context.Context) (int64, error) {
 	return a.value.Get(), nil
 }
 
-func TestRegister_InvokesHandWrittenDispatch(t *testing.T) {
+func TestRegister_InvokesInstalledDispatch(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(WithIdleTimeout(0), WithEvictionInterval(0))
 		defer rt.Close()
 
+		installAccount(t, rt)
 		if err := Register[Account](rt, func(b *Binder) Account {
 			return &account{value: NewState[int64](b, "value")}
-		}, func(ctx context.Context, instance Account, method string, args []any, reply any) error {
-			switch method {
-			case "Deposit":
-				value, err := instance.Deposit(ctx, args[0].(int64))
-				if err != nil {
-					return err
-				}
-				*(reply.(*int64)) = value
-				return nil
-			case "Balance":
-				value, err := instance.Balance(ctx)
-				if err != nil {
-					return err
-				}
-				*(reply.(*int64)) = value
-				return nil
-			case "Missing":
-				return errors.New("missing method")
-			default:
-				return errors.New("unknown method")
-			}
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -92,13 +72,66 @@ func TestRegister_RejectsDuplicateType(t *testing.T) {
 	rt := New(WithIdleTimeout(0), WithEvictionInterval(0))
 	defer rt.Close()
 
-	dispatch := func(context.Context, Account, string, []any, any) error { return nil }
-	if err := Register[Account](rt, func(*Binder) Account { return &account{} }, dispatch); err != nil {
+	installAccount(t, rt)
+	if err := Register[Account](rt, func(*Binder) Account { return &account{} }); err != nil {
 		t.Fatal(err)
 	}
-	if err := Register[Account](rt, func(*Binder) Account { return &account{} }, dispatch); err == nil {
+	if err := Register[Account](rt, func(*Binder) Account { return &account{} }); err == nil {
 		t.Fatal("duplicate registration returned nil error")
 	}
+}
+
+func TestRegister_RejectsUninstalledType(t *testing.T) {
+	rt := New(WithIdleTimeout(0), WithEvictionInterval(0))
+	defer rt.Close()
+
+	if err := Register[Account](rt, func(*Binder) Account { return &account{} }); !errors.Is(err, ErrTypeNotInstalled) {
+		t.Fatalf("Register error = %v, want ErrTypeNotInstalled", err)
+	}
+}
+
+func TestInstallType_IsScopedToRuntime(t *testing.T) {
+	first := New(WithIdleTimeout(0), WithEvictionInterval(0))
+	defer first.Close()
+	second := New(WithIdleTimeout(0), WithEvictionInterval(0))
+	defer second.Close()
+
+	installAccount(t, first)
+	if err := Register[Account](second, func(*Binder) Account { return &account{} }); !errors.Is(err, ErrTypeNotInstalled) {
+		t.Fatalf("second runtime Register error = %v, want ErrTypeNotInstalled", err)
+	}
+}
+
+func TestRef_ConstructsTypedProxyFromInstalledType(t *testing.T) {
+	rt := New(WithIdleTimeout(0), WithEvictionInterval(0))
+	defer rt.Close()
+	installAccount(t, rt)
+	if err := Register[Account](rt, func(b *Binder) Account {
+		return &account{value: NewState[int64](b, "value")}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	accountRef := Ref[Account](rt, "alice")
+	if _, ok := accountRef.(*accountProxy); !ok {
+		t.Fatalf("Ref returned %T, want *accountProxy", accountRef)
+	}
+	value, err := accountRef.Deposit(context.Background(), 2)
+	if err != nil || value != 2 {
+		t.Fatalf("Ref proxy Deposit = (%d, %v), want (2, nil)", value, err)
+	}
+}
+
+func TestRef_PanicsForUninstalledType(t *testing.T) {
+	rt := New(WithIdleTimeout(0), WithEvictionInterval(0))
+	defer rt.Close()
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Ref did not panic for uninstalled type")
+		}
+	}()
+	Ref[Account](rt, "alice")
 }
 
 func TestRegister_LoadsAndPersistsState(t *testing.T) {
@@ -111,9 +144,10 @@ func TestRegister_LoadsAndPersistsState(t *testing.T) {
 
 		rt := New(WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
 		defer rt.Close()
+		installAccount(t, rt)
 		if err := Register[Account](rt, func(b *Binder) Account {
 			return &account{value: NewState[int64](b, "value")}
-		}, dispatchAccount); err != nil {
+		}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -221,10 +255,11 @@ func TestRegister_ConflictDiscardsActivationBeforeReactivation(t *testing.T) {
 		defer rt.Close()
 
 		var factoryCalls atomic.Int32
+		installAccountWithDispatch(t, rt, dispatchAccountWithWrappedError)
 		if err := Register[Account](rt, func(b *Binder) Account {
 			factoryCalls.Add(1)
 			return &account{value: NewState[int64](b, "value")}
-		}, dispatchAccountWithWrappedError); err != nil {
+		}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -294,9 +329,41 @@ func dispatchAccount(ctx context.Context, instance Account, method string, args 
 
 func registerAccount(t *testing.T, rt *Runtime) {
 	t.Helper()
+	installAccount(t, rt)
 	if err := Register[Account](rt, func(b *Binder) Account {
 		return &account{value: NewState[int64](b, "value")}
-	}, dispatchAccount); err != nil {
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type accountProxy struct {
+	invoker Invoker
+	id      Identity
+}
+
+func (p *accountProxy) Deposit(ctx context.Context, amount int64) (int64, error) {
+	var reply int64
+	err := p.invoker.Invoke(ctx, p.id, "Deposit", []any{amount}, &reply)
+	return reply, err
+}
+
+func (p *accountProxy) Balance(ctx context.Context) (int64, error) {
+	var reply int64
+	err := p.invoker.Invoke(ctx, p.id, "Balance", nil, &reply)
+	return reply, err
+}
+
+func installAccount(t *testing.T, rt *Runtime) {
+	t.Helper()
+	installAccountWithDispatch(t, rt, dispatchAccount)
+}
+
+func installAccountWithDispatch(t *testing.T, rt *Runtime, dispatch func(context.Context, Account, string, []any, any) error) {
+	t.Helper()
+	if err := InstallType[Account](rt, dispatch, func(invoker Invoker, id Identity) Account {
+		return &accountProxy{invoker: invoker, id: id}
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
