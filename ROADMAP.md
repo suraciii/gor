@@ -30,6 +30,8 @@
 
 从用户写的 Go interface 生成代理实现，替掉 `any` 进 `any` 出。设计与先例见 [design/codegen.md](design/codegen.md)。
 
+`gor.Register` 的签名在这一步从 `(rt, factory, dispatch)` 变成 `(rt, factory)`——第 1 步手写的分发函数由生成器接管。同时补上 `gor.Ref`。跟第 2 步的工厂签名一样，这是计划内的破坏性改动。
+
 **验收**：用户代码里调用远程对象的方法签名与本地 interface 完全一致，错用参数类型是编译错误而不是运行时 panic。
 
 ### 4. 确定性模拟测试骨架

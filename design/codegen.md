@@ -26,6 +26,8 @@ goakt 就是这样（实测 `AskGrain(ctx, *GrainIdentity, message any, timeout)
 - 最后一个返回值是 `error`
 - 中间参数与返回值可编码
 
+返回值个数不限。参数与返回值目前在进程内直传，不经过序列化；跨节点传输是第 6 步的事。
+
 ```go
 type Account interface {
     Deposit(ctx context.Context, amount int64) (int64, error)
@@ -54,6 +56,43 @@ func (p *accountProxy) Deposit(ctx context.Context, amount int64) (int64, error)
 ```
 
 以及一个服务端侧的分发函数，把方法名 + 参数还原成对实现类型的直接调用。
+
+## 多个返回值
+
+`Invoke` 只有一个 `reply`，而方法可以返回多个值。所以**每个方法生成一个回复结构体**，代理和分发函数都用它：
+
+```go
+type accountDepositReply struct {
+    R0 int64
+}
+```
+
+不为「只有一个返回值」开特例。单值时直接传 `&reply` 确实少一层，但那样生成器就有两条路径，而两条路径要各自测、各自维护。生成的代码没人读，少一层缩进不值这个价。
+
+没有返回值（只返回 `error`）的方法传 `nil`。这条特例躲不掉——没有值要装的时候，结构体是空的。
+
+## 生成物怎么接进运行时
+
+生成物落在子包，用户的接口包不引用它（原因见下面的类型检查死锁）。那么运行时怎么知道 `Account` 的分发函数在哪？
+
+生成器额外产出一个安装函数：
+
+```go
+gorgen.Install(rt)
+```
+
+它把每个接口的分发函数和代理构造函数登记到 `rt` 上。之后：
+
+```go
+gor.Register[Account](rt, factory)        // 分发函数从登记表里取
+acct := gor.Ref[Account](rt, "alice")     // 代理从登记表里取，返回值类型是 Account
+```
+
+`Register` 因此少一个参数——第 1 步手写的那个 `dispatch` 由生成器接管。这是计划内的破坏性改动。
+
+**否决了 `init()` 自动登记。** 它能省掉 `Install(rt)` 这一行，代价是用户必须记得写一个空导入，忘了就是运行时才发现的失败，而且登记表变成进程级全局——第 4 步的模拟测试要在一个进程里跑多个节点。登记表挂在 `rt` 上，`Install` 显式调用，两个问题一起没有。
+
+登记表里没有的类型，`Register` 和 `Ref` 立刻报错。这是启动期的错，不该拖到第一次调用。
 
 ## 关键解耦
 

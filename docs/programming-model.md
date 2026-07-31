@@ -23,6 +23,8 @@ type Account interface {
 }
 ```
 
+接口方法的第一个参数必须是 `context.Context`，最后一个返回值必须是 `error`。中间的参数和返回值随便写几个。不合规矩的方法在生成时报错，指出行号。
+
 再写实现：
 
 ```go
@@ -104,7 +106,11 @@ OnDeactivate(ctx context.Context) error   // 驱逐之前，最后的落盘机�
 rt, err := gor.New(gor.WithStore(gor.SQLite("data/gor.db")))
 if err != nil { return err }
 defer rt.Close()
+
+gorgen.Install(rt)
 ```
+
+`Install` 把生成的代理和分发函数交给运行时。少这一行，`Register` 和 `Ref` 会在启动时报错——不会拖到第一次调用。
 
 集群，多加一行：
 
