@@ -38,6 +38,7 @@ ROADMAP 第 4 步（DST 骨架）必须在第 6 步（集群）之前。顺序�
 ```bash
 make test    # 单元测试，单个 < 50ms，不起网络不起进程
 make sim     # 确定性模拟测试，慢，不进默认 test
+make gen     # 生成器端到端测试，起 go list 子进程，不进默认 test
 make lint    # vet + staticcheck
 ```
 
