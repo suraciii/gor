@@ -1,4 +1,4 @@
-.PHONY: test sim lint fmt tidy
+.PHONY: test sim gen lint fmt tidy
 
 test:
 	go test ./...
@@ -6,6 +6,10 @@ test:
 # 模拟测试跑得慢，单独一条 target，不进默认 test
 sim:
 	go test -tags sim -run TestSim ./sim/...
+
+# 生成器的端到端测试要起 go list 子进程，同样不进默认 test
+gen:
+	go test -tags gen ./cmd/gorgen/...
 
 lint:
 	go vet ./...
