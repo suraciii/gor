@@ -1,0 +1,242 @@
+package codegen
+
+import (
+	"bytes"
+	"fmt"
+	"go/format"
+	"sort"
+	"strings"
+	"text/template"
+	"unicode"
+	"unicode/utf8"
+)
+
+type renderModel struct {
+	PackageName      string
+	SourcePackage    string
+	SourceImportPath string
+	Imports          []renderImport
+	Interfaces       []renderInterface
+}
+
+type renderImport struct {
+	Name string
+	Path string
+}
+
+type renderInterface struct {
+	Name            string
+	ProxyName       string
+	DispatchName    string
+	ConstructorName string
+	Methods         []renderMethod
+}
+
+type renderMethod struct {
+	Name             string
+	Params           string
+	Results          string
+	ContextName      string
+	Args             string
+	ReplyName        string
+	ReplyPointer     string
+	DispatchCall     string
+	ResultNames      string
+	ReplyFields      []renderResult
+	ReplyAssignments []renderAssignment
+	HasValues        bool
+}
+
+type renderResult struct {
+	Name string
+	Type string
+}
+
+type renderAssignment struct {
+	Field string
+	Value string
+}
+
+func Render(model Model) ([]byte, error) {
+	prepared := prepare(model)
+	var source bytes.Buffer
+	_ = generatedTemplate.Execute(&source, prepared)
+	formatted, err := format.Source(source.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("format generated source: %w", err)
+	}
+	return formatted, nil
+}
+
+func prepare(model Model) renderModel {
+	prepared := renderModel{
+		PackageName:      model.PackageName,
+		SourcePackage:    model.SourcePackageName,
+		SourceImportPath: model.SourceImportPath,
+		Imports:          renderImports(model),
+		Interfaces:       make([]renderInterface, len(model.Interfaces)),
+	}
+	for i, entity := range model.Interfaces {
+		prepared.Interfaces[i] = renderInterface{
+			Name:            entity.Name,
+			ProxyName:       lowerFirst(entity.Name) + "Proxy",
+			DispatchName:    "dispatch" + entity.Name,
+			ConstructorName: "new" + entity.Name + "Proxy",
+			Methods:         make([]renderMethod, len(entity.Methods)),
+		}
+		for j, method := range entity.Methods {
+			prepared.Interfaces[i].Methods[j] = prepareMethod(entity, method)
+		}
+	}
+	return prepared
+}
+
+func renderImports(model Model) []renderImport {
+	imports := make([]renderImport, 0, len(model.Imports))
+	for _, imported := range model.Imports {
+		switch imported.Path {
+		case "context", "fmt", "github.com/suraciii/gor", model.SourceImportPath:
+			continue
+		}
+		imports = append(imports, renderImport{Name: imported.Name, Path: imported.Path})
+	}
+	sort.Slice(imports, func(i, j int) bool { return imports[i].Path < imports[j].Path })
+	return imports
+}
+
+func prepareMethod(entity Interface, method Method) renderMethod {
+	values := method.Results[:len(method.Results)-1]
+	rendered := renderMethod{
+		Name:         method.Name,
+		Params:       joinParameters(method.Params),
+		Results:      joinResults(method.Results),
+		ContextName:  method.Params[0].Name,
+		Args:         joinArgs(method.Params[1:]),
+		ReplyName:    lowerFirst(entity.Name) + method.Name + "Reply",
+		HasValues:    len(values) > 0,
+		DispatchCall: dispatchCall(method, values),
+	}
+	for i, result := range values {
+		fieldName := fmt.Sprintf("R%d", i)
+		rendered.ReplyFields = append(rendered.ReplyFields, renderResult{Name: fieldName, Type: result})
+		rendered.ReplyAssignments = append(rendered.ReplyAssignments, renderAssignment{Field: fieldName, Value: fmt.Sprintf("r%d", i)})
+	}
+	if rendered.HasValues {
+		rendered.ReplyPointer = "&reply"
+		resultNames := make([]string, len(rendered.ReplyFields))
+		for i, field := range rendered.ReplyFields {
+			resultNames[i] = "reply." + field.Name
+		}
+		rendered.ResultNames = strings.Join(resultNames, ", ")
+	} else {
+		rendered.ReplyPointer = "nil"
+	}
+	return rendered
+}
+
+func dispatchCall(method Method, values []string) string {
+	resultNames := make([]string, len(values)+1)
+	for i := range values {
+		resultNames[i] = fmt.Sprintf("r%d", i)
+	}
+	resultNames[len(values)] = "err"
+	assignment := " := "
+	return strings.Join(resultNames, ", ") + assignment + "instance." + method.Name + "(ctx" + dispatchArguments(method.Params[1:]) + ")"
+}
+
+func dispatchArguments(params []Parameter) string {
+	if len(params) == 0 {
+		return ""
+	}
+	parts := make([]string, len(params))
+	for i, param := range params {
+		parts[i] = fmt.Sprintf("args[%d].(%s)", i, param.Type)
+	}
+	return ", " + strings.Join(parts, ", ")
+}
+
+func joinParameters(params []Parameter) string {
+	parts := make([]string, len(params))
+	for i, param := range params {
+		parts[i] = param.Name + " " + param.Type
+	}
+	return strings.Join(parts, ", ")
+}
+
+func joinResults(results []string) string {
+	if len(results) == 1 {
+		return results[0]
+	}
+	return "(" + strings.Join(results, ", ") + ")"
+}
+
+func joinArgs(params []Parameter) string {
+	if len(params) == 0 {
+		return "nil"
+	}
+	parts := make([]string, len(params))
+	for i, param := range params {
+		parts[i] = param.Name
+	}
+	return "[]any{" + strings.Join(parts, ", ") + "}"
+}
+
+func lowerFirst(value string) string {
+	runeValue, size := utf8.DecodeRuneInString(value)
+	return string(unicode.ToLower(runeValue)) + value[size:]
+}
+
+var generatedTemplate = template.Must(template.New("generated").Parse(`package {{.PackageName}}
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/suraciii/gor"
+	"{{.SourceImportPath}}"
+	{{range .Imports}}{{.Name}} "{{.Path}}"
+	{{end}}
+)
+
+{{range .Interfaces}}{{ $entity := . }}
+type {{.ProxyName}} struct {
+	id gor.Identity
+	rt gor.Invoker
+}
+
+{{range .Methods}}
+{{if .HasValues}}type {{.ReplyName}} struct {
+{{range .ReplyFields}}	{{.Name}} {{.Type}}
+{{end}}}
+{{end}}
+func (p *{{$entity.ProxyName}}) {{.Name}}({{.Params}}) {{.Results}} {
+{{if .HasValues}}	var reply {{.ReplyName}}
+{{end}}	 err := p.rt.Invoke({{.ContextName}}, p.id, "{{.Name}}", {{.Args}}, {{.ReplyPointer}})
+{{if .HasValues}}	return {{.ResultNames}}, err
+{{else}}	return err
+{{end}}}
+{{end}}
+func {{$entity.DispatchName}}(ctx context.Context, instance {{$.SourcePackage}}.{{$entity.Name}}, method string, args []any, reply any) error {
+	switch method {
+{{range .Methods}}	case "{{.Name}}":
+		{{.DispatchCall}}
+{{if .HasValues}}		typedReply := reply.(*{{.ReplyName}})
+{{range .ReplyAssignments}}			typedReply.{{.Field}} = {{.Value}}
+{{end}}{{end}}		return err
+{{end}}	default:
+		return fmt.Errorf("unknown method %q", method)
+	}
+}
+
+func {{$entity.ConstructorName}}(rt gor.Invoker, id gor.Identity) {{$.SourcePackage}}.{{$entity.Name}} {
+	return &{{.ProxyName}}{id: id, rt: rt}
+}
+
+{{end}}
+func Install(rt *gor.Runtime) error {
+{{range .Interfaces}}	if err := gor.InstallType[{{$.SourcePackage}}.{{.Name}}](rt, {{.DispatchName}}, {{.ConstructorName}}); err != nil {
+		return err
+	}
+{{end}}	return nil
+}
+`))
