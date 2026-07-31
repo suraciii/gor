@@ -74,6 +74,15 @@ func TestMemoryStore_ZeroETagConflictsWithExistingRecord(t *testing.T) {
 	}
 }
 
+func TestMemoryStore_NonzeroETagConflictsWithMissingRecord(t *testing.T) {
+	memory := NewMemory()
+	id := Identity{Type: "account", Key: "missing"}
+
+	if _, err := memory.Write(context.Background(), id, []byte("unexpected"), 5); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Write error = %v, want ErrConflict", err)
+	}
+}
+
 func TestMemoryStore_ReadMissingReturnsZeroRecord(t *testing.T) {
 	memory := NewMemory()
 
