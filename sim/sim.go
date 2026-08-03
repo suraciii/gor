@@ -21,8 +21,9 @@ import (
 const simulationSeed uint64 = 0x8f3c2a1b
 
 const (
-	simulationSteps = 24
-	callsPerStep    = 2
+	simulationSteps        = 24
+	callsPerStep           = 2
+	simulationStepDuration = time.Millisecond
 )
 
 type counter interface {
@@ -248,6 +249,7 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 	}
 	rng := rand.New(rand.NewPCG(seed, seed^0x517cc1b727220a95))
 	observations := newObservations()
+	history := newCounterHistory()
 
 	for step := 0; step < simulationSteps; step++ {
 		switch chooseClusterAction(rng, cluster) {
@@ -280,7 +282,7 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 				crashNode = &node
 				log.addCrashDecision(node)
 			}
-			outcomes, err := executeDecisions(cluster, decisions, crashNode)
+			outcomes, err := executeDecisions(cluster, decisions, crashNode, history)
 			if err != nil {
 				return log.String(), fmt.Errorf("step %d: %w", step, err)
 			}
@@ -308,6 +310,10 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 		if err := logEntityStates(&log, backend, entities); err != nil {
 			return log.String(), fmt.Errorf("step %d: %w", step, err)
 		}
+		if err := history.check(); err != nil {
+			return log.String(), fmt.Errorf("step %d: %w", step, err)
+		}
+		time.Sleep(simulationStepDuration)
 	}
 	return log.String(), nil
 }

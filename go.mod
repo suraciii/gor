@@ -3,6 +3,7 @@ module github.com/suraciii/gor
 go 1.25.0
 
 require (
+	github.com/anishathalye/porcupine v1.3.0
 	golang.org/x/tools v0.48.0
 	modernc.org/sqlite v1.55.0
 )

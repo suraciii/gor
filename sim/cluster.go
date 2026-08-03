@@ -8,7 +8,9 @@ import (
 	"math/rand/v2"
 	"sort"
 	"testing/synctest"
+	"time"
 
+	"github.com/anishathalye/porcupine"
 	"github.com/suraciii/gor"
 )
 
@@ -130,12 +132,30 @@ type decision struct {
 	delta int64
 }
 
-func executeDecisions(cluster *simulationCluster, decisions []decision, crashNode *int) ([]string, error) {
-	results := make(chan error, len(decisions))
+type invocationResult struct {
+	id        gor.Identity
+	operation porcupine.Operation
+	err       error
+}
+
+func executeDecisions(cluster *simulationCluster, decisions []decision, crashNode *int, history *counterHistory) ([]string, error) {
+	results := make(chan invocationResult, len(decisions))
 	for _, selected := range decisions {
 		selected := selected
 		go func() {
-			results <- selected.rt.Invoke(context.Background(), selected.id, "Add", []any{selected.delta}, new(int64))
+			call := time.Now().UnixNano()
+			var value int64
+			err := selected.rt.Invoke(context.Background(), selected.id, "Add", []any{selected.delta}, &value)
+			results <- invocationResult{
+				id: selected.id,
+				operation: porcupine.Operation{
+					Input:  selected.delta,
+					Call:   call,
+					Output: counterOperationOutputFor(value, err),
+					Return: time.Now().UnixNano(),
+				},
+				err: err,
+			}
 		}()
 	}
 	synctest.Wait()
@@ -151,7 +171,9 @@ func executeDecisions(cluster *simulationCluster, decisions []decision, crashNod
 
 	outcomes := make([]string, 0, len(decisions))
 	for range decisions {
-		outcome, err := classifyOutcome(<-results)
+		result := <-results
+		history.add(storeIdentity(result.id), result.operation)
+		outcome, err := classifyOutcome(result.err)
 		if err != nil {
 			return nil, err
 		}
