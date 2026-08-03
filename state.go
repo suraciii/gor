@@ -5,15 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/suraciii/gor/clock"
 	"github.com/suraciii/gor/store"
 )
 
 type Binder struct {
-	identity store.Identity
-	store    store.Store
-	etag     store.ETag
-	states   map[string]stateCell
-	discard  error
+	identity  store.Identity
+	store     store.Store
+	schedules store.ScheduleStore
+	clock     clock.Clock
+	etag      store.ETag
+	states    map[string]stateCell
+	discard   error
 }
 
 type stateCell interface {
@@ -21,11 +24,13 @@ type stateCell interface {
 	decode([]byte) error
 }
 
-func newBinder(id Identity, backend store.Store) *Binder {
+func newBinder(id Identity, backend store.Store, schedules store.ScheduleStore, sourceClock clock.Clock) *Binder {
 	return &Binder{
-		identity: store.Identity{Type: id.Type, Key: id.Key},
-		store:    backend,
-		states:   make(map[string]stateCell),
+		identity:  store.Identity{Type: id.Type, Key: id.Key},
+		store:     backend,
+		schedules: schedules,
+		clock:     sourceClock,
+		states:    make(map[string]stateCell),
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/suraciii/gor/clock"
 	runtimepkg "github.com/suraciii/gor/runtime"
 	"github.com/suraciii/gor/store"
+	"github.com/suraciii/gor/timer"
 )
 
 var ErrTypeNotInstalled = errors.New("entity type is not installed; call InstallType or run the generated Install")
@@ -18,14 +19,19 @@ var ErrTypeNotInstalled = errors.New("entity type is not installed; call Install
 type Identity = runtimepkg.Identity
 type Runtime struct {
 	*runtimepkg.Runtime
-	store   store.Store
-	typesMu sync.Mutex
-	types   map[string]typeRegistration
+	store         store.Store
+	scheduleStore store.ScheduleStore
+	clock         clock.Clock
+	poller        *timer.Poller
+	typesMu       sync.Mutex
+	types         map[string]typeRegistration
 }
 
 type Config struct {
 	runtimepkg.Config
-	Store store.Store
+	Store            store.Store
+	ScheduleStore    store.ScheduleStore
+	ScheduleInterval time.Duration
 }
 
 type Invoker interface {
@@ -50,16 +56,28 @@ func New(options ...Option) *Runtime {
 			IdleTimeout:      time.Minute,
 			EvictionInterval: time.Second,
 		},
-		Store: store.NewMemory(),
+		Store:            store.NewMemory(),
+		ScheduleInterval: time.Second,
 	}
 	for _, option := range options {
 		option(&config)
 	}
-	return &Runtime{
-		Runtime: runtimepkg.New(config.Config),
-		store:   config.Store,
-		types:   make(map[string]typeRegistration),
+	if config.ScheduleStore == nil {
+		if schedules, ok := config.Store.(store.ScheduleStore); ok {
+			config.ScheduleStore = schedules
+		}
 	}
+	rt := &Runtime{
+		Runtime:       runtimepkg.New(config.Config),
+		store:         config.Store,
+		scheduleStore: config.ScheduleStore,
+		clock:         config.Clock,
+		types:         make(map[string]typeRegistration),
+	}
+	if config.ScheduleStore != nil && config.ScheduleInterval > 0 {
+		rt.poller = timer.New(config.ScheduleStore, config.Clock, config.ScheduleInterval, scheduleInvoker{runtime: rt})
+	}
+	return rt
 }
 
 func WithClock(value clock.Clock) Option {
@@ -98,6 +116,18 @@ func WithStore(value store.Store) Option {
 	}
 }
 
+func WithScheduleStore(value store.ScheduleStore) Option {
+	return func(config *Config) {
+		config.ScheduleStore = value
+	}
+}
+
+func WithScheduleInterval(value time.Duration) Option {
+	return func(config *Config) {
+		config.ScheduleInterval = value
+	}
+}
+
 type boundInstance struct {
 	entity any
 	binder *Binder
@@ -129,7 +159,7 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 	}
 	return rt.Runtime.Register(name, runtimepkg.Registration{
 		Factory: func(ctx context.Context, id runtimepkg.Identity) (any, error) {
-			binder := newBinder(id, rt.store)
+			binder := newBinder(id, rt.store, rt.scheduleStore, rt.clock)
 			entity := factory(binder)
 			if err := binder.load(ctx); err != nil {
 				return nil, err
@@ -161,6 +191,28 @@ func (rt *Runtime) typeRegistration(name string) (typeRegistration, bool) {
 	defer rt.typesMu.Unlock()
 	registration, ok := rt.types[name]
 	return registration, ok
+}
+
+func (rt *Runtime) Close() {
+	if rt.poller != nil {
+		rt.poller.Close()
+	}
+	rt.Runtime.Close()
+}
+
+func (rt *Runtime) Kill() {
+	if rt.poller != nil {
+		rt.poller.Close()
+	}
+	rt.Runtime.Kill()
+}
+
+type scheduleInvoker struct {
+	runtime *Runtime
+}
+
+func (i scheduleInvoker) Invoke(ctx context.Context, id store.Identity, method string) error {
+	return i.runtime.Invoke(ctx, Identity(id), method, nil, nil)
 }
 
 func TypeName[T any]() string {

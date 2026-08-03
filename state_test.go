@@ -5,12 +5,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/suraciii/gor/clock"
 	"github.com/suraciii/gor/store"
 )
 
 func TestState_PersistsAllRegisteredValuesAsOneRecord(t *testing.T) {
 	backend := store.NewMemory()
-	binder := newBinder(Identity{Type: "account", Key: "alice"}, backend)
+	binder := newBinder(Identity{Type: "account", Key: "alice"}, backend, nil, clock.Real{})
 	balance := NewState[int64](binder, "balance")
 	name := NewState[string](binder, "name")
 
@@ -35,13 +36,13 @@ func TestState_PersistsAllRegisteredValuesAsOneRecord(t *testing.T) {
 
 func TestState_LoadsValuesAndETagFromStore(t *testing.T) {
 	backend := store.NewMemory()
-	first := newBinder(Identity{Type: "account", Key: "alice"}, backend)
+	first := newBinder(Identity{Type: "account", Key: "alice"}, backend, nil, clock.Real{})
 	firstBalance := NewState[int64](first, "balance")
 	if err := firstBalance.Set(context.Background(), 42); err != nil {
 		t.Fatalf("first Set: %v", err)
 	}
 
-	second := newBinder(Identity{Type: "account", Key: "alice"}, backend)
+	second := newBinder(Identity{Type: "account", Key: "alice"}, backend, nil, clock.Real{})
 	secondBalance := NewState[int64](second, "balance")
 	if err := second.load(context.Background()); err != nil {
 		t.Fatalf("load: %v", err)
@@ -64,13 +65,13 @@ func TestState_LoadsValuesAndETagFromStore(t *testing.T) {
 
 func TestState_ConflictLeavesValueAndMarksBinder(t *testing.T) {
 	backend := store.NewMemory()
-	first := newBinder(Identity{Type: "account", Key: "alice"}, backend)
+	first := newBinder(Identity{Type: "account", Key: "alice"}, backend, nil, clock.Real{})
 	firstBalance := NewState[int64](first, "balance")
 	if err := firstBalance.Set(context.Background(), 1); err != nil {
 		t.Fatalf("first Set: %v", err)
 	}
 
-	second := newBinder(Identity{Type: "account", Key: "alice"}, backend)
+	second := newBinder(Identity{Type: "account", Key: "alice"}, backend, nil, clock.Real{})
 	secondBalance := NewState[int64](second, "balance")
 	if err := second.load(context.Background()); err != nil {
 		t.Fatalf("load: %v", err)
@@ -93,7 +94,7 @@ func TestState_ConflictLeavesValueAndMarksBinder(t *testing.T) {
 
 func TestState_WriteErrorLeavesValueAndMarksBinder(t *testing.T) {
 	writeErr := errors.New("store unavailable")
-	binder := newBinder(Identity{Type: "account", Key: "alice"}, failingWriteStore{err: writeErr})
+	binder := newBinder(Identity{Type: "account", Key: "alice"}, failingWriteStore{err: writeErr}, nil, clock.Real{})
 	balance := NewState[int64](binder, "balance")
 	balance.cell.value = 1
 
@@ -122,7 +123,7 @@ func (s failingWriteStore) Write(context.Context, store.Identity, []byte, store.
 }
 
 func TestNewState_PanicsOnDuplicateName(t *testing.T) {
-	binder := newBinder(Identity{Type: "account", Key: "alice"}, store.NewMemory())
+	binder := newBinder(Identity{Type: "account", Key: "alice"}, store.NewMemory(), nil, clock.Real{})
 	NewState[int64](binder, "balance")
 
 	defer func() {
