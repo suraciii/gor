@@ -118,14 +118,18 @@ bubble 里 `time.Now()` 已经是假的，`clock.Real` 直接能用。那 `Clock
 一行一个事件，纯文本，人能读。决定和观测各有前缀，比对时按前缀筛：
 
 ```
-0000 seed=8f3c2a1b
-0001 decision entity=Counter/a deltas=[3,5] fault=write.applied-then-error
-0002 observe  outcomes=[store-write-applied-then-error,closed]
-0003 observe  state Counter/a=3
-0004 decision crash node=1
+seed=8f3c2a1b
+0000 decision entity=Counter/a deltas=[3,5] fault=write.applied-then-error
+     observe outcomes=[store-write-applied-then-error,closed]
+     observe state Counter/a=3
+0001 decision crash node=1
 ```
 
-失败时打印种子。同一个种子重跑，`decision` 行逐字节相同——这条本身要有一个测试。
+**编号只给决定行，从 0 连续数下去。** 观测行不编号。要是编号跨着两半连着数，决定行长什么样就取决于前面记了几行观测——比对的那一半依赖了不比对的那一半，观测行数一变，复现测试就为着跟种子无关的理由挂掉。
+
+同一个种子重跑，`decision` 行逐字节相同——这条本身要有一个测试。
+
+**任何失败都把整份日志打出来**，不是只打决定那一半。观测那半存在的意义就是这一刻。
 
 不用 JSON。出问题时人要盯着两份日志找第一行差异，`diff` 比什么都好使。
 
@@ -134,6 +138,8 @@ bubble 里 `time.Now()` 已经是假的，`clock.Real` 直接能用。那 `Clock
 `sim/` 包，build tag `sim`，测试名以 `TestSim` 开头（`make sim` 用 `-run TestSim` 筛）。
 
 `sim` 依赖 `gor`、`runtime`、`store`、`clock`，不被它们依赖。
+
+**不变量跑一批种子，不是一个。** 一个种子只走出一条轨迹，覆盖不到几种故障组合。种子列表写死（比如从某个基数连着取 64 个），这样失败可复现，也不引入墙钟随机。复现测试反过来只用一个固定种子就够——它测的是骨架自己别从多个 goroutine 里摇 PRNG，不是测覆盖率。
 
 porcupine（`github.com/anishathalye/porcupine`）是新依赖。
 
