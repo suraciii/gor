@@ -58,12 +58,27 @@ gor.Every(d)   // 周期，每 d 打一次
 ## 表
 
 ```
-schedule(entity_type, entity_key, name, due_at, interval, etag)
+schedule(entity_type, entity_key, name, method, due_at, interval, etag)
 ```
 
 `interval` 为零表示一次性。
 
-主键是 (entity_type, entity_key, name)。
+主键是 (entity_type, entity_key, name)。`name` 是这条任务的标识，`method` 是到期要打的方法——两个都要，因为同一个方法可以挂好几条不同周期的任务。
+
+## 表的接口
+
+四件事，对着轮询器和用户各自要做的来：
+
+- **列出到期的**——`due_at <= now` 的行，`now` 从参数进来。
+- **抢占一行**——带着这一行的 etag 做 CAS，把 `due_at` 推到给定的下一个时刻；给的时刻是零值就删掉这一行。**恰好一个抢占者能赢。**
+- **写一行**——无条件覆盖，用户 `Set` 走这里。
+- **删一行**——无条件，用户 `Cancel` 走这里。
+
+**etag 只为抢占存在。** 用户的 `Set` / `Cancel` 不带 etag：他手里本来就没有，而且这是他显式改期或取消，该赢。被覆盖掉的那次抢占只是少投递一次，at-most-once 依然成立。
+
+**下一个到期时刻由轮询器算，表不算。** 「错过的不补」是策略，表只负责把 CAS 做对。一次性任务用零值时刻表示「没有下一次」——跟 `interval` 为零是同一个约定。
+
+不给「列出到期的」加条数上限。真需要的时候再加，现在加是替一个还不存在的规模做决定。
 
 ## 先抢占，再投递
 

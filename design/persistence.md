@@ -149,7 +149,7 @@ type Discard struct{ Err error }
 ## 定时任务表
 
 ```
-schedule(entity_type, entity_key, name, due_at, interval, etag)
+schedule(entity_type, entity_key, name, method, due_at, interval, etag)
 ```
 
 这张表不走 `Store` 接口——扫描到期行、CAS 抢占、删行都塞不进「按 Identity 读写一份状态」里。它自己一个接口，细节见 [timers.md](timers.md)。
