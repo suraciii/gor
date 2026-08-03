@@ -14,40 +14,6 @@ import (
 
 type testEntity struct{}
 
-type testClock struct {
-	now   atomic.Int64
-	ticks chan time.Time
-}
-
-type testTicker struct {
-	channel <-chan time.Time
-}
-
-func newTestClock() *testClock {
-	clock := &testClock{ticks: make(chan time.Time, 8)}
-	clock.now.Store(time.Unix(0, 0).UnixNano())
-	return clock
-}
-
-func (c *testClock) Now() time.Time {
-	return time.Unix(0, c.now.Load())
-}
-
-func (c *testClock) NewTicker(time.Duration) clock.Ticker {
-	return testTicker{channel: c.ticks}
-}
-
-func (c *testClock) Advance(d time.Duration) {
-	now := c.now.Add(int64(d))
-	c.ticks <- time.Unix(0, now)
-}
-
-func (t testTicker) C() <-chan time.Time {
-	return t.channel
-}
-
-func (testTicker) Stop() {}
-
 func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 4, Locator: LocalLocator{}})
@@ -165,7 +131,7 @@ func TestRuntime_DifferentKeysRunConcurrently(t *testing.T) {
 
 func TestRuntime_EvictsIdleActivationAndReactivates(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		fakeClock := newTestClock()
+		fakeClock := clock.NewFake(time.Unix(0, 0).UTC())
 		rt := New(Config{
 			Clock:            fakeClock,
 			MailboxCapacity:  2,

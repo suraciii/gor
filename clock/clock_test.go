@@ -32,3 +32,39 @@ func TestRealClock_TickerUsesBubbleTime(t *testing.T) {
 		}
 	})
 }
+
+func TestFakeClock_TickersAdvanceIndependently(t *testing.T) {
+	fake := NewFake(time.Unix(0, 0).UTC())
+	fast := fake.NewTicker(time.Second)
+	slow := fake.NewTicker(2 * time.Second)
+
+	fake.Advance(1500 * time.Millisecond)
+	if got := <-fast.C(); !got.Equal(time.Unix(1, 0).UTC()) {
+		t.Fatalf("fast tick = %s, want 1970-01-01 00:00:01 UTC", got)
+	}
+	select {
+	case got := <-slow.C():
+		t.Fatalf("slow ticker fired early at %s", got)
+	default:
+	}
+
+	fake.Advance(500 * time.Millisecond)
+	if got := <-fast.C(); !got.Equal(time.Unix(2, 0).UTC()) {
+		t.Fatalf("second fast tick = %s, want 1970-01-01 00:00:02 UTC", got)
+	}
+	if got := <-slow.C(); !got.Equal(time.Unix(2, 0).UTC()) {
+		t.Fatalf("slow tick = %s, want 1970-01-01 00:00:02 UTC", got)
+	}
+}
+
+func TestFakeClock_StopRemovesTicker(t *testing.T) {
+	fake := NewFake(time.Unix(0, 0).UTC())
+	ticker := fake.NewTicker(time.Second)
+	ticker.Stop()
+	fake.Advance(time.Second)
+	select {
+	case <-ticker.C():
+		t.Fatal("stopped ticker received a tick")
+	default:
+	}
+}
