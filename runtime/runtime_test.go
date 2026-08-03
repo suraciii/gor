@@ -253,6 +253,92 @@ func TestRuntime_CloseWaitsForRunningCall(t *testing.T) {
 	})
 }
 
+func TestRuntime_KillCancelsRunningCallAndRejectsQueuedCalls(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+
+		started := make(chan struct{})
+		cancelObserved := make(chan struct{})
+		methodDone := make(chan struct{})
+		release := make(chan struct{})
+		queuedStarted := make(chan struct{})
+		var calls atomic.Int32
+		if err := rt.Register("account", Registration{
+			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Dispatch: func(ctx context.Context, _ any, method string, _ []any, _ any) error {
+				if method != "Block" {
+					return errors.New("unknown method")
+				}
+				if calls.Add(1) == 1 {
+					close(started)
+					<-ctx.Done()
+					close(cancelObserved)
+					<-release
+					close(methodDone)
+					return nil
+				}
+				close(queuedStarted)
+				return nil
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		firstDone := make(chan error, 1)
+		go func() {
+			firstDone <- rt.Invoke(context.Background(), id, "Block", nil, nil)
+		}()
+		synctest.Wait()
+		<-started
+
+		queuedDone := make(chan error, 1)
+		go func() {
+			queuedDone <- rt.Invoke(context.Background(), id, "Block", nil, nil)
+		}()
+		synctest.Wait()
+
+		rt.Kill()
+		synctest.Wait()
+
+		select {
+		case <-methodDone:
+			t.Fatal("runtime kill waited for the running method to drain")
+		default:
+		}
+		select {
+		case <-queuedStarted:
+			t.Fatal("queued call ran after runtime kill")
+		default:
+		}
+		select {
+		case <-cancelObserved:
+		default:
+			t.Fatal("running call did not observe runtime cancellation")
+		}
+		if err := <-firstDone; !errors.Is(err, context.Canceled) {
+			t.Fatalf("running call error = %v, want context.Canceled", err)
+		}
+		if err := <-queuedDone; err == nil {
+			t.Fatal("queued call returned nil after runtime kill")
+		}
+
+		close(release)
+		synctest.Wait()
+		select {
+		case <-methodDone:
+		default:
+			t.Fatal("running method did not eventually exit")
+		}
+		rt.mu.Lock()
+		_, active := rt.activations[id]
+		rt.mu.Unlock()
+		if active {
+			t.Fatal("killed activation remained in the runtime")
+		}
+	})
+}
+
 func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2, Locator: LocalLocator{}})

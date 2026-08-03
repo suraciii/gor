@@ -78,9 +78,12 @@ type Runtime struct {
 	activations   map[Identity]*activation
 	pending       map[Identity]*entry
 
-	stop         chan struct{}
-	ticker       clock.Ticker
-	evictionDone chan struct{}
+	stop                chan struct{}
+	ticker              clock.Ticker
+	evictionDone        chan struct{}
+	deactivationWaiters sync.WaitGroup
+	killCtx             context.Context
+	killCancel          context.CancelFunc
 }
 
 type ActivationState uint8
@@ -109,6 +112,7 @@ type entry struct {
 }
 
 func New(config Config) *Runtime {
+	killCtx, killCancel := context.WithCancel(context.Background())
 	r := &Runtime{
 		clock:           config.Clock,
 		mailboxCapacity: config.MailboxCapacity,
@@ -119,6 +123,8 @@ func New(config Config) *Runtime {
 		pending:         make(map[Identity]*entry),
 		stop:            make(chan struct{}),
 		evictionDone:    make(chan struct{}),
+		killCtx:         killCtx,
+		killCancel:      killCancel,
 	}
 	if config.IdleTimeout > 0 && config.EvictionInterval > 0 {
 		r.ticker = config.Clock.NewTicker(config.EvictionInterval)
@@ -140,7 +146,11 @@ func (r *Runtime) Register(name string, registration Registration) error {
 }
 
 func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args []any, reply any) error {
-	node, err := r.locator.Locate(ctx, id)
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(r.killCtx, cancel)()
+
+	node, err := r.locator.Locate(callCtx, id)
 	if err != nil {
 		return err
 	}
@@ -153,14 +163,14 @@ func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args [
 		return err
 	}
 	for {
-		act, err := r.activationFor(ctx, id, registration)
+		act, err := r.activationFor(callCtx, id, registration)
 		if err != nil {
 			return err
 		}
 		if !r.admit(act) {
 			continue
 		}
-		_, err = act.mailbox.Call(ctx, func(callCtx context.Context) (any, error) {
+		_, err = act.mailbox.Call(callCtx, func(callCtx context.Context) (any, error) {
 			defer r.callFinished(act)
 			return nil, r.dispatch(registration, act, callCtx, method, args, reply)
 		})
@@ -172,32 +182,67 @@ func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args [
 }
 
 func (r *Runtime) Close() {
-	r.mu.Lock()
-	if r.closed {
-		r.mu.Unlock()
+	down, ok := r.beginShutdown()
+	if !ok {
 		return
 	}
-	r.closed = true
-	close(r.stop)
-	activations := make([]*activation, 0, len(r.activations))
-	for _, act := range r.activations {
-		beginDeactivation(act)
-		activations = append(activations, act)
-	}
-	ticker := r.ticker
-	r.mu.Unlock()
-
-	if ticker != nil {
-		ticker.Stop()
-	}
-	for _, act := range activations {
+	for _, act := range down.activations {
 		act.mailbox.Close()
 	}
-	for _, act := range activations {
+	for _, act := range down.activations {
 		<-act.mailbox.Done()
 		r.finishDeactivation(act)
 	}
 	<-r.evictionDone
+	r.deactivationWaiters.Wait()
+}
+
+func (r *Runtime) Kill() {
+	down, ok := r.beginShutdown()
+	if !ok {
+		return
+	}
+	r.killCancel()
+	r.mu.Lock()
+	for _, act := range down.newlyDeactivating {
+		r.startDeactivationWaiterLocked(act)
+	}
+	r.mu.Unlock()
+	for _, act := range down.activations {
+		act.mailbox.Close()
+	}
+	<-r.evictionDone
+}
+
+type shutdown struct {
+	activations       []*activation
+	newlyDeactivating []*activation
+}
+
+func (r *Runtime) beginShutdown() (shutdown, bool) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return shutdown{}, false
+	}
+	r.closed = true
+	close(r.stop)
+	result := shutdown{
+		activations:       make([]*activation, 0, len(r.activations)),
+		newlyDeactivating: make([]*activation, 0, len(r.activations)),
+	}
+	for _, act := range r.activations {
+		result.activations = append(result.activations, act)
+		if beginDeactivation(act) {
+			result.newlyDeactivating = append(result.newlyDeactivating, act)
+		}
+	}
+	ticker := r.ticker
+	r.mu.Unlock()
+	if ticker != nil {
+		ticker.Stop()
+	}
+	return result, true
 }
 
 func (r *Runtime) registration(name string) (Registration, error) {
@@ -267,13 +312,19 @@ func (r *Runtime) createActivation(ctx context.Context, id Identity, registratio
 		}
 		r.mu.Lock()
 		delete(r.pending, id)
+		if err == nil && r.closed {
+			err = ErrRuntimeClosed
+		}
 		pending.act = act
 		pending.err = err
-		if err == nil && !r.closed {
+		if err == nil {
 			r.activations[id] = act
 		}
 		close(pending.ready)
 		r.mu.Unlock()
+		if err != nil && act != nil {
+			act.mailbox.Close()
+		}
 	}()
 
 	act, err = r.activate(ctx, id, registration)
@@ -352,25 +403,35 @@ func (r *Runtime) evict(now time.Time) {
 	for _, act := range r.activations {
 		if act.state == ActivationActive && act.calls == 0 && !now.Before(act.lastUsed.Add(r.idleTimeout)) && beginDeactivation(act) {
 			victims = append(victims, act)
+			r.startDeactivationWaiterLocked(act)
 		}
 	}
 	r.mu.Unlock()
 
 	for _, act := range victims {
 		act.mailbox.Close()
-		go r.waitForDeactivation(act)
 	}
 }
 
 func (r *Runtime) stopActivation(act *activation) {
 	r.mu.Lock()
 	started := beginDeactivation(act)
+	if started {
+		r.startDeactivationWaiterLocked(act)
+	}
 	r.mu.Unlock()
 	if !started {
 		return
 	}
 	act.mailbox.Close()
-	go r.waitForDeactivation(act)
+}
+
+func (r *Runtime) startDeactivationWaiterLocked(act *activation) {
+	r.deactivationWaiters.Add(1)
+	go func() {
+		defer r.deactivationWaiters.Done()
+		r.waitForDeactivation(act)
+	}()
 }
 
 func (r *Runtime) waitForDeactivation(act *activation) {

@@ -91,6 +91,36 @@ func TestState_ConflictLeavesValueAndMarksBinder(t *testing.T) {
 	}
 }
 
+func TestState_WriteErrorLeavesValueAndMarksBinder(t *testing.T) {
+	writeErr := errors.New("store unavailable")
+	binder := newBinder(Identity{Type: "account", Key: "alice"}, failingWriteStore{err: writeErr})
+	balance := NewState[int64](binder, "balance")
+	balance.cell.value = 1
+
+	err := balance.Set(context.Background(), 2)
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("Set error = %v, want %v", err, writeErr)
+	}
+	if balance.Get() != 1 {
+		t.Fatalf("value after write error = %d, want 1", balance.Get())
+	}
+	if !errors.Is(binder.discardError(), writeErr) {
+		t.Fatalf("discard marker = %v, want %v", binder.discardError(), writeErr)
+	}
+}
+
+type failingWriteStore struct {
+	err error
+}
+
+func (failingWriteStore) Read(context.Context, store.Identity) (store.Record, error) {
+	return store.Record{}, nil
+}
+
+func (s failingWriteStore) Write(context.Context, store.Identity, []byte, store.ETag) (store.ETag, error) {
+	return 0, s.err
+}
+
 func TestNewState_PanicsOnDuplicateName(t *testing.T) {
 	binder := newBinder(Identity{Type: "account", Key: "alice"}, store.NewMemory())
 	NewState[int64](binder, "balance")

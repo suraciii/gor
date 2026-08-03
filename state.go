@@ -3,7 +3,6 @@ package gor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/suraciii/gor/store"
@@ -121,9 +120,7 @@ func (b *Binder) persist(ctx context.Context, changed stateCell, changedData []b
 	}
 	etag, err := b.store.Write(ctx, b.identity, data, b.etag)
 	if err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			b.discard = err
-		}
+		b.discard = err
 		return err
 	}
 	b.etag = etag
