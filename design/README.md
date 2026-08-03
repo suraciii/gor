@@ -6,7 +6,9 @@
 
 ## 标注惯例
 
-全部内容**尚未实装**，描述的是目标设计。文档里出现的类型名、包名、函数签名都是设计意图，不对应现有代码。
+正文是 spec，不是现状说明。[ROADMAP.md](../ROADMAP.md) 说到哪一步了，实装就到哪里；后面几步的内容在这里已经写好，读的时候别当成代码里有的东西。
+
+某篇与代码有显著差距时，篇内单列「差距」小节。
 
 ## 篇目
 
@@ -17,6 +19,7 @@
 - [cluster.md](cluster.md) —— membership、放置、目录一致性。
 - [codegen.md](codegen.md) —— 从 Go interface 生成类型化代理。
 - [testing.md](testing.md) —— 单元测试与确定性模拟测试。
+- [simulation.md](simulation.md) —— 模拟测试骨架：种子、故障注入、崩溃、事件日志。
 
 ## 决策记录
 
