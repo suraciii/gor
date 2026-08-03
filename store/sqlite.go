@@ -119,6 +119,17 @@ CREATE TABLE IF NOT EXISTS records (
 	data BLOB NOT NULL,
 	etag INTEGER NOT NULL,
 	PRIMARY KEY (identity_type, identity_key)
+);
+
+CREATE TABLE IF NOT EXISTS schedule (
+	entity_type TEXT NOT NULL,
+	entity_key TEXT NOT NULL,
+	name TEXT NOT NULL,
+	method TEXT NOT NULL,
+	due_at INTEGER NOT NULL,
+	interval INTEGER NOT NULL,
+	etag INTEGER NOT NULL,
+	PRIMARY KEY (entity_type, entity_key, name)
 )`)
 	return err
 }

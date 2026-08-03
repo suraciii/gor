@@ -26,14 +26,19 @@ type Store interface {
 }
 
 type Memory struct {
-	mu      sync.RWMutex
-	records map[Identity]Record
+	mu        sync.RWMutex
+	records   map[Identity]Record
+	schedules map[scheduleKey]Schedule
 }
 
 var _ Store = (*Memory)(nil)
+var _ ScheduleStore = (*Memory)(nil)
 
 func NewMemory() *Memory {
-	return &Memory{records: make(map[Identity]Record)}
+	return &Memory{
+		records:   make(map[Identity]Record),
+		schedules: make(map[scheduleKey]Schedule),
+	}
 }
 
 func (m *Memory) Read(_ context.Context, id Identity) (Record, error) {
