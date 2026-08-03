@@ -48,14 +48,19 @@ type fakeStore struct {
 	plans   map[store.Identity]faultPlan
 	writes  []writeEvent
 	delays  int
+	active  int
+	idle    chan struct{}
 }
 
 var _ store.Store = (*fakeStore)(nil)
 
 func newFakeStore() *fakeStore {
+	idle := make(chan struct{})
+	close(idle)
 	return &fakeStore{
 		records: make(map[store.Identity]store.Record),
 		plans:   make(map[store.Identity]faultPlan),
+		idle:    idle,
 	}
 }
 
@@ -75,6 +80,7 @@ func (s *fakeStore) faultPlan(id store.Identity) faultPlan {
 }
 
 func (s *fakeStore) Read(_ context.Context, id store.Identity) (store.Record, error) {
+	defer s.endOperation(s.beginOperation())
 	plan := s.faultPlan(id).read
 	if plan.kind == faultDelay {
 		s.recordDelay()
@@ -92,6 +98,7 @@ func (s *fakeStore) Read(_ context.Context, id store.Identity) (store.Record, er
 }
 
 func (s *fakeStore) Write(_ context.Context, id store.Identity, data []byte, expect store.ETag) (store.ETag, error) {
+	defer s.endOperation(s.beginOperation())
 	plan := s.faultPlan(id).write
 	if plan.kind == faultDelay {
 		s.recordDelay()
@@ -128,6 +135,32 @@ func (s *fakeStore) delayCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.delays
+}
+
+func (s *fakeStore) beginOperation() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active == 0 {
+		s.idle = make(chan struct{})
+	}
+	s.active++
+	return s.idle
+}
+
+func (s *fakeStore) endOperation(idle chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active--
+	if s.active == 0 {
+		close(idle)
+	}
+}
+
+func (s *fakeStore) waitForIdle() {
+	s.mu.Lock()
+	idle := s.idle
+	s.mu.Unlock()
+	<-idle
 }
 
 func (s *fakeStore) snapshot(ids []store.Identity) map[store.Identity]store.Record {

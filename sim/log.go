@@ -18,13 +18,37 @@ func (l *eventLog) add(format string, args ...any) {
 	l.lines = append(l.lines, fmt.Sprintf(format, args...))
 }
 
-func (l *eventLog) addDecision(id store.Identity, plan faultPlan, deltas []int64) {
-	values := make([]string, len(deltas))
-	for index, delta := range deltas {
-		values[index] = fmt.Sprintf("%d", delta)
-	}
-	l.add("%04d decision entity=%s/%s deltas=[%s] fault=%s", l.nextDecision, id.Type, id.Key, strings.Join(values, ","), plan.eventName())
+func (l *eventLog) addDecisionEvent(format string, args ...any) {
+	l.add("%04d decision %s", l.nextDecision, fmt.Sprintf(format, args...))
 	l.nextDecision++
+}
+
+func (l *eventLog) addCallDecision(nodes []int, id store.Identity, plan faultPlan, deltas []int64) {
+	l.addDecisionEvent("call nodes=[%s] entity=%s/%s deltas=[%s] fault=%s", formatIntList(nodes), id.Type, id.Key, formatInt64List(deltas), plan.eventName())
+}
+
+func (l *eventLog) addCrashDecision(node int) {
+	l.addDecisionEvent("crash node=%d", node)
+}
+
+func (l *eventLog) addRestartDecision(node int) {
+	l.addDecisionEvent("restart node=%d", node)
+}
+
+func formatInt64List(values []int64) string {
+	formatted := make([]string, len(values))
+	for index, value := range values {
+		formatted[index] = fmt.Sprintf("%d", value)
+	}
+	return strings.Join(formatted, ",")
+}
+
+func formatIntList(values []int) string {
+	formatted := make([]string, len(values))
+	for index, value := range values {
+		formatted[index] = fmt.Sprintf("%d", value)
+	}
+	return strings.Join(formatted, ",")
 }
 
 func (l *eventLog) addOutcomes(outcomes []string) {

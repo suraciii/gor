@@ -21,7 +21,7 @@ import (
 const simulationSeed uint64 = 0x8f3c2a1b
 
 const (
-	simulationSteps = 12
+	simulationSteps = 24
 	callsPerStep    = 2
 )
 
@@ -85,85 +85,22 @@ func installCounter(rt *gor.Runtime) error {
 	})
 }
 
-type decision struct {
-	id    gor.Identity
-	delta int64
-}
-
-func executeDecisions(rt *gor.Runtime, decisions []decision) ([]string, error) {
-	results := make(chan error, len(decisions))
-	for _, selected := range decisions {
-		selected := selected
-		go func() {
-			results <- rt.Invoke(context.Background(), selected.id, "Add", []any{selected.delta}, new(int64))
-		}()
-	}
-	synctest.Wait()
-
-	outcomes := make([]string, 0, len(decisions))
-	for range decisions {
-		outcome, err := classifyOutcome(<-results)
-		if err != nil {
-			return nil, err
-		}
-		outcomes = append(outcomes, outcome)
-	}
-	sort.Strings(outcomes)
-	return outcomes, nil
-}
-
-func runSimulation(seed uint64) (string, error) {
-	log := eventLog{}
-	log.add("seed=%08x", seed)
-
-	backend := newFakeStore()
-	rt := gor.New(
+func newRuntime(backend *fakeStore) *gor.Runtime {
+	return gor.New(
 		gor.WithStore(backend),
 		gor.WithIdleTimeout(0),
 		gor.WithEvictionInterval(0),
 		gor.WithMailboxCapacity(4),
 	)
-	defer rt.Close()
+}
+
+func newCounterRuntime(backend *fakeStore) (*gor.Runtime, error) {
+	rt := newRuntime(backend)
 	if err := installCounter(rt); err != nil {
-		return log.String(), err
+		rt.Close()
+		return nil, err
 	}
-
-	counterType := gor.TypeName[counter]()
-	entities := []store.Identity{
-		{Type: counterType, Key: "a"},
-		{Type: counterType, Key: "b"},
-	}
-	rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15))
-	observations := newObservations()
-
-	for step := 0; step < simulationSteps; step++ {
-		entity := entities[rng.IntN(len(entities))]
-		id := gor.Identity{Type: entity.Type, Key: entity.Key}
-		plan := chooseFaultPlan(rng)
-		storeID := storeIdentity(id)
-		backend.setFaultPlans(map[store.Identity]faultPlan{storeID: plan})
-
-		decisions := make([]decision, callsPerStep)
-		deltas := make([]int64, callsPerStep)
-		for index := range decisions {
-			delta := int64(rng.IntN(9) + 1)
-			decisions[index] = decision{id: id, delta: delta}
-			deltas[index] = delta
-		}
-		log.addDecision(storeID, plan, deltas)
-		outcomes, err := executeDecisions(rt, decisions)
-		if err != nil {
-			return log.String(), fmt.Errorf("step %d: %w", step, err)
-		}
-		log.addOutcomes(outcomes)
-		if err := observations.check(backend, entities); err != nil {
-			return log.String(), err
-		}
-		if err := logEntityStates(&log, backend, entities); err != nil {
-			return log.String(), err
-		}
-	}
-	return log.String(), nil
+	return rt, nil
 }
 
 func storeIdentity(id gor.Identity) store.Identity {
@@ -291,4 +228,86 @@ func (o *observations) check(backend *fakeStore, ids []store.Identity) error {
 		}
 	}
 	return nil
+}
+
+func runSimulation(seed uint64, nodeCount int) (string, error) {
+	log := eventLog{}
+	log.add("seed=%08x", seed)
+
+	backend := newFakeStore()
+	cluster, err := newSimulationCluster(backend, nodeCount)
+	if err != nil {
+		return log.String(), err
+	}
+	defer cluster.close()
+
+	counterType := gor.TypeName[counter]()
+	entities := []store.Identity{
+		{Type: counterType, Key: "a"},
+		{Type: counterType, Key: "b"},
+	}
+	rng := rand.New(rand.NewPCG(seed, seed^0x517cc1b727220a95))
+	observations := newObservations()
+
+	for step := 0; step < simulationSteps; step++ {
+		switch chooseClusterAction(rng, cluster) {
+		case clusterCall:
+			entity := entities[rng.IntN(len(entities))]
+			id := gor.Identity{Type: entity.Type, Key: entity.Key}
+			plan := chooseFaultPlan(rng)
+			storeID := storeIdentity(id)
+			cluster.backend.setFaultPlans(map[store.Identity]faultPlan{storeID: plan})
+
+			liveIDs := cluster.liveNodeIDs()
+			decisions := make([]decision, callsPerStep)
+			nodes := make([]int, callsPerStep)
+			deltas := make([]int64, callsPerStep)
+			for index := range decisions {
+				nodeID := liveIDs[rng.IntN(len(liveIDs))]
+				delta := int64(rng.IntN(9) + 1)
+				decisions[index] = decision{
+					rt:    cluster.nodes[nodeID].rt,
+					id:    id,
+					delta: delta,
+				}
+				nodes[index] = nodeID
+				deltas[index] = delta
+			}
+			log.addCallDecision(nodes, storeID, plan, deltas)
+			var crashNode *int
+			if rng.IntN(2) == 0 {
+				node := nodes[rng.IntN(len(nodes))]
+				crashNode = &node
+				log.addCrashDecision(node)
+			}
+			outcomes, err := executeDecisions(cluster, decisions, crashNode)
+			if err != nil {
+				return log.String(), fmt.Errorf("step %d: %w", step, err)
+			}
+			log.addOutcomes(outcomes)
+		case clusterCrash:
+			liveIDs := cluster.liveNodeIDs()
+			nodeID := liveIDs[rng.IntN(len(liveIDs))]
+			log.addCrashDecision(nodeID)
+			if err := cluster.crash(nodeID); err != nil {
+				return log.String(), fmt.Errorf("step %d: %w", step, err)
+			}
+		case clusterRestart:
+			stoppedIDs := cluster.stoppedNodeIDs()
+			nodeID := stoppedIDs[rng.IntN(len(stoppedIDs))]
+			log.addRestartDecision(nodeID)
+			if err := cluster.restart(nodeID); err != nil {
+				return log.String(), fmt.Errorf("step %d: %w", step, err)
+			}
+		}
+
+		synctest.Wait()
+		if err := observations.check(backend, entities); err != nil {
+			return log.String(), fmt.Errorf("step %d: %w", step, err)
+		}
+		if err := logEntityStates(&log, backend, entities); err != nil {
+			return log.String(), fmt.Errorf("step %d: %w", step, err)
+		}
+	}
+	return log.String(), nil
 }
