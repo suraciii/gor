@@ -28,7 +28,7 @@ func (a *account) ApplyInterest(ctx context.Context) error { ... }
 
 **表里只能存名字。** 进程崩了之后没人能把一个闭包反序列化回来，所以定时任务记的是方法名，轮询器照着名字发一次普通调用。
 
-被打的方法只收 `ctx`、只回 `error`。名字对不上，投递就返回错误——不为这件事加一条注册期校验，错了当场看得见。
+被打的方法只收 `ctx`、只回 `error`，而且**必须写在实体的 interface 里**——分发表是生成器从 interface 产出的，不在里面的方法投递时找不到。名字对不上，投递就返回错误——不为这件事加一条注册期校验，错了当场看得见。
 
 **否决了「一个统一入口」。** Orleans 是让实体实现 `ReceiveReminder(name)`，然后自己 switch 名字。那等于把第 3 步刚删掉的手写分发器请回来，还是在用户代码里。`gor` 的卖点是编译期类型化，不该在这里开一个字符串分发的口子。
 
@@ -72,6 +72,8 @@ schedule(entity_type, entity_key, name, due_at, interval, etag)
 1. **抢占**——用 CAS 把 `due_at` 推到下一个周期（一次性任务则删掉这一行）。
 2. 抢到了才投递调用。
 
+**推到第一个还在未来的时刻**，不是 `due_at + interval`。停机三个周期之后，加一个 interval 得到的还是过去，下一轮扫描又会命中同一行，「错过的不补」就变成了补。
+
 顺序反过来会在崩溃时重复触发。抢到了但投递前崩溃，则漏一次——这是有意的取舍：
 
 **`gor` 承诺 at-most-once 的投递，不承诺 exactly-once 的执行。**
@@ -87,6 +89,8 @@ schedule(entity_type, entity_key, name, due_at, interval, etag)
 ## 轮询器
 
 一个 goroutine，按注入的 `Clock` 走。显式状态机，`Close()` 与 `Kill()` 都要能让它退出——`sim` 里留一个不退出的 goroutine 会让整个 bubble 判死锁。
+
+它自己一个包。`runtime` 不能装它——轮询器要读表，而 `runtime` 不导入 `store`。`gor` 也不该装——那一层只做配置组装，不放算法。所以轮询器跟 `mail` 一样是一个小包：拿一个表的接口、一个 `Clock`、一个「能发起调用」的接口，`gor` 负责把三样接上。
 
 ## 新的 I/O 接口
 
