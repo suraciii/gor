@@ -1,6 +1,6 @@
 # 编程模型
 
-> 本文描述目标 API。**尚无实现**——下面的代码是设计意图，不是可运行的示例。
+> 本文描述目标 API。定时唤醒与跨节点调用还没有实现，进度见 [../ROADMAP.md](../ROADMAP.md)。
 
 ## 核心概念
 
@@ -81,13 +81,28 @@ balance, err := acct.Deposit(ctx, 100)
 
 ## 定时唤醒
 
+状态用 `gor.State[T]` 接到存储上，定时任务同样从 `b` 拿一个格子：
+
 ```go
-func (a *account) OnActivate(ctx context.Context) error {
-    return gor.Schedule(ctx, "monthly-interest", gor.Monthly, a.applyInterest)
+type account struct {
+    balance  gor.State[int64]
+    schedule gor.Schedule
 }
+
+func (a *account) Open(ctx context.Context) error {
+    return a.schedule.Set(ctx, "monthly-interest", gor.Every(30*24*time.Hour), "ApplyInterest")
+}
+
+func (a *account) ApplyInterest(ctx context.Context) error { ... }
 ```
 
-定时任务是持久的：进程崩溃后到期仍会触发。它不是 `time.AfterFunc`，别指望毫秒级精度。
+定时任务是持久的：进程崩溃后到期仍会触发。到期时对象不在内存里，就把它唤醒。
+
+到期打的是**方法名**，不是函数值——崩溃之后没人能把一个闭包恢复回来，能存下来的只有名字。被打的方法只收 `ctx`、只回 `error`。
+
+它不是 `time.AfterFunc`：别指望毫秒级精度，也别指望停机期间错过的次数会补回来（回来只打一次，然后接着往下走）。
+
+同名的任务一个对象上只有一份，再 `Set` 一次是改期。
 
 ## 生命周期钩子
 

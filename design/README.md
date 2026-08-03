@@ -16,6 +16,7 @@
 - [runtime.md](runtime.md) —— 激活、目录、生命周期。
 - [scheduling.md](scheduling.md) —— 串行执行、重入、mailbox。
 - [persistence.md](persistence.md) —— 状态存储、CAS、后端选型。
+- [timers.md](timers.md) —— 持久化定时任务：表、轮询器、投递语义。
 - [cluster.md](cluster.md) —— membership、放置、目录一致性。
 - [codegen.md](codegen.md) —— 从 Go interface 生成类型化代理。
 - [testing.md](testing.md) —— 单元测试与确定性模拟测试。

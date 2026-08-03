@@ -68,3 +68,5 @@ func (b *Box) run() {
 也就是说定时任务在实体看来跟普通方法调用没有区别，同样享受串行保证。
 
 **明确不重复 Orleans Reminders v1 的设计**——那套是内存缓存 + 环形分区 + 复杂的所有权转移，Orleans 自己在 `Orleans.DurableJobs`（v2，实测 5278 行，仍是 preview）里换掉了。表 + 轮询更笨但更容易验证，精度也够——持久化定时任务本来就不该承诺毫秒级。
+
+细节见 [timers.md](timers.md)。

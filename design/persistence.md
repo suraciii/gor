@@ -152,6 +152,4 @@ type Discard struct{ Err error }
 schedule(entity_type, entity_key, name, due_at, interval, etag)
 ```
 
-轮询器扫 `due_at <= now`，取到的行先用 CAS 把 `due_at` 推到下一周期（这一步就是抢占所有权），成功了再投递调用。
-
-这个顺序很关键：**先抢占再执行**。反过来会在崩溃时重复触发。而抢占成功但执行前崩溃，则会漏一次触发——这是有意的取舍，`gor` 承诺 at-most-once 的**投递**，不承诺 exactly-once 的**执行**。文档要写清。
+这张表不走 `Store` 接口——扫描到期行、CAS 抢占、删行都塞不进「按 Identity 读写一份状态」里。它自己一个接口，细节见 [timers.md](timers.md)。
