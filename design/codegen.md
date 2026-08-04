@@ -26,7 +26,7 @@ goakt 就是这样（实测 `AskGrain(ctx, *GrainIdentity, message any, timeout)
 - 最后一个返回值是 `error`
 - 中间参数与返回值可编码
 
-返回值个数不限。参数与返回值目前在进程内直传，不经过序列化；跨节点传输是第 6 步的事。
+返回值个数不限。「可编码」指的是 `encoding/json` 编得动——本地调用直传不经过序列化，但同一个方法转发出去时要过一遍 JSON，编不动的类型在那一刻才炸，而那时已经晚了。
 
 ```go
 type Account interface {
@@ -62,27 +62,26 @@ type accountProxy struct {
 }
 
 func (p *accountProxy) Deposit(ctx context.Context, amount int64) (int64, error) {
-    var reply int64
-    err := p.rt.Invoke(ctx, p.id, "Deposit", []any{amount}, &reply)
-    return reply, err
+    var reply accountDepositReply
+    err := p.rt.Invoke(ctx, p.id, "Deposit", &accountDepositRequest{A0: amount}, &reply)
+    return reply.R0, err
 }
 ```
 
 以及一个服务端侧的分发函数，把方法名 + 参数还原成对实现类型的直接调用。
 
-## 多个返回值
+## 参数和返回值各装进一个结构体
 
-`Invoke` 只有一个 `reply`，而方法可以返回多个值。所以**每个方法生成一个回复结构体**，代理和分发函数都用它：
+`Invoke` 一头一个值，而方法可以收多个参数、返回多个值。所以**每个方法生成一对结构体**，代理和分发函数都用它们：
 
 ```go
-type accountDepositReply struct {
-    R0 int64
-}
+type accountDepositRequest struct { A0 int64 }
+type accountDepositReply   struct { R0 int64 }
 ```
 
-不为「只有一个返回值」开特例。单值时直接传 `&reply` 确实少一层，但那样生成器就有两条路径，而两条路径要各自测、各自维护。生成的代码没人读，少一层缩进不值这个价。
+不为「只有一个」开特例。单值时直接传 `&amount` 确实少一层，但那样生成器就有两条路径，而两条路径要各自测、各自维护。生成的代码没人读，少一层缩进不值这个价。
 
-只返回 `error` 的方法不生成回复结构体，代理传 `nil`。这不是给它开特例——没有值要装的时候本来就没有结构体可言，生成一个空的出来是死代码。
+**没有参数、或者只返回 `error` 的方法，照样生成空结构体。** 跨节点时这一对结构体就是线上的字节：空结构体编码成 `{}`，编解码只有一条路径；不生成就要在编码前后各加一次「是不是 nil」的判断。没有网络的时候它确实是死代码，有了网络它是那条路径最短的形态。
 
 ## 生成物怎么接进运行时
 
@@ -105,7 +104,21 @@ acct := gor.Ref[Account](rt, "alice")     // 代理从登记表里取，返回�
 
 **否决了 `init()` 自动登记。** 它能省掉 `Install(rt)` 这一行，代价是用户必须记得写一个空导入，忘了就是运行时才发现的失败，而且登记表变成进程级全局——第 4 步的模拟测试要在一个进程里跑多个节点。登记表挂在 `rt` 上，`Install` 显式调用，两个问题一起没有。
 
-生成器不硬编码类型名字符串。它产出的是 `gor.InstallType[Account](rt, dispatch, newProxy)` 这样的泛型调用，名字由 `gor` 自己按跟 `Register` / `Ref` 同一套规则算——三处用同一个函数，就不存在算不到一起的可能。
+生成器不硬编码类型名字符串。它产出的是 `gor.InstallType[Account](rt, dispatch, newProxy, newCall)` 这样的泛型调用，名字由 `gor` 自己按跟 `Register` / `Ref` 同一套规则算——三处用同一个函数，就不存在算不到一起的可能。
+
+## 服务端怎么从字节还原类型
+
+转发来的调用只有方法名和一段 JSON（信封见 [cluster.md](cluster.md)）。`gor` 不知道 `"Deposit"` 的参数该解成什么，只有生成的代码知道。所以每个类型多产出一个函数：
+
+```go
+func newCall(method string) (args any, reply any)
+```
+
+它按方法名造一对空壳，`"Deposit"` 给出 `&accountDepositRequest{}` 和 `&accountDepositReply{}`。认不出的方法名两个都给 nil——版本不一致的节点之间这是真会发生的事。
+
+接下来一路都是已有的东西：`json.Unmarshal` 填进 args，交给**同一个 `Invoke`**，回来 `json.Marshal(reply)`。转发进来的调用和本地代理发起的调用从这一步起走同一条路，串行、激活、分发都不另开一份。
+
+**只有 `newCall` 是为网络存在的。** 代理、分发函数、结构体本来就有。这也是 `Invoke` 的参数从 `[]any` 改成 `any` 的理由——`[]any` 装不回类型，一个结构体指针可以。
 
 登记表里没有的类型，`Register` 返回错误。`Ref` 没有 error 返回值，找不到就 panic。这不是运行期状况，是接线没接上：同一个类型的 `Register` 会在启动时先报出来，`Ref` 的 panic 只是兜底。
 
@@ -115,7 +128,7 @@ acct := gor.Ref[Account](rt, "alice")     // 代理从登记表里取，返回�
 
 ```go
 type Invoker interface {
-    Invoke(ctx context.Context, id Identity, method string, args []any, reply any) error
+    Invoke(ctx context.Context, id Identity, method string, args any, reply any) error
 }
 ```
 
@@ -153,6 +166,8 @@ go run github.com/suraciii/gor/cmd/gorgen -pkg ./domain
 不做 `go build` 时自动生成——Go 没有这个钩子，硬做只能靠 wrapper 脚本，而那会让 `go test ./...` 这种最常用的命令行为变得不可预测。生成是显式一步，CI 里加一个「生成物与源码一致」的检查。
 
 ## 差距
+
+**`newCall` 还没有产出，`Invoke` 的参数还是 `[]any`。** 转发那一步才用得上，现在的生成物只走本地。
 
 **导入别名冲突。** 生成器按包名写导入，两个不同路径的包重名（`a/domain` 和 `b/domain`）会产出编译不过的代码。方法签名里出现跨包类型时才会碰到。生成器应当自己分配别名，现在没做。
 
