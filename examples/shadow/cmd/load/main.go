@@ -92,7 +92,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 	if value.Configuration != "sample-rate=10s" {
 		return fmt.Errorf("device-000 configuration after eviction = %q, want %q", value.Configuration, "sample-rate=10s")
 	}
-	log.Printf("device-000 configuration survived idle eviction: %s", value.Configuration)
+	log.Printf("device-000 configuration after idle timeout: %s", value.Configuration)
 	return nil
 }
 
