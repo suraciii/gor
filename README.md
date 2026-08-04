@@ -51,6 +51,7 @@ Go 生态在这个位置有个空缺。把「有状态、崩溃透明、可嵌�
 make test        # 单元测试
 make sim         # 确定性模拟测试
 make gen         # 生成器端到端测试
+make net         # 真 TCP 的传输测试
 make lint        # vet + staticcheck
 ```
 

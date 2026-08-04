@@ -89,4 +89,4 @@ handler 写回响应也走 channel 交回 owner，帧仍然只有 owner 一个�
 
 ## 差距
 
-`transport` 包尚未实装。上面是它的 spec。
+假传输还没有。DST 里还没有东西实现这个接口。

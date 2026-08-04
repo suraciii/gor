@@ -2,7 +2,7 @@
 
 ## 项目状态
 
-**第 1 到 5 步已实装。** 写代码前先读 [ROADMAP.md](ROADMAP.md) 确认要做的是哪一步，以及它的前置是否已完成。
+**第 1 到 5 步已实装，第 6t 步（传输层）已实装。** 写代码前先读 [ROADMAP.md](ROADMAP.md) 确认要做的是哪一步，以及它的前置是否已完成。
 
 不要为了「让仓库看起来有东西」写占位代码、半成品或假实现。
 
@@ -39,6 +39,7 @@ ROADMAP 第 4 步（DST 骨架）必须在第 6 步（集群）之前。顺序�
 make test    # 单元测试，单个 < 50ms，不起网络不起进程
 make sim     # 确定性模拟测试，慢，不进默认 test
 make gen     # 生成器端到端测试，起 go list 子进程，不进默认 test
+make net     # 真 TCP 的传输测试，不进默认 test
 make lint    # vet + staticcheck
 ```
 
