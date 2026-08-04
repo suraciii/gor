@@ -74,6 +74,16 @@ gor.Register[Account](rt, func(b *gor.Binder) Account {
 
 `NewState` 把这个格子登记到 binder 上，运行时激活实体时按登记表读一次 store、把值分发到各个格子。
 
+身份也从这里拿：
+
+```go
+func Self(b *Binder) Identity
+```
+
+Binder 本来就攥着 Identity——`State` 要用它定位存储行，`Schedule` 要用它写表。`Self` 只是把它交给用户，不新增任何东西。
+
+**它必须是 Binder 上的一个值，不能是实体状态。** 用状态存自己的 key 会跟着写冲突一起回滚，也会在双激活窗口里出现一份读到旧值的激活——那时候实体会认错自己。
+
 **否决了反射扫结构体字段回填。** 它能让工厂保持 `func() Account`，用户少写一行，但代价是要用 `unsafe` 去写未导出字段，而且用户看不出这个字段是怎么活过来的。少写的那一行不值这个价。
 
 ## runtime 不导入 store

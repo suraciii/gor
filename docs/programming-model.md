@@ -60,6 +60,26 @@ gor.Register[Account](rt, func(b *gor.Binder) Account {
 
 方法体里没有锁，因为不需要——同一个 key 上不会有第二个调用同时在跑。
 
+## 实体知道自己是谁
+
+```go
+type account struct {
+    id      gor.Identity
+    balance gor.State[int64]
+}
+
+gor.Register[Account](rt, func(b *gor.Binder) Account {
+    return &account{
+        id:      gor.Self(b),
+        balance: gor.NewState[int64](b, "balance"),
+    }
+})
+```
+
+要打日志、要把 key 当业务数据用（`Account("alice")` 里的 `alice` 就是用户名）、要调另一个实体并告诉它自己是谁，都需要这个。
+
+**身份不是状态。** 它不进存储，不会因为实体被驱逐又重新激活而变，也不会因为写冲突而回滚。同一个身份在两个节点上同时激活时，两份激活的 `id` 也是同一个值。
+
 ## 调用一个实体
 
 ```go
