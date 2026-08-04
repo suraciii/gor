@@ -18,6 +18,8 @@
 member(node_addr, generation, status, iam_alive_at, suspect_votes, etag)
 ```
 
+这是最终形态。`suspect_votes` 要等探测和投票那一步才有人写，在那之前表里不该有这一列——一个没人写的列是占位代码。
+
 主键是 (node_addr, generation)。**generation 是节点每次启动新取的一个值**，同一个地址重启后是新的一行。没有它，重启的节点会认领自己上一条命的那一行，而别人可能还在给那一行投死亡票。
 
 ### 表的接口
