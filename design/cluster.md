@@ -118,16 +118,9 @@ Orleans 有目录表，是因为它不按哈希放置——它把激活放在选
 
 ## 传输
 
-节点间一条长连接，多路复用请求。
+节点间一条长连接，多路复用请求，不用 gRPC。接口、帧格式、连接生命周期见 [transport.md](transport.md)。
 
-不用 gRPC：需要的功能只是「把字节送到对面并拿回响应」，gRPC 带来的 protobuf 契约、HTTP/2 栈、连接管理策略都是要被绕过或对抗的东西。而 DST 需要 transport 完全在接口后面、能被内存假实现替换——自己写一层薄的更容易做到。
-
-```go
-type Transport interface {
-    Send(ctx context.Context, to Node, payload []byte) ([]byte, error)
-    Serve(ctx context.Context, h Handler) error
-}
-```
+`cluster` 不导入 `transport`——环算出一个地址，转发由 `gor` 那一层发起。
 
 ## 迁移
 
