@@ -45,7 +45,10 @@ func sortMembers(members []Member) {
 	})
 }
 
-func (m *Memory) WriteMember(_ context.Context, member Member) (ETag, error) {
+func (m *Memory) WriteMember(ctx context.Context, member Member) (ETag, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -60,7 +63,10 @@ func (m *Memory) WriteMember(_ context.Context, member Member) (ETag, error) {
 	return member.ETag, nil
 }
 
-func (m *Memory) ListMembers(_ context.Context) ([]Member, error) {
+func (m *Memory) ListMembers(ctx context.Context) ([]Member, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 

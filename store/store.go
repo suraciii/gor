@@ -53,7 +53,10 @@ func NewMemory() *Memory {
 	}
 }
 
-func (m *Memory) Read(_ context.Context, id Identity) (Record, error) {
+func (m *Memory) Read(ctx context.Context, id Identity) (Record, error) {
+	if err := ctx.Err(); err != nil {
+		return Record{}, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -65,7 +68,10 @@ func (m *Memory) Read(_ context.Context, id Identity) (Record, error) {
 	return record, nil
 }
 
-func (m *Memory) Write(_ context.Context, id Identity, data []byte, expect ETag) (ETag, error) {
+func (m *Memory) Write(ctx context.Context, id Identity, data []byte, expect ETag) (ETag, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

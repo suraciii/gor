@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestMemoryStore_WriteWithMatchingETagReturnsNewETag(t *testing.T) {
@@ -146,4 +147,33 @@ func TestMemoryStore_ReadAndWriteCopyData(t *testing.T) {
 	if string(unchanged.Data) != "original" {
 		t.Fatalf("stored data = %q, want original", unchanged.Data)
 	}
+}
+
+func TestMemoryStore_MethodsHonorCanceledContext(t *testing.T) {
+	memory := NewMemory()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	wantCanceled := func(err error) {
+		t.Helper()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", err)
+		}
+	}
+
+	_, err := memory.Read(ctx, Identity{Type: "account", Key: "alice"})
+	wantCanceled(err)
+	_, err = memory.Write(ctx, Identity{Type: "account", Key: "alice"}, nil, 0)
+	wantCanceled(err)
+	_, err = memory.ListDue(ctx, time.Time{})
+	wantCanceled(err)
+	_, err = memory.Claim(ctx, Schedule{}, time.Time{})
+	wantCanceled(err)
+	err = memory.Put(ctx, Schedule{})
+	wantCanceled(err)
+	err = memory.Delete(ctx, Identity{Type: "account", Key: "alice"}, "daily")
+	wantCanceled(err)
+	_, err = memory.WriteMember(ctx, Member{NodeAddr: "node-a", Generation: "generation-a"})
+	wantCanceled(err)
+	_, err = memory.ListMembers(ctx)
+	wantCanceled(err)
 }

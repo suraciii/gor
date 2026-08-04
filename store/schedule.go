@@ -46,7 +46,10 @@ func sortSchedules(schedules []Schedule) {
 	})
 }
 
-func (m *Memory) ListDue(_ context.Context, now time.Time) ([]Schedule, error) {
+func (m *Memory) ListDue(ctx context.Context, now time.Time) ([]Schedule, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -60,7 +63,10 @@ func (m *Memory) ListDue(_ context.Context, now time.Time) ([]Schedule, error) {
 	return result, nil
 }
 
-func (m *Memory) Claim(_ context.Context, schedule Schedule, nextDueAt time.Time) (bool, error) {
+func (m *Memory) Claim(ctx context.Context, schedule Schedule, nextDueAt time.Time) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -79,7 +85,10 @@ func (m *Memory) Claim(_ context.Context, schedule Schedule, nextDueAt time.Time
 	return true, nil
 }
 
-func (m *Memory) Put(_ context.Context, schedule Schedule) error {
+func (m *Memory) Put(ctx context.Context, schedule Schedule) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -93,7 +102,10 @@ func (m *Memory) Put(_ context.Context, schedule Schedule) error {
 	return nil
 }
 
-func (m *Memory) Delete(_ context.Context, id Identity, name string) error {
+func (m *Memory) Delete(ctx context.Context, id Identity, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
