@@ -60,6 +60,18 @@
 
 **验收**：进程崩溃后到期任务仍会触发；同一次到期只投递一次，且这条要作为模拟测试的不变量，在注入的抢占故障与节点崩溃下都不破。
 
+### 5.5 示例反馈回来的 API 修补
+
+写第一个真实示例时撞出来的三处摩擦，都不大，但都在主路径上：
+
+- `gor.Now(b)` —— Binder 已经攥着注入的 `Clock`，不交出去用户就会写 `time.Now()`。
+- `gor.Ref[T](b, key)` —— 实体调另一个实体不该要求工厂捕获运行时对象。
+- `OnTimerError` —— 定时投递失败现在被无声丢掉，一整类故障对用户不可见。
+
+前两条见 [design/persistence.md](design/persistence.md)，第三条见 [design/timers.md](design/timers.md)。
+
+**排在第 6 步之前，因为它改的是公开 API。** API 改动越晚越贵，而且示例应用正等着用新签名把 README 写对。
+
 ### 6. 多节点
 
 一致性哈希环 + 共享表 membership + 死亡投票。设计见 [design/cluster.md](design/cluster.md)。

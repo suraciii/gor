@@ -86,6 +86,30 @@ Binder 本来就攥着 Identity——`State` 要用它定位存储行，`Schedul
 
 **否决了反射扫结构体字段回填。** 它能让工厂保持 `func() Account`，用户少写一行，但代价是要用 `unsafe` 去写未导出字段，而且用户看不出这个字段是怎么活过来的。少写的那一行不值这个价。
 
+### Binder 上还有两样东西
+
+时间：
+
+```go
+func Now(b *Binder) time.Time
+```
+
+Binder 已经攥着注入的 `Clock`——`Schedule` 算到期时刻要用它。`Now` 只是把它交出去。不交的后果是用户在实体里写 `time.Now()`，而那正是整个项目第一条不许做的事。
+
+调别人：
+
+```go
+type Scope interface{ /* 密封：只有 *Runtime 和 *Binder 实现 */ }
+
+func Ref[T any](scope Scope, key string) T
+```
+
+`Ref` 原本只收 `*Runtime`，于是实体想调另一个实体，就得让工厂闭包额外捕获运行时对象，工厂签名从 `func(b *Binder) T` 变成 `func(rt *Runtime, b *Binder) T`。**跨实体调用是虚拟实体最常做的事，它不该是签名上最重的那个参数。**
+
+所以 Binder 攥着运行时，`Ref` 收一个密封接口，两边同名。密封（接口里放一个未导出方法）是为了不让用户实现它——它不是扩展点，它只是「一个能解析实体的地方」的两种形态。
+
+不给 Binder 加第三样东西。它是实体和运行时之间的那道缝，缝里塞什么都得先回答「不塞会怎样」。
+
 ## runtime 不导入 store
 
 `runtime` 和 `store` 在架构图里是兄弟，谁也不导入谁。但 `Binder` 要同时够到两边：Identity 只有 `runtime` 在激活时才知道，`Store` 是 `gor` 组装配置时注入的。
