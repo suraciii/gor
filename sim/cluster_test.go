@@ -42,7 +42,10 @@ func (*dualActivationEntity) Tick(context.Context) error {
 }
 
 func newDualActivationRuntime(backend *fakeStore, gate <-chan struct{}, entered chan<- struct{}) (*gor.Runtime, error) {
-	rt := newRuntime(backend)
+	rt, err := newRuntime(backend)
+	if err != nil {
+		return nil, err
+	}
 	if err := installCounterType(rt); err != nil {
 		rt.Close()
 		return nil, err

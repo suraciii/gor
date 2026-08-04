@@ -132,7 +132,7 @@ func installCounterWithTracker(rt *gor.Runtime, tracker *timerTracker) error {
 	})
 }
 
-func newRuntime(backend *fakeStore) *gor.Runtime {
+func newRuntime(backend *fakeStore) (*gor.Runtime, error) {
 	return gor.New(
 		gor.WithStore(backend),
 		gor.WithIdleTimeout(0),
@@ -143,7 +143,10 @@ func newRuntime(backend *fakeStore) *gor.Runtime {
 }
 
 func newCounterRuntime(backend *fakeStore, tracker *timerTracker) (*gor.Runtime, error) {
-	rt := newRuntime(backend)
+	rt, err := newRuntime(backend)
+	if err != nil {
+		return nil, err
+	}
 	if err := installCounterWithTracker(rt, tracker); err != nil {
 		rt.Close()
 		return nil, err

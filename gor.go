@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/suraciii/gor/clock"
+	"github.com/suraciii/gor/cluster"
 	runtimepkg "github.com/suraciii/gor/runtime"
 	"github.com/suraciii/gor/store"
 	"github.com/suraciii/gor/timer"
@@ -23,15 +25,25 @@ type Runtime struct {
 	scheduleStore store.ScheduleStore
 	clock         clock.Clock
 	poller        *timer.Poller
+	clusterNode   *cluster.Node
+	clusterView   atomic.Pointer[cluster.View]
+	clusterDone   chan struct{}
+	nodeAddr      string
 	typesMu       sync.Mutex
 	types         map[string]typeRegistration
 }
 
 type Config struct {
 	runtimepkg.Config
-	Store            store.Store
-	ScheduleStore    store.ScheduleStore
-	ScheduleInterval time.Duration
+	Store             store.Store
+	ScheduleStore     store.ScheduleStore
+	ScheduleInterval  time.Duration
+	MemberStore       store.MemberStore
+	NodeAddr          string
+	Generation        string
+	HeartbeatInterval time.Duration
+	ViewInterval      time.Duration
+	DeadAfter         time.Duration
 }
 
 type Invoker interface {
@@ -47,7 +59,7 @@ type typeRegistration struct {
 
 type Option func(*Config)
 
-func New(options ...Option) *Runtime {
+func New(options ...Option) (*Runtime, error) {
 	config := Config{
 		Config: runtimepkg.Config{
 			Clock:            clock.Real{},
@@ -56,8 +68,11 @@ func New(options ...Option) *Runtime {
 			IdleTimeout:      time.Minute,
 			EvictionInterval: time.Second,
 		},
-		Store:            store.NewMemory(),
-		ScheduleInterval: time.Second,
+		Store:             store.NewMemory(),
+		ScheduleInterval:  time.Second,
+		HeartbeatInterval: time.Second,
+		ViewInterval:      time.Second,
+		DeadAfter:         3 * time.Second,
 	}
 	for _, option := range options {
 		option(&config)
@@ -67,6 +82,26 @@ func New(options ...Option) *Runtime {
 			config.ScheduleStore = schedules
 		}
 	}
+	var (
+		clusterNode *cluster.Node
+		initialView cluster.View
+	)
+	if config.MemberStore != nil {
+		var err error
+		clusterNode, err = cluster.New(cluster.Config{
+			Table:             config.MemberStore,
+			Clock:             config.Clock,
+			NodeAddr:          config.NodeAddr,
+			Generation:        config.Generation,
+			HeartbeatInterval: config.HeartbeatInterval,
+			ViewInterval:      config.ViewInterval,
+			DeadAfter:         config.DeadAfter,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("start cluster node: %w", err)
+		}
+		initialView = <-clusterNode.ViewChanges()
+	}
 	rt := &Runtime{
 		Runtime:       runtimepkg.New(config.Config),
 		store:         config.Store,
@@ -74,10 +109,17 @@ func New(options ...Option) *Runtime {
 		clock:         config.Clock,
 		types:         make(map[string]typeRegistration),
 	}
+	if clusterNode != nil {
+		rt.clusterNode = clusterNode
+		rt.clusterDone = make(chan struct{})
+		rt.nodeAddr = config.NodeAddr
+		rt.clusterView.Store(&initialView)
+		go rt.watchCluster()
+	}
 	if config.ScheduleStore != nil && config.ScheduleInterval > 0 {
 		rt.poller = timer.New(config.ScheduleStore, config.Clock, config.ScheduleInterval, scheduleInvoker{runtime: rt})
 	}
-	return rt
+	return rt, nil
 }
 
 func WithClock(value clock.Clock) Option {
@@ -126,6 +168,71 @@ func WithScheduleInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.ScheduleInterval = value
 	}
+}
+
+func WithMemberStore(value store.MemberStore) Option {
+	return func(config *Config) {
+		config.MemberStore = value
+	}
+}
+
+func WithNodeAddr(value string) Option {
+	return func(config *Config) {
+		config.NodeAddr = value
+	}
+}
+
+func WithGeneration(value string) Option {
+	return func(config *Config) {
+		config.Generation = value
+	}
+}
+
+func WithHeartbeatInterval(value time.Duration) Option {
+	return func(config *Config) {
+		config.HeartbeatInterval = value
+	}
+}
+
+func WithViewInterval(value time.Duration) Option {
+	return func(config *Config) {
+		config.ViewInterval = value
+	}
+}
+
+func WithDeadAfter(value time.Duration) Option {
+	return func(config *Config) {
+		config.DeadAfter = value
+	}
+}
+
+type WrongOwnerError struct {
+	Owner string
+}
+
+func (e WrongOwnerError) Error() string {
+	return fmt.Sprintf("identity belongs to node %q", e.Owner)
+}
+
+func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args []any, reply any) error {
+	if rt.clusterNode == nil {
+		return rt.Runtime.Invoke(ctx, id, method, args, reply)
+	}
+	view := rt.clusterView.Load()
+	owner, _ := cluster.Owner(*view, store.Identity(id))
+	if owner != rt.nodeAddr {
+		return WrongOwnerError{Owner: owner}
+	}
+	return rt.Runtime.Invoke(ctx, id, method, args, reply)
+}
+
+func (rt *Runtime) Owns(id store.Identity) bool {
+	if rt.clusterNode == nil {
+		return true
+	}
+	view := rt.clusterView.Load()
+	owner, ok := cluster.Owner(*view, id)
+	return ok && owner == rt.nodeAddr
 }
 
 type boundInstance struct {
@@ -197,6 +304,10 @@ func (rt *Runtime) Close() {
 	if rt.poller != nil {
 		rt.poller.Close()
 	}
+	if rt.clusterNode != nil {
+		rt.clusterNode.Close()
+		<-rt.clusterDone
+	}
 	rt.Runtime.Close()
 }
 
@@ -204,7 +315,28 @@ func (rt *Runtime) Kill() {
 	if rt.poller != nil {
 		rt.poller.Close()
 	}
+	if rt.clusterNode != nil {
+		rt.clusterNode.Kill()
+		<-rt.clusterDone
+	}
 	rt.Runtime.Kill()
+}
+
+func (rt *Runtime) watchCluster() {
+	defer close(rt.clusterDone)
+	for view := range rt.clusterNode.ViewChanges() {
+		rt.clusterView.Store(&view)
+		rt.deactivateMovedActivations(view)
+	}
+}
+
+func (rt *Runtime) deactivateMovedActivations(view cluster.View) {
+	for _, id := range rt.Runtime.Identities() {
+		owner, ok := cluster.Owner(view, store.Identity(id))
+		if !ok || owner != rt.nodeAddr {
+			rt.Runtime.Deactivate(runtimepkg.Identity(id))
+		}
+	}
 }
 
 type scheduleInvoker struct {
@@ -213,6 +345,10 @@ type scheduleInvoker struct {
 
 func (i scheduleInvoker) Invoke(ctx context.Context, id store.Identity, method string) error {
 	return i.runtime.Invoke(ctx, Identity(id), method, nil, nil)
+}
+
+func (i scheduleInvoker) Owns(id store.Identity) bool {
+	return i.runtime.Owns(id)
 }
 
 func TypeName[T any]() string {

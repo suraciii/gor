@@ -22,6 +22,15 @@ type account struct {
 	value State[int64]
 }
 
+func mustNew(t *testing.T, options ...Option) *Runtime {
+	t.Helper()
+	rt, err := New(options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rt
+}
+
 func (a *account) Deposit(ctx context.Context, amount int64) (int64, error) {
 	value := a.value.Get() + amount
 	if err := a.value.Set(ctx, value); err != nil {
@@ -36,7 +45,7 @@ func (a *account) Balance(context.Context) (int64, error) {
 
 func TestRegister_InvokesInstalledDispatch(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(WithIdleTimeout(0), WithEvictionInterval(0))
+		rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 		defer rt.Close()
 
 		installAccount(t, rt)
@@ -69,7 +78,7 @@ func TestRegister_InvokesInstalledDispatch(t *testing.T) {
 }
 
 func TestRegister_RejectsDuplicateType(t *testing.T) {
-	rt := New(WithIdleTimeout(0), WithEvictionInterval(0))
+	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 	defer rt.Close()
 
 	installAccount(t, rt)
@@ -82,7 +91,7 @@ func TestRegister_RejectsDuplicateType(t *testing.T) {
 }
 
 func TestRegister_RejectsUninstalledType(t *testing.T) {
-	rt := New(WithIdleTimeout(0), WithEvictionInterval(0))
+	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 	defer rt.Close()
 
 	if err := Register[Account](rt, func(*Binder) Account { return &account{} }); !errors.Is(err, ErrTypeNotInstalled) {
@@ -91,9 +100,9 @@ func TestRegister_RejectsUninstalledType(t *testing.T) {
 }
 
 func TestInstallType_IsScopedToRuntime(t *testing.T) {
-	first := New(WithIdleTimeout(0), WithEvictionInterval(0))
+	first := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 	defer first.Close()
-	second := New(WithIdleTimeout(0), WithEvictionInterval(0))
+	second := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 	defer second.Close()
 
 	installAccount(t, first)
@@ -103,7 +112,7 @@ func TestInstallType_IsScopedToRuntime(t *testing.T) {
 }
 
 func TestRef_ConstructsTypedProxyFromInstalledType(t *testing.T) {
-	rt := New(WithIdleTimeout(0), WithEvictionInterval(0))
+	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 	defer rt.Close()
 	installAccount(t, rt)
 	if err := Register[Account](rt, func(b *Binder) Account {
@@ -123,7 +132,7 @@ func TestRef_ConstructsTypedProxyFromInstalledType(t *testing.T) {
 }
 
 func TestRef_PanicsForUninstalledType(t *testing.T) {
-	rt := New(WithIdleTimeout(0), WithEvictionInterval(0))
+	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 	defer rt.Close()
 
 	defer func() {
@@ -142,7 +151,7 @@ func TestRegister_LoadsAndPersistsState(t *testing.T) {
 			t.Fatalf("seed Write: %v", err)
 		}
 
-		rt := New(WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
+		rt := mustNew(t, WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
 		defer rt.Close()
 		installAccount(t, rt)
 		if err := Register[Account](rt, func(b *Binder) Account {
@@ -182,7 +191,7 @@ func TestRuntime_RestartRestoresStateFromMemoryStore(t *testing.T) {
 		backend := store.NewMemory()
 		id := Identity{Type: TypeName[Account](), Key: "alice"}
 
-		first := New(WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
+		first := mustNew(t, WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
 		registerAccount(t, first)
 		var written int64
 		if err := first.Invoke(context.Background(), id, "Deposit", []any{int64(42)}, &written); err != nil {
@@ -190,7 +199,7 @@ func TestRuntime_RestartRestoresStateFromMemoryStore(t *testing.T) {
 		}
 		first.Close()
 
-		second := New(WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
+		second := mustNew(t, WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
 		registerAccount(t, second)
 		defer second.Close()
 		var restored int64
@@ -209,7 +218,7 @@ func TestRuntime_RestartRestoresStateFromSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite first: %v", err)
 	}
-	first := New(WithStore(firstStore), WithIdleTimeout(0), WithEvictionInterval(0))
+	first := mustNew(t, WithStore(firstStore), WithIdleTimeout(0), WithEvictionInterval(0))
 	registerAccount(t, first)
 	var written int64
 	if err := first.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Deposit", []any{int64(42)}, &written); err != nil {
@@ -226,7 +235,7 @@ func TestRuntime_RestartRestoresStateFromSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite second: %v", err)
 	}
-	second := New(WithStore(secondStore), WithIdleTimeout(0), WithEvictionInterval(0))
+	second := mustNew(t, WithStore(secondStore), WithIdleTimeout(0), WithEvictionInterval(0))
 	registerAccount(t, second)
 	defer second.Close()
 	defer secondStore.Close()
@@ -251,7 +260,7 @@ func TestRegister_ConflictDiscardsActivationBeforeReactivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		backend := store.NewMemory()
 		id := Identity{Type: TypeName[Account](), Key: "alice"}
-		rt := New(WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
+		rt := mustNew(t, WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
 		defer rt.Close()
 
 		var factoryCalls atomic.Int32

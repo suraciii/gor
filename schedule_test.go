@@ -92,7 +92,7 @@ func installScheduledAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int
 
 func newScheduledRuntime(t *testing.T, backend store.Store, sourceClock clock.Clock) *Runtime {
 	t.Helper()
-	rt := New(
+	rt := mustNew(t,
 		WithStore(backend),
 		WithClock(sourceClock),
 		WithIdleTimeout(5*time.Second),
@@ -146,20 +146,20 @@ func TestSchedule_ReturnsUnavailableWithoutScheduleStore(t *testing.T) {
 
 func TestNew_ScheduleStoreOptionIsOrderIndependent(t *testing.T) {
 	explicit := store.NewMemory()
-	first := New(WithScheduleStore(explicit), WithStore(failingWriteStore{}), WithScheduleInterval(0), WithEvictionInterval(0))
+	first := mustNew(t, WithScheduleStore(explicit), WithStore(failingWriteStore{}), WithScheduleInterval(0), WithEvictionInterval(0))
 	if first.scheduleStore != explicit {
 		t.Fatal("WithStore replaced an earlier explicit ScheduleStore")
 	}
 	first.Close()
 
-	second := New(WithStore(failingWriteStore{}), WithScheduleStore(explicit), WithScheduleInterval(0), WithEvictionInterval(0))
+	second := mustNew(t, WithStore(failingWriteStore{}), WithScheduleStore(explicit), WithScheduleInterval(0), WithEvictionInterval(0))
 	if second.scheduleStore != explicit {
 		t.Fatal("WithScheduleStore did not replace the default ScheduleStore")
 	}
 	second.Close()
 
 	backend := store.NewMemory()
-	third := New(WithStore(backend), WithScheduleInterval(0), WithEvictionInterval(0))
+	third := mustNew(t, WithStore(backend), WithScheduleInterval(0), WithEvictionInterval(0))
 	if third.scheduleStore != backend {
 		t.Fatal("New did not derive ScheduleStore from Store")
 	}

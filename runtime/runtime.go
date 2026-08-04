@@ -181,6 +181,30 @@ func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args [
 	}
 }
 
+func (r *Runtime) Deactivate(id Identity) {
+	r.mu.Lock()
+	act, ok := r.activations[id]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	started := r.deactivateLocked(act)
+	r.mu.Unlock()
+	if started {
+		act.mailbox.Close()
+	}
+}
+
+func (r *Runtime) Identities() []Identity {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	identities := make([]Identity, 0, len(r.activations))
+	for id := range r.activations {
+		identities = append(identities, id)
+	}
+	return identities
+}
+
 func (r *Runtime) Close() {
 	down, ok := r.beginShutdown()
 	if !ok {
@@ -401,9 +425,8 @@ func (r *Runtime) evict(now time.Time) {
 	}
 	victims := make([]*activation, 0)
 	for _, act := range r.activations {
-		if act.state == ActivationActive && act.calls == 0 && !now.Before(act.lastUsed.Add(r.idleTimeout)) && beginDeactivation(act) {
+		if act.state == ActivationActive && act.calls == 0 && !now.Before(act.lastUsed.Add(r.idleTimeout)) && r.deactivateLocked(act) {
 			victims = append(victims, act)
-			r.startDeactivationWaiterLocked(act)
 		}
 	}
 	r.mu.Unlock()
@@ -415,15 +438,20 @@ func (r *Runtime) evict(now time.Time) {
 
 func (r *Runtime) stopActivation(act *activation) {
 	r.mu.Lock()
-	started := beginDeactivation(act)
-	if started {
-		r.startDeactivationWaiterLocked(act)
-	}
+	started := r.deactivateLocked(act)
 	r.mu.Unlock()
 	if !started {
 		return
 	}
 	act.mailbox.Close()
+}
+
+func (r *Runtime) deactivateLocked(act *activation) bool {
+	if !beginDeactivation(act) {
+		return false
+	}
+	r.startDeactivationWaiterLocked(act)
+	return true
 }
 
 func (r *Runtime) startDeactivationWaiterLocked(act *activation) {

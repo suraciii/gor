@@ -49,12 +49,15 @@ func TestSim_FaultsAndMailbox(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		backend := newFakeStore(newTimerTracker())
 		gate := make(chan struct{})
-		rt := gor.New(
+		rt, err := gor.New(
 			gor.WithStore(backend),
 			gor.WithIdleTimeout(0),
 			gor.WithEvictionInterval(0),
 			gor.WithMailboxCapacity(4),
 		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer rt.Close()
 		if err := installCounterType(rt); err != nil {
 			t.Fatal(err)

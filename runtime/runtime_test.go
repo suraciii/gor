@@ -176,6 +176,52 @@ func TestRuntime_EvictsIdleActivationAndReactivates(t *testing.T) {
 	})
 }
 
+func TestRuntime_DeactivateStopsActivationAndReactivates(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := New(Config{
+			Clock:           clock.Real{},
+			MailboxCapacity: 2,
+			Locator:         LocalLocator{},
+		})
+		defer rt.Close()
+
+		var factoryCalls atomic.Int32
+		if err := rt.Register("account", Registration{
+			Factory: func(context.Context, Identity) (any, error) {
+				return int(factoryCalls.Add(1)), nil
+			},
+			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+				if method != "Value" {
+					return errors.New("unknown method")
+				}
+				*(reply.(*int)) = instance.(int)
+				return nil
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); err != nil {
+			t.Fatalf("initial Invoke: %v", err)
+		}
+		if identities := rt.Identities(); len(identities) != 1 || identities[0] != id {
+			t.Fatalf("Identities = %#v, want [%#v]", identities, id)
+		}
+		rt.Deactivate(id)
+		synctest.Wait()
+		if identities := rt.Identities(); len(identities) != 0 {
+			t.Fatalf("Identities after Deactivate = %#v, want empty", identities)
+		}
+		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); err != nil {
+			t.Fatalf("reactivated Invoke: %v", err)
+		}
+		if got := factoryCalls.Load(); got != 2 {
+			t.Fatalf("factory calls = %d, want 2", got)
+		}
+	})
+}
+
 func TestRuntime_CloseWaitsForRunningCall(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})

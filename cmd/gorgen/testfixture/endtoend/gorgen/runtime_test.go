@@ -39,7 +39,10 @@ func TestGeneratedAccountPersistsAcrossRestart(t *testing.T) {
 
 func newRuntime(t *testing.T, backend store.Store) *gor.Runtime {
 	t.Helper()
-	rt := gor.New(gor.WithStore(backend), gor.WithIdleTimeout(0), gor.WithEvictionInterval(0))
+	rt, err := gor.New(gor.WithStore(backend), gor.WithIdleTimeout(0), gor.WithEvictionInterval(0))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := Install(rt); err != nil {
 		t.Fatal(err)
 	}

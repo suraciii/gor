@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -46,6 +47,10 @@ func (i *recordingInvoker) Invoke(_ context.Context, id store.Identity, method s
 	return nil
 }
 
+func (i *recordingInvoker) Owns(store.Identity) bool {
+	return true
+}
+
 type blockingInvoker struct {
 	started  chan struct{}
 	finished chan struct{}
@@ -67,6 +72,24 @@ func (i *blockingInvoker) Invoke(ctx context.Context, _ store.Identity, _ string
 	<-ctx.Done()
 	close(i.finished)
 	return ctx.Err()
+}
+
+func (i *blockingInvoker) Owns(store.Identity) bool {
+	return true
+}
+
+type ownershipInvoker struct {
+	owns  bool
+	calls atomic.Int32
+}
+
+func (i *ownershipInvoker) Owns(store.Identity) bool {
+	return i.owns
+}
+
+func (i *ownershipInvoker) Invoke(context.Context, store.Identity, string) error {
+	i.calls.Add(1)
+	return nil
 }
 
 func TestPoller_ClaimsBeforeInvoking(t *testing.T) {
@@ -156,6 +179,47 @@ func TestPoller_ClaimFailureDoesNotInvoke(t *testing.T) {
 		if len(invoker.calls) != 0 {
 			t.Fatalf("invocations = %v, want none", invoker.calls)
 		}
+	})
+}
+
+func TestPoller_SkipsSchedulesNotOwnedByInvoker(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(350, 0).UTC()
+		backend := store.NewMemory()
+		schedule := store.Schedule{
+			Identity: store.Identity{Type: "account", Key: "alice"},
+			Name:     "wake",
+			Method:   "Wake",
+			DueAt:    start.Add(-time.Second),
+		}
+		if err := backend.Put(context.Background(), schedule); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+
+		nonOwner := &ownershipInvoker{}
+		owner := &ownershipInvoker{owns: true}
+		nonOwnerClock := clock.NewFake(start)
+		ownerClock := clock.NewFake(start)
+		nonOwnerPoller := New(backend, nonOwnerClock, time.Second, nonOwner)
+		ownerPoller := New(backend, ownerClock, time.Second, owner)
+		synctest.Wait()
+
+		nonOwnerClock.Advance(time.Second)
+		synctest.Wait()
+		if got := nonOwner.calls.Load(); got != 0 {
+			t.Fatalf("non-owner invocations = %d, want 0", got)
+		}
+
+		ownerClock.Advance(time.Second)
+		synctest.Wait()
+		if got := owner.calls.Load(); got != 1 {
+			t.Fatalf("owner invocations = %d, want 1", got)
+		}
+		if got := nonOwner.calls.Load(); got != 0 {
+			t.Fatalf("non-owner invocations after owner poll = %d, want 0", got)
+		}
+		nonOwnerPoller.Close()
+		ownerPoller.Close()
 	})
 }
 

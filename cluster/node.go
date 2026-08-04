@@ -92,6 +92,12 @@ func (n *Node) Close() {
 	<-n.done
 }
 
+func (n *Node) Kill() {
+	n.state.Store(uint32(StateDead))
+	n.cancel()
+	<-n.done
+}
+
 func (n *Node) join() (store.Member, []store.Member, error) {
 	self := store.Member{
 		NodeAddr:   n.nodeAddr,
@@ -170,15 +176,11 @@ func (n *Node) heartbeat(self store.Member) (store.Member, bool) {
 				return self, true
 			}
 			index := memberIndex(members, self)
-			if index < 0 {
-				return self, true
-			}
-			current := members[index]
-			if current.Status == store.MemberDead {
+			if index < 0 || members[index].Status == store.MemberDead {
 				n.state.Store(uint32(StateDead))
 				return self, false
 			}
-			return current, true
+			return members[index], true
 		}
 		return self, true
 	}
@@ -216,6 +218,9 @@ func (n *Node) pollView(self store.Member, current View) (View, bool) {
 }
 
 func (n *Node) leave(self store.Member) {
+	if n.State() == StateDead {
+		return
+	}
 	self.Status = store.MemberDead
 	_, _ = n.table.WriteMember(context.Background(), self)
 	n.state.Store(uint32(StateDead))

@@ -14,6 +14,7 @@ type Table interface {
 }
 
 type Invoker interface {
+	Owns(store.Identity) bool
 	Invoke(context.Context, store.Identity, string) error
 }
 
@@ -74,6 +75,9 @@ func (p *Poller) poll() {
 	for _, schedule := range schedules {
 		if p.ctx.Err() != nil {
 			return
+		}
+		if !p.invoker.Owns(schedule.Identity) {
+			continue
 		}
 		nextDueAt := nextDueAt(schedule, now)
 		claimed, err := p.table.Claim(p.ctx, schedule, nextDueAt)
