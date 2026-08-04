@@ -34,6 +34,10 @@ func newBinder(id Identity, backend store.Store, schedules store.ScheduleStore, 
 	}
 }
 
+func Self(b *Binder) Identity {
+	return Identity{Type: b.identity.Type, Key: b.identity.Key}
+}
+
 func NewState[T any](b *Binder, name string) State[T] {
 	if _, exists := b.states[name]; exists {
 		panic(fmt.Sprintf("state %q is already registered", name))

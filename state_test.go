@@ -34,6 +34,15 @@ func TestState_PersistsAllRegisteredValuesAsOneRecord(t *testing.T) {
 	}
 }
 
+func TestSelf_ReturnsBinderIdentity(t *testing.T) {
+	want := Identity{Type: "account", Key: "alice"}
+	binder := newBinder(want, store.NewMemory(), nil, clock.Real{})
+
+	if got := Self(binder); got != want {
+		t.Fatalf("Self = %#v, want %#v", got, want)
+	}
+}
+
 func TestState_LoadsValuesAndETagFromStore(t *testing.T) {
 	backend := store.NewMemory()
 	first := newBinder(Identity{Type: "account", Key: "alice"}, backend, nil, clock.Real{})
