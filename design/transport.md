@@ -53,6 +53,10 @@ A 发给 B 的请求走 A 拨给 B 的那条连接，B 的回复也从那条回�
 
 `Send` 把请求连同一个回复 channel 交给 owner，然后 select 回复和 `ctx.Done()`。
 
+**服务端的 handler 各自一个 goroutine，不许在 owner 里跑。** owner 只做登记和转交，跑完 handler 再回来是把这条连接上所有别的请求堵在后面——关联 id 存在的全部理由就是不让它们互相等。上一层尤其经不起这个：`gor` 把多个实体的调用塞进同一条连接，而实体调用本来就是串行的，一个实体正忙就会拖住来自同一个节点的所有其他实体。
+
+handler 写回响应也走 channel 交回 owner，帧仍然只有 owner 一个人排。连接要死的时候取消 handler 的 ctx 并等它们退出——留一个还在跑的 handler，`Close()` 就成了赌运气。
+
 ## 结局不明
 
 `Send` 的 ctx 到期时，请求可能已经在对面执行完了。
