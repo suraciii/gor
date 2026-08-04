@@ -103,7 +103,9 @@ schedule(entity_type, entity_key, name, method, due_at, interval, etag)
 
 ## 轮询器
 
-一个 goroutine，按注入的 `Clock` 走。显式状态机，`Close()` 与 `Kill()` 都要能让它退出——`sim` 里留一个不退出的 goroutine 会让整个 bubble 判死锁。
+一个 goroutine，按注入的 `Clock` 走。`Runtime` 无论走 `Close()` 还是 `Kill()`，都要让它退出——`sim` 里留一个不退出的 goroutine 会让整个 bubble 判死锁。
+
+轮询器自己只有「在跑」和「停了」，不为它编一套状态枚举：两个状态的状态机是仪式，不是设计。它也不区分排空和不排空的停止——身上没有用户状态，投递到一半被取消仍然落在 at-most-once 的承诺里。
 
 它自己一个包。`runtime` 不能装它——轮询器要读表，而 `runtime` 不导入 `store`。`gor` 也不该装——那一层只做配置组装，不放算法。所以轮询器跟 `mail` 一样是一个小包：拿一个表的接口、一个 `Clock`、一个「能发起调用」的接口，`gor` 负责把三样接上。
 
