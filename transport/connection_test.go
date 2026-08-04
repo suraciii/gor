@@ -356,6 +356,72 @@ func TestConnectionHandlersDoNotBlockEachOther(t *testing.T) {
 	})
 }
 
+func TestConnectionCloseCancelsAndWaitsForHandlers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client, server := net.Pipe()
+		handlerStarted := make(chan struct{})
+		handlerCanceled := make(chan struct{})
+		releaseHandler := make(chan struct{})
+		handlerExited := make(chan struct{})
+		released := false
+		srv := newConnectionState(server, context.Background(), func(ctx context.Context, _ []byte) ([]byte, error) {
+			close(handlerStarted)
+			<-ctx.Done()
+			close(handlerCanceled)
+			<-releaseHandler
+			close(handlerExited)
+			return nil, ctx.Err()
+		}, nil)
+		srv.start()
+		t.Cleanup(func() {
+			if !released {
+				close(releaseHandler)
+			}
+			srv.handlerCancel()
+			_ = srv.Close()
+			_ = client.Close()
+		})
+
+		writeDone := make(chan error, 1)
+		go func() {
+			writeDone <- WriteFrame(client, Frame{ID: 1, Type: FrameRequest, Payload: []byte("request")})
+		}()
+		synctest.Wait()
+		if err := <-writeDone; err != nil {
+			t.Fatalf("request write error = %v", err)
+		}
+		<-handlerStarted
+
+		closeDone := make(chan error, 1)
+		go func() {
+			closeDone <- srv.Close()
+		}()
+		synctest.Wait()
+		select {
+		case <-handlerCanceled:
+		default:
+			t.Fatal("Close did not cancel the handler context")
+		}
+		select {
+		case err := <-closeDone:
+			t.Fatalf("Close returned before handler exited: %v", err)
+		default:
+		}
+
+		close(releaseHandler)
+		released = true
+		synctest.Wait()
+		if err := <-closeDone; err != nil {
+			t.Fatalf("Close error = %v", err)
+		}
+		select {
+		case <-handlerExited:
+		default:
+			t.Fatal("handler was still running after Close returned")
+		}
+	})
+}
+
 func TestConnectionReturnsHandlerErrorAsText(t *testing.T) {
 	client, server := net.Pipe()
 	conn := newConnection(client)

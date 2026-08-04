@@ -213,7 +213,6 @@ func (c *connection) startHandler(frame Frame) {
 }
 
 func (c *connection) reportDead(err error) {
-	c.handlerCancel()
 	select {
 	case c.dead <- err:
 	case <-c.stop:
