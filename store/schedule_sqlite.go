@@ -13,7 +13,7 @@ func (s *SQLite) ListDue(ctx context.Context, now time.Time) ([]Schedule, error)
 SELECT entity_type, entity_key, name, method, due_at, interval, etag
 FROM schedule
 WHERE due_at <= ?
-ORDER BY due_at, entity_type, entity_key, name`, scheduleTimeValue(now))
+ORDER BY due_at, entity_type, entity_key, name`, timeValue(now))
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ ORDER BY due_at, entity_type, entity_key, name`, scheduleTimeValue(now))
 			Identity: Identity{Type: entityType, Key: entityKey},
 			Name:     name,
 			Method:   method,
-			DueAt:    scheduleTime(dueAt),
+			DueAt:    timeFromValue(dueAt),
 			Interval: time.Duration(interval),
 			ETag:     ETag(etag),
 		})
@@ -67,7 +67,7 @@ WHERE entity_type = ? AND entity_key = ? AND name = ? AND etag = ?`,
 UPDATE schedule
 SET due_at = ?, etag = etag + 1
 WHERE entity_type = ? AND entity_key = ? AND name = ? AND etag = ?`,
-			scheduleTimeValue(nextDueAt),
+			timeValue(nextDueAt),
 			schedule.Identity.Type,
 			schedule.Identity.Key,
 			schedule.Name,
@@ -97,7 +97,7 @@ ON CONFLICT (entity_type, entity_key, name) DO UPDATE SET
 		schedule.Identity.Key,
 		schedule.Name,
 		schedule.Method,
-		scheduleTimeValue(schedule.DueAt),
+		timeValue(schedule.DueAt),
 		int64(schedule.Interval),
 	)
 	return err

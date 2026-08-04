@@ -31,14 +31,6 @@ func keyForSchedule(schedule Schedule) scheduleKey {
 	return scheduleKey{identity: schedule.Identity, name: schedule.Name}
 }
 
-func scheduleTimeValue(value time.Time) int64 {
-	return value.UnixNano()
-}
-
-func scheduleTime(value int64) time.Time {
-	return time.Unix(0, value).UTC()
-}
-
 func sortSchedules(schedules []Schedule) {
 	sort.Slice(schedules, func(i, j int) bool {
 		if schedules[i].DueAt != schedules[j].DueAt {

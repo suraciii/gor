@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 type Identity struct {
@@ -25,19 +26,30 @@ type Store interface {
 	Write(context.Context, Identity, []byte, ETag) (ETag, error)
 }
 
+func timeValue(value time.Time) int64 {
+	return value.UnixNano()
+}
+
+func timeFromValue(value int64) time.Time {
+	return time.Unix(0, value).UTC()
+}
+
 type Memory struct {
 	mu        sync.RWMutex
 	records   map[Identity]Record
 	schedules map[scheduleKey]Schedule
+	members   map[memberKey]Member
 }
 
 var _ Store = (*Memory)(nil)
 var _ ScheduleStore = (*Memory)(nil)
+var _ MemberStore = (*Memory)(nil)
 
 func NewMemory() *Memory {
 	return &Memory{
 		records:   make(map[Identity]Record),
 		schedules: make(map[scheduleKey]Schedule),
+		members:   make(map[memberKey]Member),
 	}
 }
 

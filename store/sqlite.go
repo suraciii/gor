@@ -17,6 +17,7 @@ type SQLite struct {
 }
 
 var _ Store = (*SQLite)(nil)
+var _ MemberStore = (*SQLite)(nil)
 
 func OpenSQLite(path string) (*SQLite, error) {
 	dsn := sqliteDSN(path)
@@ -130,6 +131,15 @@ CREATE TABLE IF NOT EXISTS schedule (
 	interval INTEGER NOT NULL,
 	etag INTEGER NOT NULL,
 	PRIMARY KEY (entity_type, entity_key, name)
+);
+
+CREATE TABLE IF NOT EXISTS member (
+	node_addr TEXT NOT NULL,
+	generation TEXT NOT NULL,
+	status TEXT NOT NULL,
+	iam_alive_at INTEGER NOT NULL,
+	etag INTEGER NOT NULL,
+	PRIMARY KEY (node_addr, generation)
 )`)
 	return err
 }
