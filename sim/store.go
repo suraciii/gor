@@ -5,6 +5,7 @@ package sim
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -31,11 +32,41 @@ type faultPlan struct {
 	write faultSpec
 }
 
-var (
-	errReadFailure         = errors.New("sim store read failure")
-	errWriteFailure        = errors.New("sim store write failure")
-	errAppliedWriteFailure = errors.New("sim store write applied before failure")
+type scheduleFaultKind uint8
+
+const (
+	scheduleFaultNone scheduleFaultKind = iota
+	scheduleListError
+	scheduleListDelay
+	scheduleClaimError
+	scheduleClaimAppliedError
 )
+
+const scheduleListDelayDuration = 100 * time.Microsecond
+
+type scheduleStats struct {
+	listCalls          int
+	claimWon           int
+	claimLost          int
+	listErrors         int
+	listDelays         int
+	claimErrors        int
+	claimAppliedErrors int
+}
+
+var (
+	errReadFailure                 = errors.New("sim store read failure")
+	errWriteFailure                = errors.New("sim store write failure")
+	errAppliedWriteFailure         = errors.New("sim store write applied before failure")
+	errScheduleListFailure         = errors.New("sim schedule list failure")
+	errScheduleClaimFailure        = errors.New("sim schedule claim failure")
+	errScheduleClaimAppliedFailure = errors.New("sim schedule claim applied before failure")
+)
+
+type scheduleKey struct {
+	identity store.Identity
+	name     string
+}
 
 type writeEvent struct {
 	id   store.Identity
@@ -43,24 +74,33 @@ type writeEvent struct {
 }
 
 type fakeStore struct {
-	mu      sync.Mutex
-	records map[store.Identity]store.Record
-	plans   map[store.Identity]faultPlan
-	writes  []writeEvent
-	delays  int
-	active  int
-	idle    chan struct{}
+	mu                  sync.Mutex
+	records             map[store.Identity]store.Record
+	plans               map[store.Identity]faultPlan
+	schedules           map[scheduleKey]store.Schedule
+	scheduleListFault   scheduleFaultKind
+	scheduleClaimFaults map[store.Identity]scheduleFaultKind
+	timerTracker        *timerTracker
+	stats               scheduleStats
+	writes              []writeEvent
+	delays              int
+	active              int
+	idle                chan struct{}
 }
 
 var _ store.Store = (*fakeStore)(nil)
+var _ store.ScheduleStore = (*fakeStore)(nil)
 
-func newFakeStore() *fakeStore {
+func newFakeStore(tracker *timerTracker) *fakeStore {
 	idle := make(chan struct{})
 	close(idle)
 	return &fakeStore{
-		records: make(map[store.Identity]store.Record),
-		plans:   make(map[store.Identity]faultPlan),
-		idle:    idle,
+		records:             make(map[store.Identity]store.Record),
+		plans:               make(map[store.Identity]faultPlan),
+		schedules:           make(map[scheduleKey]store.Schedule),
+		scheduleClaimFaults: make(map[store.Identity]scheduleFaultKind),
+		timerTracker:        tracker,
+		idle:                idle,
 	}
 }
 
@@ -70,6 +110,19 @@ func (s *fakeStore) setFaultPlans(plans map[store.Identity]faultPlan) {
 	s.plans = make(map[store.Identity]faultPlan, len(plans))
 	for id, plan := range plans {
 		s.plans[id] = plan
+	}
+}
+
+func (s *fakeStore) setScheduleFault(id store.Identity, fault scheduleFaultKind) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scheduleListFault = scheduleFaultNone
+	delete(s.scheduleClaimFaults, id)
+	switch fault {
+	case scheduleListError, scheduleListDelay:
+		s.scheduleListFault = fault
+	case scheduleClaimError, scheduleClaimAppliedError:
+		s.scheduleClaimFaults[id] = fault
 	}
 }
 
@@ -125,6 +178,112 @@ func (s *fakeStore) Write(_ context.Context, id store.Identity, data []byte, exp
 	return newETag, nil
 }
 
+func (s *fakeStore) snapshotDue(now time.Time) ([]store.Schedule, scheduleFaultKind) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stats.listCalls++
+	result := make([]store.Schedule, 0)
+	for _, schedule := range s.schedules {
+		if !schedule.DueAt.After(now) {
+			result = append(result, schedule)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].DueAt.Equal(result[j].DueAt) {
+			return result[i].DueAt.Before(result[j].DueAt)
+		}
+		if result[i].Identity.Type != result[j].Identity.Type {
+			return result[i].Identity.Type < result[j].Identity.Type
+		}
+		if result[i].Identity.Key != result[j].Identity.Key {
+			return result[i].Identity.Key < result[j].Identity.Key
+		}
+		return result[i].Name < result[j].Name
+	})
+	fault := s.scheduleListFault
+	if fault == scheduleListDelay && len(result) == 0 {
+		return result, scheduleFaultNone
+	}
+	s.scheduleListFault = scheduleFaultNone
+	switch fault {
+	case scheduleListError:
+		s.stats.listErrors++
+	case scheduleListDelay:
+		s.stats.listDelays++
+	}
+	return result, fault
+}
+
+func (s *fakeStore) ListDue(_ context.Context, now time.Time) ([]store.Schedule, error) {
+	defer s.endOperation(s.beginOperation())
+	result, fault := s.snapshotDue(now)
+	if fault == scheduleListError {
+		return nil, errScheduleListFailure
+	}
+	if fault == scheduleListDelay {
+		s.recordDelay()
+		time.Sleep(scheduleListDelayDuration)
+	}
+	return result, nil
+}
+
+func (s *fakeStore) Claim(_ context.Context, schedule store.Schedule, nextDueAt time.Time) (bool, error) {
+	defer s.endOperation(s.beginOperation())
+	s.mu.Lock()
+	current, ok := s.schedules[scheduleKey{identity: schedule.Identity, name: schedule.Name}]
+	if !ok || current.ETag != schedule.ETag {
+		s.stats.claimLost++
+		s.mu.Unlock()
+		return false, nil
+	}
+	fault := s.scheduleClaimFaults[schedule.Identity]
+	delete(s.scheduleClaimFaults, schedule.Identity)
+	if fault == scheduleClaimError {
+		s.stats.claimErrors++
+		s.mu.Unlock()
+		return false, errScheduleClaimFailure
+	}
+	if nextDueAt.IsZero() {
+		delete(s.schedules, scheduleKey{identity: schedule.Identity, name: schedule.Name})
+	} else {
+		current.DueAt = nextDueAt
+		current.ETag++
+		s.schedules[scheduleKey{identity: schedule.Identity, name: schedule.Name}] = current
+	}
+	s.stats.claimWon++
+	if fault == scheduleClaimAppliedError {
+		s.stats.claimAppliedErrors++
+	}
+	s.mu.Unlock()
+	s.timerTracker.claim(schedule.Identity, fault != scheduleClaimAppliedError)
+	if fault == scheduleClaimAppliedError {
+		return false, errScheduleClaimAppliedFailure
+	}
+	return true, nil
+}
+
+func (s *fakeStore) Put(_ context.Context, schedule store.Schedule) error {
+	defer s.endOperation(s.beginOperation())
+	s.mu.Lock()
+	key := scheduleKey{identity: schedule.Identity, name: schedule.Name}
+	current, ok := s.schedules[key]
+	schedule.ETag = 1
+	if ok {
+		schedule.ETag = current.ETag + 1
+	}
+	s.schedules[key] = schedule
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *fakeStore) Delete(_ context.Context, id store.Identity, name string) error {
+	defer s.endOperation(s.beginOperation())
+	s.mu.Lock()
+	delete(s.schedules, scheduleKey{identity: id, name: name})
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *fakeStore) recordDelay() {
 	s.mu.Lock()
 	s.delays++
@@ -135,6 +294,12 @@ func (s *fakeStore) delayCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.delays
+}
+
+func (s *fakeStore) scheduleStats() scheduleStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stats
 }
 
 func (s *fakeStore) beginOperation() chan struct{} {

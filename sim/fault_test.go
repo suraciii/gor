@@ -28,6 +28,18 @@ func (c *gatedCounterEntity) Add(ctx context.Context, delta int64) (int64, error
 	return next, nil
 }
 
+func (*gatedCounterEntity) Arm(context.Context, string, time.Duration, time.Duration) error {
+	return nil
+}
+
+func (*gatedCounterEntity) Disarm(context.Context, string) error {
+	return nil
+}
+
+func (*gatedCounterEntity) Tick(context.Context) error {
+	return nil
+}
+
 type testCallResult struct {
 	value int64
 	err   error
@@ -35,7 +47,7 @@ type testCallResult struct {
 
 func TestSim_FaultsAndMailbox(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		backend := newFakeStore()
+		backend := newFakeStore(newTimerTracker())
 		gate := make(chan struct{})
 		rt := gor.New(
 			gor.WithStore(backend),

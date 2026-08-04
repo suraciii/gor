@@ -5,6 +5,7 @@ package sim
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/suraciii/gor/store"
 )
@@ -25,6 +26,14 @@ func (l *eventLog) addDecisionEvent(format string, args ...any) {
 
 func (l *eventLog) addCallDecision(nodes []int, id store.Identity, plan faultPlan, deltas []int64) {
 	l.addDecisionEvent("call nodes=[%s] entity=%s/%s deltas=[%s] fault=%s", formatIntList(nodes), id.Type, id.Key, formatInt64List(deltas), plan.eventName())
+}
+
+func (l *eventLog) addScheduleDecision(node int, id store.Identity, name string, delay, interval time.Duration, fault scheduleFaultKind) {
+	l.addDecisionEvent("schedule node=%d entity=%s/%s name=%s after=%s every=%s fault=%s", node, id.Type, id.Key, name, delay, interval, fault.eventName())
+}
+
+func (l *eventLog) addDisarmDecision(node int, id store.Identity, name string) {
+	l.addDecisionEvent("disarm node=%d entity=%s/%s name=%s", node, id.Type, id.Key, name)
 }
 
 func (l *eventLog) addCrashDecision(node int) {
@@ -59,6 +68,14 @@ func (l *eventLog) addState(id store.Identity, value int64) {
 	l.add("     observe state %s/%s=%d", id.Type, id.Key, value)
 }
 
+func (l *eventLog) addScheduleObservation(stats scheduleStats, deliveries int) {
+	l.add("     observe schedules list-calls=%d claim-won=%d claim-lost=%d deliveries=%d list-errors=%d list-delays=%d claim-errors=%d claim-applied-errors=%d", stats.listCalls, stats.claimWon, stats.claimLost, deliveries, stats.listErrors, stats.listDelays, stats.claimErrors, stats.claimAppliedErrors)
+}
+
+func (l *eventLog) addScheduleOutcome(operation string, node int, outcome string) {
+	l.add("     observe %s node=%d outcome=%s", operation, node, outcome)
+}
+
 func (p faultPlan) eventName() string {
 	parts := make([]string, 0, 2)
 	if p.read.kind != faultNone {
@@ -85,6 +102,21 @@ func (f faultSpec) eventName(operation string) string {
 		return fmt.Sprintf("delay.%s=%s", operation, f.delay)
 	default:
 		panic("fault has no event name")
+	}
+}
+
+func (f scheduleFaultKind) eventName() string {
+	switch f {
+	case scheduleListError:
+		return "schedule.list.error"
+	case scheduleListDelay:
+		return "schedule.list.delay"
+	case scheduleClaimError:
+		return "schedule.claim.error"
+	case scheduleClaimAppliedError:
+		return "schedule.claim.applied-then-error"
+	default:
+		return "none"
 	}
 }
 

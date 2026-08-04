@@ -23,16 +23,18 @@ type clusterNode struct {
 
 type simulationCluster struct {
 	backend *fakeStore
+	tracker *timerTracker
 	nodes   []*clusterNode
 }
 
-func newSimulationCluster(backend *fakeStore, count int) (*simulationCluster, error) {
+func newSimulationCluster(backend *fakeStore, count int, tracker *timerTracker) (*simulationCluster, error) {
 	cluster := &simulationCluster{
 		backend: backend,
+		tracker: tracker,
 		nodes:   make([]*clusterNode, count),
 	}
 	for id := range cluster.nodes {
-		rt, err := newCounterRuntime(backend)
+		rt, err := newCounterRuntime(backend, tracker)
 		if err != nil {
 			cluster.close()
 			return nil, err
@@ -72,7 +74,7 @@ func (c *simulationCluster) restart(id int) error {
 	if node.rt != nil {
 		return fmt.Errorf("node %d is already running", id)
 	}
-	rt, err := newCounterRuntime(c.backend)
+	rt, err := newCounterRuntime(c.backend, c.tracker)
 	if err != nil {
 		return err
 	}
@@ -113,12 +115,15 @@ const (
 	clusterCall clusterAction = iota
 	clusterCrash
 	clusterRestart
+	clusterSchedule
+	clusterDisarm
 )
 
 func chooseClusterAction(rng *rand.Rand, cluster *simulationCluster) clusterAction {
-	actions := make([]clusterAction, 0, 3)
-	if len(cluster.liveNodeIDs()) > 0 {
-		actions = append(actions, clusterCall, clusterCrash)
+	liveNodeIDs := cluster.liveNodeIDs()
+	actions := make([]clusterAction, 0, 5)
+	if len(liveNodeIDs) > 0 {
+		actions = append(actions, clusterCall, clusterCrash, clusterSchedule, clusterDisarm)
 	}
 	if len(cluster.stoppedNodeIDs()) > 0 {
 		actions = append(actions, clusterRestart)

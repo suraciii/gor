@@ -28,10 +28,16 @@ const (
 
 type counter interface {
 	Add(context.Context, int64) (int64, error)
+	Arm(context.Context, string, time.Duration, time.Duration) error
+	Disarm(context.Context, string) error
+	Tick(context.Context) error
 }
 
 type counterEntity struct {
-	value gor.State[int64]
+	value    gor.State[int64]
+	id       gor.Identity
+	schedule gor.Schedule
+	tracker  *timerTracker
 }
 
 func (c *counterEntity) Add(ctx context.Context, delta int64) (int64, error) {
@@ -40,6 +46,23 @@ func (c *counterEntity) Add(ctx context.Context, delta int64) (int64, error) {
 		return 0, err
 	}
 	return next, nil
+}
+
+func (c *counterEntity) Arm(ctx context.Context, name string, delay, interval time.Duration) error {
+	when := gor.After(delay)
+	if interval > 0 {
+		when = gor.Every(interval)
+	}
+	return c.schedule.Set(ctx, name, when, "Tick")
+}
+
+func (c *counterEntity) Disarm(ctx context.Context, name string) error {
+	return c.schedule.Cancel(ctx, name)
+}
+
+func (c *counterEntity) Tick(context.Context) error {
+	c.tracker.deliver(storeIdentity(c.id))
+	return nil
 }
 
 type counterProxy struct {
@@ -53,16 +76,36 @@ func (p *counterProxy) Add(ctx context.Context, delta int64) (int64, error) {
 	return value, err
 }
 
+func (p *counterProxy) Arm(ctx context.Context, name string, delay, interval time.Duration) error {
+	return p.invoker.Invoke(ctx, p.id, "Arm", []any{name, delay, interval}, nil)
+}
+
+func (p *counterProxy) Disarm(ctx context.Context, name string) error {
+	return p.invoker.Invoke(ctx, p.id, "Disarm", []any{name}, nil)
+}
+
+func (p *counterProxy) Tick(ctx context.Context) error {
+	return p.invoker.Invoke(ctx, p.id, "Tick", nil, nil)
+}
+
 func dispatchCounter(ctx context.Context, instance counter, method string, args []any, reply any) error {
-	if method != "Add" {
+	switch method {
+	case "Add":
+		value, err := instance.Add(ctx, args[0].(int64))
+		if err != nil {
+			return err
+		}
+		*(reply.(*int64)) = value
+		return nil
+	case "Arm":
+		return instance.Arm(ctx, args[0].(string), args[1].(time.Duration), args[2].(time.Duration))
+	case "Disarm":
+		return instance.Disarm(ctx, args[0].(string))
+	case "Tick":
+		return instance.Tick(ctx)
+	default:
 		return fmt.Errorf("unknown method %q", method)
 	}
-	value, err := instance.Add(ctx, args[0].(int64))
-	if err != nil {
-		return err
-	}
-	*(reply.(*int64)) = value
-	return nil
 }
 
 func installCounterType(rt *gor.Runtime) error {
@@ -75,13 +118,16 @@ func registerCounter(rt *gor.Runtime, factory func(*gor.Binder) counter) error {
 	return gor.Register[counter](rt, factory)
 }
 
-func installCounter(rt *gor.Runtime) error {
+func installCounterWithTracker(rt *gor.Runtime, tracker *timerTracker) error {
 	if err := installCounterType(rt); err != nil {
 		return err
 	}
 	return registerCounter(rt, func(b *gor.Binder) counter {
 		return &counterEntity{
-			value: gor.NewState[int64](b, "value"),
+			value:    gor.NewState[int64](b, "value"),
+			id:       gor.Self(b),
+			schedule: gor.NewSchedule(b),
+			tracker:  tracker,
 		}
 	})
 }
@@ -91,13 +137,14 @@ func newRuntime(backend *fakeStore) *gor.Runtime {
 		gor.WithStore(backend),
 		gor.WithIdleTimeout(0),
 		gor.WithEvictionInterval(0),
+		gor.WithScheduleInterval(simulationStepDuration),
 		gor.WithMailboxCapacity(4),
 	)
 }
 
-func newCounterRuntime(backend *fakeStore) (*gor.Runtime, error) {
+func newCounterRuntime(backend *fakeStore, tracker *timerTracker) (*gor.Runtime, error) {
 	rt := newRuntime(backend)
-	if err := installCounter(rt); err != nil {
+	if err := installCounterWithTracker(rt, tracker); err != nil {
 		rt.Close()
 		return nil, err
 	}
@@ -135,6 +182,21 @@ func chooseFaultPlan(rng *rand.Rand) faultPlan {
 		return faultPlan{write: faultSpec{kind: faultDelay, delay: delay}}
 	}
 	return faultPlan{}
+}
+
+func chooseScheduleFault(rng *rand.Rand) scheduleFaultKind {
+	switch rng.IntN(5) {
+	case 0:
+		return scheduleFaultNone
+	case 1:
+		return scheduleListError
+	case 2:
+		return scheduleListDelay
+	case 3:
+		return scheduleClaimError
+	default:
+		return scheduleClaimAppliedError
+	}
 }
 
 func classifyOutcome(err error) (string, error) {
@@ -235,8 +297,9 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 	log := eventLog{}
 	log.add("seed=%08x", seed)
 
-	backend := newFakeStore()
-	cluster, err := newSimulationCluster(backend, nodeCount)
+	timerTracker := newTimerTracker()
+	backend := newFakeStore(timerTracker)
+	cluster, err := newSimulationCluster(backend, nodeCount, timerTracker)
 	if err != nil {
 		return log.String(), err
 	}
@@ -301,6 +364,44 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 			if err := cluster.restart(nodeID); err != nil {
 				return log.String(), fmt.Errorf("step %d: %w", step, err)
 			}
+		case clusterSchedule:
+			liveIDs := cluster.liveNodeIDs()
+			nodeID := liveIDs[rng.IntN(len(liveIDs))]
+			entity := entities[rng.IntN(len(entities))]
+			id := gor.Identity{Type: entity.Type, Key: entity.Key}
+			backend.setFaultPlans(nil)
+			name := "wake-" + entity.Key
+			delay := time.Duration(rng.IntN(3)+1) * simulationStepDuration
+			interval := time.Duration(0)
+			if rng.IntN(2) == 1 {
+				interval = time.Duration(rng.IntN(2)+2) * simulationStepDuration
+				delay = interval
+			}
+			fault := chooseScheduleFault(rng)
+			log.addScheduleDecision(nodeID, entity, name, delay, interval, fault)
+			err := cluster.nodes[nodeID].rt.Invoke(context.Background(), id, "Arm", []any{name, delay, interval}, nil)
+			outcome, classifyErr := classifyOutcome(err)
+			if classifyErr != nil {
+				return log.String(), fmt.Errorf("step %d: schedule %s: %w", step, name, classifyErr)
+			}
+			log.addScheduleOutcome("schedule", nodeID, outcome)
+			if err == nil {
+				backend.setScheduleFault(storeIdentity(id), fault)
+			}
+		case clusterDisarm:
+			liveIDs := cluster.liveNodeIDs()
+			nodeID := liveIDs[rng.IntN(len(liveIDs))]
+			entity := entities[rng.IntN(len(entities))]
+			id := gor.Identity{Type: entity.Type, Key: entity.Key}
+			name := "wake-" + entity.Key
+			backend.setFaultPlans(nil)
+			log.addDisarmDecision(nodeID, entity, name)
+			err := cluster.nodes[nodeID].rt.Invoke(context.Background(), id, "Disarm", []any{name}, nil)
+			outcome, classifyErr := classifyOutcome(err)
+			if classifyErr != nil {
+				return log.String(), fmt.Errorf("step %d: disarm %s: %w", step, name, classifyErr)
+			}
+			log.addScheduleOutcome("disarm", nodeID, outcome)
 		}
 
 		synctest.Wait()
@@ -313,7 +414,16 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 		if err := history.check(); err != nil {
 			return log.String(), fmt.Errorf("step %d: %w", step, err)
 		}
+		log.addScheduleObservation(backend.scheduleStats(), timerTracker.deliveryCount())
+		if err := timerTracker.check(); err != nil {
+			return log.String(), fmt.Errorf("step %d: %w", step, err)
+		}
 		time.Sleep(simulationStepDuration)
+		synctest.Wait()
+	}
+	if err := timerTracker.check(); err != nil {
+		log.addScheduleObservation(backend.scheduleStats(), timerTracker.deliveryCount())
+		return log.String(), err
 	}
 	return log.String(), nil
 }

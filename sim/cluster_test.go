@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/suraciii/gor"
 	"github.com/suraciii/gor/store"
@@ -26,6 +27,18 @@ func (c *dualActivationEntity) Add(ctx context.Context, delta int64) (int64, err
 		return 0, err
 	}
 	return next, nil
+}
+
+func (*dualActivationEntity) Arm(context.Context, string, time.Duration, time.Duration) error {
+	return nil
+}
+
+func (*dualActivationEntity) Disarm(context.Context, string) error {
+	return nil
+}
+
+func (*dualActivationEntity) Tick(context.Context) error {
+	return nil
 }
 
 func newDualActivationRuntime(backend *fakeStore, gate <-chan struct{}, entered chan<- struct{}) (*gor.Runtime, error) {
@@ -49,7 +62,7 @@ func newDualActivationRuntime(backend *fakeStore, gate <-chan struct{}, entered 
 
 func TestSim_DoubleActivationRejectsETagConflict(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		backend := newFakeStore()
+		backend := newFakeStore(newTimerTracker())
 		gate := make(chan struct{})
 		entered := make(chan struct{}, 2)
 		first, err := newDualActivationRuntime(backend, gate, entered)
@@ -111,8 +124,8 @@ func TestSim_DoubleActivationRejectsETagConflict(t *testing.T) {
 
 func TestSim_CrashRestartRestoresState(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		backend := newFakeStore()
-		rt, err := newCounterRuntime(backend)
+		backend := newFakeStore(newTimerTracker())
+		rt, err := newCounterRuntime(backend, newTimerTracker())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -125,7 +138,7 @@ func TestSim_CrashRestartRestoresState(t *testing.T) {
 		rt.Kill()
 		synctest.Wait()
 
-		rt, err = newCounterRuntime(backend)
+		rt, err = newCounterRuntime(backend, newTimerTracker())
 		if err != nil {
 			t.Fatal(err)
 		}

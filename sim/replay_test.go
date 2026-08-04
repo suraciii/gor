@@ -4,6 +4,7 @@ package sim
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -29,9 +30,51 @@ func TestSim_ReplaysEventLog(t *testing.T) {
 }
 
 func TestSim_ChecksSeedBatch(t *testing.T) {
+	seenStats := make(map[string]bool)
 	for offset := uint64(0); offset < 64; offset++ {
-		runSimulationInBubble(t, simulationSeed+offset, clusterNodeCount)
+		output := runSimulationInBubble(t, simulationSeed+offset, clusterNodeCount)
+		for _, stat := range []string{
+			"claim-lost",
+			"list-errors",
+			"list-delays",
+			"claim-errors",
+			"claim-applied-errors",
+		} {
+			if scheduleStatPositive(output, stat) {
+				seenStats[stat] = true
+			}
+		}
 	}
+	for _, stat := range []string{
+		"claim-lost",
+		"list-errors",
+		"list-delays",
+		"claim-errors",
+		"claim-applied-errors",
+	} {
+		if !seenStats[stat] {
+			t.Fatalf("seed batch never triggered schedule stat %s", stat)
+		}
+	}
+}
+
+func scheduleStatPositive(log, name string) bool {
+	for _, line := range strings.Split(log, "\n") {
+		if !strings.Contains(line, "observe schedules ") {
+			continue
+		}
+		for _, field := range strings.Fields(line) {
+			prefix := name + "="
+			if !strings.HasPrefix(field, prefix) {
+				continue
+			}
+			value, err := strconv.Atoi(strings.TrimPrefix(field, prefix))
+			if err == nil && value > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func runSimulationInBubble(t *testing.T, seed uint64, nodeCount int) string {
