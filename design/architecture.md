@@ -21,17 +21,15 @@
 
 `timer` 只认接口：一张表、一个 `Clock`、一个「能发起调用」的东西。`gor` 把 `store` 的实现和 `runtime` 接到它上面。
 
-依赖只向下。`runtime` 不知道 `cluster` 存在——集群能力通过 `runtime` 暴露的定位接口注入：
+依赖只向下。`runtime` 不知道 `cluster` 存在，而且**不需要为它留任何接口**。
 
-```go
-type Locator interface {
-    Locate(ctx context.Context, id Identity) (Node, error)
-}
-```
+路由发生在 `gor` 这一层：每次调用先问环这个 Identity 归谁，是自己就交给 `runtime`，是别人就转发（见 [cluster.md](cluster.md)）。`runtime` 那边的接口一个字都不用改——它管的是「同一个 key 上的调用串行」，跟这个 key 为什么落在本节点无关。
 
 `runtime` 同样不导入 `store`——实体状态由 `gor` 在工厂闭包里读写，`runtime` 只交出 Identity、拿回一个不透明的实例（见 [persistence.md](persistence.md)）。
 
-单节点模式注入一个恒返回本节点的实现。这不是为了「留扩展点」，是为了让第 1 到 5 步能在完全没有分布式代码的前提下被完整验证。
+`runtime` 唯一因为集群多出来的东西，是一个按 Identity 卸掉激活的入口：视图变化后 `gor` 用它卸掉不再属于本节点的实体。它跟空闲驱逐走同一条路径，也不透露集群的存在。
+
+**单节点模式不注入任何东西**，`gor` 直接走本地那条分支。不为「留扩展点」造一个恒返回本节点的假实现——那种实现是活着的死代码，第 1 到 5 步一行都不需要它。
 
 ## 包职责
 
@@ -42,7 +40,7 @@ type Locator interface {
 | `mail` | 单个实体的串行执行队列 | 知道实体是什么 |
 | `store` | 状态读写 + CAS 表抽象及各后端实现 | 知道实体语义 |
 | `timer` | 扫到期、抢占、投递（见 [timers.md](timers.md)） | 知道实体语义 |
-| `cluster` | membership、一致性哈希环、远端定位 | 执行实体方法 |
+| `cluster` | 成员表、节点状态机、视图轮询、一致性哈希环（见 [cluster.md](cluster.md)） | 执行实体方法、转发 |
 | `transport` | 节点间字节搬运 | 序列化格式的语义 |
 | `sim` | 假网络、假时钟、故障注入、不变量断言 | 生产代码路径 |
 | `cmd/gorgen` | 代码生成器 | 运行时行为 |

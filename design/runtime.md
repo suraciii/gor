@@ -51,14 +51,14 @@ type entry struct {
 ## 请求分发
 
 ```
-调用 ──▶ Locator.Locate(id) ──▶ 本节点？ ──是──▶ 本地目录 ──▶ mailbox
-                                    │
-                                    否
-                                    ▼
-                              transport.Send ──▶ 远端节点
+调用 ──▶ 环：这个 id 归谁？ ──是自己──▶ runtime ──▶ 本地目录 ──▶ mailbox
+              （在 gor 里）        │
+                                 是别人
+                                   ▼
+                             transport.Send ──▶ 远端节点
 ```
 
-单节点模式下 `Locate` 永远返回本节点，右边整条分支的代码不参与。
+**分岔在 `gor` 里，不在 `runtime` 里。** `runtime` 只看得见左边那条：给它一个 Identity，它找到或建起激活，把调用投进 mailbox。它不知道右边存在，单节点模式下也就没有任何多余的代码要绕过（见 [cluster.md](cluster.md)）。
 
 ## 重入
 
