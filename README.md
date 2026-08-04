@@ -44,6 +44,7 @@ Go 生态在这个位置有个空缺。把「有状态、崩溃透明、可嵌�
 - [design/](design/README.md) —— 架构、各子系统设计、技术取舍。
 - [research/](research/README.md) —— 支撑上述决策的实测证据（Orleans 源码实测、生态现状、Go 侧能力边界）。
 - [ROADMAP.md](ROADMAP.md) —— MVP 切分与验收标准。
+- [examples/shadow/](examples/shadow/) —— 一个跑得起来的设备影子服务。写它撞出来的 API 摩擦记在 [FINDINGS.md](FINDINGS.md)。
 
 ## 开发
 
