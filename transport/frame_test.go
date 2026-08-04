@@ -80,8 +80,8 @@ func TestReadFrameRejectsOversizedPayloadBeforeReadingPayload(t *testing.T) {
 	reader := &headerOnlyReader{header: header}
 
 	_, err := ReadFrame(reader)
-	if !errors.Is(err, ErrPayloadTooLarge) {
-		t.Fatalf("error = %v, want ErrPayloadTooLarge", err)
+	if !errors.Is(err, errPayloadTooLarge) {
+		t.Fatalf("error = %v, want errPayloadTooLarge", err)
 	}
 	if reader.payloadRead {
 		t.Fatal("ReadFrame attempted to read or allocate an oversized payload")
@@ -93,8 +93,8 @@ func TestReadFrameRejectsInvalidType(t *testing.T) {
 	header[12] = 99
 
 	_, err := ReadFrame(bytes.NewReader(header))
-	if !errors.Is(err, ErrInvalidFrameType) {
-		t.Fatalf("error = %v, want ErrInvalidFrameType", err)
+	if !errors.Is(err, errInvalidFrameType) {
+		t.Fatalf("error = %v, want errInvalidFrameType", err)
 	}
 }
 
@@ -141,8 +141,8 @@ func TestWriteFrameRejectsInvalidTypeAndOversizedPayload(t *testing.T) {
 		frame Frame
 		want  error
 	}{
-		{name: "invalid type", frame: Frame{Type: 99}, want: ErrInvalidFrameType},
-		{name: "oversized payload", frame: Frame{Type: FrameRequest, Payload: make([]byte, MaxPayloadSize+1)}, want: ErrPayloadTooLarge},
+		{name: "invalid type", frame: Frame{Type: 99}, want: errInvalidFrameType},
+		{name: "oversized payload", frame: Frame{Type: FrameRequest, Payload: make([]byte, MaxPayloadSize+1)}, want: errPayloadTooLarge},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var wire bytes.Buffer

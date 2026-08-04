@@ -4,23 +4,28 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 )
 
-var errConnectionClosed = errors.New("transport connection closed")
-
 type connection struct {
-	conn net.Conn
+	conn          net.Conn
+	handler       Handler
+	handlerCtx    context.Context
+	handlerCancel context.CancelFunc
+	onDone        func(*connection)
 
-	requests   chan *sendRequest
-	responses  chan Frame
-	cancels    chan *sendRequest
-	writes     chan Frame
-	dead       chan error
-	stop       chan struct{}
-	done       chan struct{}
-	readerDone chan struct{}
-	writerDone chan struct{}
-	err        error
+	requests       chan *sendRequest
+	responses      chan Frame
+	handlerResults chan Frame
+	cancels        chan *sendRequest
+	writes         chan Frame
+	dead           chan error
+	stop           chan struct{}
+	done           chan struct{}
+	readerDone     chan struct{}
+	writerDone     chan struct{}
+	handlers       sync.WaitGroup
+	err            error
 }
 
 type sendRequest struct {
@@ -35,22 +40,37 @@ type sendResult struct {
 }
 
 func newConnection(conn net.Conn) *connection {
+	c := newConnectionState(conn, context.Background(), nil, nil)
+	c.start()
+	return c
+}
+
+func newConnectionState(conn net.Conn, parent context.Context, handler Handler, onDone func(*connection)) *connection {
+	handlerCtx, handlerCancel := context.WithCancel(parent)
 	c := &connection{
-		conn:       conn,
-		requests:   make(chan *sendRequest),
-		responses:  make(chan Frame),
-		cancels:    make(chan *sendRequest),
-		writes:     make(chan Frame),
-		dead:       make(chan error, 1),
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
-		readerDone: make(chan struct{}),
-		writerDone: make(chan struct{}),
+		conn:           conn,
+		handler:        handler,
+		handlerCtx:     handlerCtx,
+		handlerCancel:  handlerCancel,
+		onDone:         onDone,
+		requests:       make(chan *sendRequest),
+		responses:      make(chan Frame),
+		handlerResults: make(chan Frame),
+		cancels:        make(chan *sendRequest),
+		writes:         make(chan Frame),
+		dead:           make(chan error, 1),
+		stop:           make(chan struct{}),
+		done:           make(chan struct{}),
+		readerDone:     make(chan struct{}),
+		writerDone:     make(chan struct{}),
 	}
+	return c
+}
+
+func (c *connection) start() {
 	go c.readLoop()
 	go c.writeLoop()
 	go c.ownerLoop()
-	return c
 }
 
 func (c *connection) Send(ctx context.Context, payload []byte) ([]byte, error) {
@@ -142,7 +162,16 @@ func (c *connection) ownerLoop() {
 		case writeCh <- head:
 			queue = queue[1:]
 		case frame := <-c.responses:
-			complete(pending, frame)
+			switch frame.Type {
+			case FrameRequest:
+				if c.handler != nil {
+					c.startHandler(frame)
+				}
+			case FrameResponse, FrameError:
+				complete(pending, frame)
+			}
+		case frame := <-c.handlerResults:
+			queue = append(queue, frame)
 		case request := <-c.cancels:
 			// Drop timed-out requests so a silent peer cannot grow pending forever.
 			delete(pending, request.id)
@@ -154,9 +183,6 @@ func (c *connection) ownerLoop() {
 }
 
 func complete(pending map[uint64]*sendRequest, frame Frame) {
-	if frame.Type != FrameResponse && frame.Type != FrameError {
-		return
-	}
 	request, ok := pending[frame.ID]
 	if !ok {
 		return
@@ -169,10 +195,25 @@ func complete(pending map[uint64]*sendRequest, frame Frame) {
 	request.result <- sendResult{payload: frame.Payload}
 }
 
+func (c *connection) startHandler(frame Frame) {
+	c.handlers.Add(1)
+	go func() {
+		defer c.handlers.Done()
+		payload, err := c.handler(c.handlerCtx, frame.Payload)
+		response := Frame{ID: frame.ID, Type: FrameResponse, Payload: payload}
+		if err != nil {
+			response.Type = FrameError
+			response.Payload = []byte(err.Error())
+		}
+		select {
+		case c.handlerResults <- response:
+		case <-c.stop:
+		}
+	}()
+}
+
 func (c *connection) reportDead(err error) {
-	if err == nil {
-		err = errConnectionClosed
-	}
+	c.handlerCancel()
 	select {
 	case c.dead <- err:
 	case <-c.stop:
@@ -181,13 +222,15 @@ func (c *connection) reportDead(err error) {
 }
 
 func (c *connection) stopWith(err error) {
-	if err == nil {
-		err = errConnectionClosed
-	}
 	c.err = err
+	c.handlerCancel()
 	close(c.stop)
 	_ = c.conn.Close()
+	c.handlers.Wait()
 	<-c.readerDone
 	<-c.writerDone
 	close(c.done)
+	if c.onDone != nil {
+		c.onDone(c)
+	}
 }

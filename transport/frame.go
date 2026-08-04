@@ -13,8 +13,8 @@ const (
 )
 
 var (
-	ErrPayloadTooLarge  = errors.New("transport payload is too large")
-	ErrInvalidFrameType = errors.New("transport frame type is invalid")
+	errPayloadTooLarge  = errors.New("transport payload is too large")
+	errInvalidFrameType = errors.New("transport frame type is invalid")
 )
 
 type FrameType uint8
@@ -39,7 +39,7 @@ func ReadFrame(r io.Reader) (Frame, error) {
 
 	payloadSize := binary.BigEndian.Uint32(header[:4])
 	if uint64(payloadSize) > MaxPayloadSize {
-		return Frame{}, fmt.Errorf("%w: %d bytes", ErrPayloadTooLarge, payloadSize)
+		return Frame{}, fmt.Errorf("%w: %d bytes", errPayloadTooLarge, payloadSize)
 	}
 
 	frame := Frame{
@@ -47,7 +47,7 @@ func ReadFrame(r io.Reader) (Frame, error) {
 		Type: FrameType(header[12]),
 	}
 	if !frame.Type.valid() {
-		return Frame{}, fmt.Errorf("%w: %d", ErrInvalidFrameType, frame.Type)
+		return Frame{}, fmt.Errorf("%w: %d", errInvalidFrameType, frame.Type)
 	}
 
 	frame.Payload = make([]byte, int(payloadSize))
@@ -59,10 +59,10 @@ func ReadFrame(r io.Reader) (Frame, error) {
 
 func WriteFrame(w io.Writer, frame Frame) error {
 	if !frame.Type.valid() {
-		return fmt.Errorf("%w: %d", ErrInvalidFrameType, frame.Type)
+		return fmt.Errorf("%w: %d", errInvalidFrameType, frame.Type)
 	}
 	if uint64(len(frame.Payload)) > MaxPayloadSize {
-		return fmt.Errorf("%w: %d bytes", ErrPayloadTooLarge, len(frame.Payload))
+		return fmt.Errorf("%w: %d bytes", errPayloadTooLarge, len(frame.Payload))
 	}
 
 	var header [frameHeaderSize]byte

@@ -2,9 +2,11 @@ package transport
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"net"
 	"testing"
+	"testing/synctest"
 )
 
 type connectionResult struct {
@@ -250,5 +252,124 @@ func TestConnectionCloseWaitsForAllLoops(t *testing.T) {
 		default:
 			t.Errorf("%s loop is still running", name)
 		}
+	}
+}
+
+func TestConnectionDiesOnMalformedFrame(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		length uint32
+		typ    byte
+		want   error
+	}{
+		{name: "payload too large", length: ^uint32(0), typ: byte(FrameResponse), want: errPayloadTooLarge},
+		{name: "invalid type", length: 0, typ: 99, want: errInvalidFrameType},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			conn := newConnection(client)
+			t.Cleanup(func() {
+				_ = server.Close()
+				_ = conn.Close()
+			})
+
+			result := make(chan error, 1)
+			go func() {
+				_, err := conn.Send(context.Background(), []byte("request"))
+				result <- err
+			}()
+			request, err := ReadFrame(server)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			header := make([]byte, frameHeaderSize)
+			binary.BigEndian.PutUint32(header[:4], test.length)
+			binary.BigEndian.PutUint64(header[4:12], request.ID)
+			header[12] = test.typ
+			if _, err := server.Write(header); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-result; !errors.Is(err, test.want) {
+				t.Fatalf("Send error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestConnectionHandlersDoNotBlockEachOther(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client, server := net.Pipe()
+		conn := newConnection(client)
+		release := make(chan struct{})
+		released := false
+		slowStarted := make(chan struct{})
+		fastStarted := make(chan struct{})
+		srv := newConnectionState(server, context.Background(), func(_ context.Context, payload []byte) ([]byte, error) {
+			if string(payload) == "slow" {
+				close(slowStarted)
+				<-release
+			} else {
+				close(fastStarted)
+			}
+			return payload, nil
+		}, nil)
+		srv.start()
+		t.Cleanup(func() {
+			if !released {
+				close(release)
+			}
+			_ = conn.Close()
+			_ = srv.Close()
+		})
+
+		slowDone := make(chan error, 1)
+		go func() {
+			_, err := conn.Send(context.Background(), []byte("slow"))
+			slowDone <- err
+		}()
+		synctest.Wait()
+		<-slowStarted
+
+		fastDone := make(chan connectionResult, 1)
+		go func() {
+			payload, err := conn.Send(context.Background(), []byte("fast"))
+			fastDone <- connectionResult{payload: payload, err: err}
+		}()
+		synctest.Wait()
+		select {
+		case <-fastStarted:
+		default:
+			t.Fatal("fast handler was blocked behind slow handler")
+		}
+		synctest.Wait()
+		if result := <-fastDone; result.err != nil || string(result.payload) != "fast" {
+			t.Fatalf("fast result = %#v, want payload fast", result)
+		}
+
+		close(release)
+		released = true
+		synctest.Wait()
+		if err := <-slowDone; err != nil {
+			t.Fatalf("slow Send error = %v", err)
+		}
+	})
+}
+
+func TestConnectionReturnsHandlerErrorAsText(t *testing.T) {
+	client, server := net.Pipe()
+	conn := newConnection(client)
+	srv := newConnectionState(server, context.Background(), func(context.Context, []byte) ([]byte, error) {
+		return nil, errors.New("handler failed")
+	}, nil)
+	srv.start()
+	t.Cleanup(func() {
+		_ = conn.Close()
+		_ = srv.Close()
+	})
+
+	_, err := conn.Send(context.Background(), []byte("request"))
+	if err == nil || err.Error() != "handler failed" {
+		t.Fatalf("Send error = %v, want handler failed", err)
 	}
 }
