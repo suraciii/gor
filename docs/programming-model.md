@@ -163,7 +163,27 @@ OnActivate(ctx context.Context) error     // 从存储恢复状态之后、处�
 OnDeactivate(ctx context.Context) error   // 驱逐之前，最后的落盘机会
 ```
 
-两个都是可选的。
+两个都是可选的：实体上有这个方法就会被调用，没有就不调。
+
+`OnActivate` 返回错误，这次激活就不成立——触发它的那个调用拿到这个错误，下一个调用会重新试一次。
+
+`OnDeactivate` 返回错误改变不了任何事，实体照样消失。这时候已经没有调用方在等了，错误会送到运行时的错误出口（见下）。
+
+## 没人在等的错误
+
+有两件事发生时，没有调用方能收到错误：定时任务到期后方法失败了，和 `OnDeactivate` 失败了。
+
+默认这些错误被丢掉。要看见它们，给运行时配一个出口：
+
+```go
+gor.New(gor.OnError(func(id gor.Identity, method string, err error) {
+    log.Printf("%s.%s: %v", id, method, err)
+}))
+```
+
+运行时只负责把错误送到这里。要不要重试、要不要告警，是你的事。
+
+**这是运行时唯一一处替你吞掉错误的地方。** 别的错误都从方法的返回值回来。
 
 ## 运行时启动
 

@@ -62,13 +62,14 @@
 
 ### 5.5 示例反馈回来的 API 修补
 
-写第一个真实示例时撞出来的三处摩擦，都不大，但都在主路径上：
+写第一个真实示例时撞出来的摩擦，都不大，但都在主路径上：
 
 - `gor.Now(b)` —— Binder 已经攥着注入的 `Clock`，不交出去用户就会写 `time.Now()`。
 - `gor.Ref[T](b, key)` —— 实体调另一个实体不该要求工厂捕获运行时对象。
-- `OnTimerError` —— 定时投递失败现在被无声丢掉，一整类故障对用户不可见。
+- `OnError` —— 定时投递失败现在被无声丢掉，一整类故障对用户不可见。
+- `OnActivate` / `OnDeactivate` —— 文档和运行时的状态机图上都画着，代码里没有。示例想在驱逐发生时说句话都做不到。
 
-前两条见 [design/persistence.md](design/persistence.md)，第三条见 [design/timers.md](design/timers.md)。
+前两条见 [design/persistence.md](design/persistence.md)，第三条见 [design/timers.md](design/timers.md)，第四条见 [design/runtime.md](design/runtime.md)。
 
 **排在第 6 步之前，因为它改的是公开 API。** API 改动越晚越贵，而且示例应用正等着用新签名把 README 写对。
 
