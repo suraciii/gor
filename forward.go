@@ -154,6 +154,15 @@ func (rt *Runtime) handleInvoke(ctx context.Context, request callRequest) ([]byt
 	// Forwarded requests already crossed the ownership decision; execute them locally.
 	invokeErr := publicError(rt.engine.Invoke(ctx, runtimepkg.Identity{Type: request.Type, Key: request.Key}, request.Method, args, reply))
 	if invokeErr != nil {
+		// The handler context belongs to the serving runtime, so cancellation after
+		// shutdown is a runtime outcome rather than caller cancellation.
+		select {
+		case <-rt.done:
+			if errors.Is(invokeErr, context.Canceled) {
+				invokeErr = withCode(ErrRuntimeClosed, invokeErr)
+			}
+		default:
+		}
 		return errorResponse(invokeErr)
 	}
 	encodedReply, err := json.Marshal(reply)

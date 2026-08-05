@@ -73,7 +73,8 @@ func (s State[T]) Get() T {
 // leave the current in-memory value unchanged, but do not establish whether the
 // store wrote the record; callers must not assume the write failed or retry
 // unconditionally. Store errors are returned as well; in particular,
-// errors.Is(err, store.ErrConflict) reports an ETag conflict.
+// errors.Is(err, store.ErrConflict) and errors.Is(err, ErrPersistenceConflict)
+// report an ETag conflict.
 // A store write failure also discards the current entity activation after the
 // containing call completes, so the next call creates a fresh activation.
 // On success, subsequent Get calls return value.

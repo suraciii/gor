@@ -241,6 +241,33 @@ func TestRuntime_HandleRejectsWhileClosing(t *testing.T) {
 	})
 }
 
+func TestRuntime_HandleMapsCanceledServingContextAfterShutdown(t *testing.T) {
+	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
+	defer rt.Close()
+	registerAccount(t, rt)
+	rt.stopServing()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	payload, err := rt.handleInvoke(ctx, callRequest{
+		Kind:   requestKindInvoke,
+		Type:   TypeName[Account](),
+		Key:    "alice",
+		Method: "Balance",
+		Args:   json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("handle error = %v, want nil", err)
+	}
+	var response callResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Error == nil || response.Error.Code != string(ErrRuntimeClosed) {
+		t.Fatalf("response error = %#v, want runtime-closed code", response.Error)
+	}
+}
+
 func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(1200, 0).UTC()

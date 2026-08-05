@@ -10,25 +10,33 @@ import (
 	"github.com/suraciii/gor/store"
 )
 
+// Code is the stable identity of an application or gor framework error.
+// A Code is also an error and can be matched with errors.Is.
 type Code string
 
+// Error returns the code's diagnostic text.
 func (c Code) Error() string {
 	return string(c)
 }
 
+// Code returns c.
 func (c Code) Code() Code {
 	return c
 }
 
+// Is reports whether target is the same Code as c.
 func (c Code) Is(target error) bool {
 	other, ok := target.(Code)
 	return ok && c == other
 }
 
+// Coded exposes the stable Code carried by an error.
 type Coded interface {
 	Code() Code
 }
 
+// CodeOf returns the first Code on err or its single-error unwrap chain. It
+// does not inspect multi-error unwraps such as errors.Join.
 func CodeOf(err error) (Code, bool) {
 	for err != nil {
 		if coded, ok := err.(Coded); ok {
@@ -39,6 +47,8 @@ func CodeOf(err error) (Code, bool) {
 	return "", false
 }
 
+// The framework Code values are a closed set. Applications must declare codes
+// under an owner other than gor.
 const (
 	ErrNoOwner             Code = "gor.no_owner"
 	ErrNodeDead            Code = "gor.node_dead"
