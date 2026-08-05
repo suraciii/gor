@@ -462,9 +462,9 @@ func (e WrongOwnerError) Error() string {
 // errors.Is or errors.As against the original remote error is therefore not
 // applicable.
 //
-// Once the embedded runtime has entered shutdown, it rejects new local entity
-// calls. A direct Invoke may still be admitted during the outer Runtime's
-// closing window before that point.
+// Once local invocation admission has stopped, new local entity calls are
+// rejected. A direct Invoke may still be admitted during the Runtime's closing
+// window before that point.
 func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	if rt.onCall == nil {
 		return rt.invoke(ctx, id, method, args, reply)
@@ -620,12 +620,12 @@ func (rt *Runtime) typeRegistration(name string) (typeRegistration, bool) {
 // context; Close cancels that context while stopping the scheduler, so an
 // in-progress scheduled method receives cancellation. Close waits for both
 // kinds of calls to return. Direct Invoke calls can still be admitted between
-// Done being closed and the embedded runtime entering shutdown, and Close may
+// Done being closed and local invocation admission stopping, and Close may
 // wait for those calls as well.
 //
 // Repeated Close or Kill calls are safe and do not start another shutdown. If
 // Close and Kill run concurrently, the first shutdown mode accepted by the
-// embedded runtime determines whether running invocation contexts are
+// local engine determines whether running invocation contexts are
 // canceled and whether deactivation callbacks run.
 func (rt *Runtime) Close() {
 	rt.shuttingDown.Store(true)
@@ -645,7 +645,7 @@ func (rt *Runtime) Close() {
 // queued invocations, rejects queued work, and skips deactivation callbacks.
 // Unlike Close, Kill does not wait for deactivation callbacks to finish. It is
 // safe to call repeatedly; if it races with Close, the first shutdown mode
-// accepted by the embedded runtime determines the result.
+// accepted by the local engine determines the result.
 func (rt *Runtime) Kill() {
 	rt.shuttingDown.Store(true)
 	rt.stopServing()
