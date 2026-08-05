@@ -8,8 +8,13 @@ import (
 	"github.com/suraciii/gor/examples/shadow/gorgen"
 )
 
-func LogBackgroundError(id gor.Identity, method string, err error) {
-	log.Printf("%s/%s.%s failed: %v", id.Type, id.Key, method, err)
+func LogBackgroundError(event gor.BackgroundError) {
+	switch source := event.Source.(type) {
+	case gor.ScheduledInvocation:
+		log.Printf("%s/%s.%s failed: %v", event.Identity.Type, event.Identity.Key, source.Method, event.Err)
+	case gor.Deactivation:
+		log.Printf("%s/%s deactivation (%v) failed: %v", event.Identity.Type, event.Identity.Key, source.Reason, event.Err)
+	}
 }
 
 func Register(rt *gor.Runtime) error {

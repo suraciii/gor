@@ -353,10 +353,10 @@ func TestRuntime_ClusterDeathSkipsOnDeactivate(t *testing.T) {
 			WithViewInterval(time.Hour),
 			WithTransport(network.add("node-a")),
 		)
-		errorsSeen := make(chan reportedError, 1)
+		errorsSeen := make(chan BackgroundError, 1)
 		first := mustNew(t, append(firstOptions,
-			OnError(func(id Identity, method string, err error) {
-				errorsSeen <- reportedError{id: id, method: method, err: err}
+			OnError(func(event BackgroundError) {
+				errorsSeen <- event
 			}),
 		)...)
 		deactivateCalls := new(atomic.Int32)

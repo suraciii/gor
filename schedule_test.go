@@ -139,27 +139,21 @@ func installScheduledAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int
 	}
 }
 
-type scheduleErrorEvent struct {
-	id     Identity
-	method string
-	err    error
-}
-
 func TestSchedule_OnErrorReceivesInvocationFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(0, 0).UTC()
 		fakeClock := clock.NewFake(start)
 		backend := store.NewMemory()
 		wakeErr := errors.New("scheduled wake failed")
-		errorsSeen := make(chan scheduleErrorEvent, 1)
+		errorsSeen := make(chan BackgroundError, 1)
 		rt := mustNew(t,
 			WithStore(backend),
 			WithClock(fakeClock),
 			WithIdleTimeout(5*time.Second),
 			WithEvictionInterval(time.Second),
 			WithScheduleInterval(time.Second),
-			OnError(func(id Identity, method string, err error) {
-				errorsSeen <- scheduleErrorEvent{id: id, method: method, err: err}
+			OnError(func(event BackgroundError) {
+				errorsSeen <- event
 			}),
 		)
 		defer rt.Close()
@@ -173,9 +167,10 @@ func TestSchedule_OnErrorReceivesInvocationFailure(t *testing.T) {
 
 		select {
 		case got := <-errorsSeen:
+			source, ok := got.Source.(ScheduledInvocation)
 			wantID := Identity{Type: TypeName[scheduledAccount](), Key: "alice"}
-			if got.id != wantID || got.method != "Wake" || !errors.Is(got.err, wakeErr) {
-				t.Fatalf("OnError event = %#v, want id %v, method Wake, error %v", got, wantID, wakeErr)
+			if !ok || got.Identity != wantID || source.Method != "Wake" || !errors.Is(got.Err, wakeErr) {
+				t.Fatalf("OnError event = %#v, want identity %v, ScheduledInvocation{Method: Wake}, error %v", got, wantID, wakeErr)
 			}
 		default:
 			t.Fatal("OnError did not receive scheduled invocation failure")
@@ -214,15 +209,15 @@ func TestSchedule_DropsCancellationOnRuntimeClose(t *testing.T) {
 		fakeClock := clock.NewFake(start)
 		backend := store.NewMemory()
 		wakeStarted := make(chan struct{})
-		errorsSeen := make(chan scheduleErrorEvent, 1)
+		errorsSeen := make(chan BackgroundError, 1)
 		rt := mustNew(t,
 			WithStore(backend),
 			WithClock(fakeClock),
 			WithIdleTimeout(5*time.Second),
 			WithEvictionInterval(time.Second),
 			WithScheduleInterval(time.Second),
-			OnError(func(id Identity, method string, err error) {
-				errorsSeen <- scheduleErrorEvent{id: id, method: method, err: err}
+			OnError(func(event BackgroundError) {
+				errorsSeen <- event
 			}),
 		)
 		installScheduledAccount(t, rt, new(atomic.Int32), scheduledAccountConfig{wakeStarted: wakeStarted})

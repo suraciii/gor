@@ -195,12 +195,6 @@ func installLifecycleAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int
 	}
 }
 
-type reportedError struct {
-	id     Identity
-	method string
-	err    error
-}
-
 type scopeAccount interface {
 	CreatedAt(context.Context) (time.Time, error)
 	ForwardDeposit(context.Context, int64) (int64, error)
@@ -335,14 +329,14 @@ func TestLifecycle_OnActivateFailureDoesNotEstablishActivation(t *testing.T) {
 func TestLifecycle_OnDeactivateFailureReportsAndRemovesActivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		deactivateErr := errors.New("deactivate failed")
-		errorsSeen := make(chan reportedError, 1)
+		errorsSeen := make(chan BackgroundError, 1)
 		fakeClock := clock.NewFake(time.Unix(0, 0).UTC())
 		rt := mustNew(t,
 			WithClock(fakeClock),
 			WithIdleTimeout(time.Second),
 			WithEvictionInterval(time.Second),
-			OnError(func(id Identity, method string, err error) {
-				errorsSeen <- reportedError{id: id, method: method, err: err}
+			OnError(func(event BackgroundError) {
+				errorsSeen <- event
 			}),
 		)
 		defer rt.Close()
@@ -366,8 +360,12 @@ func TestLifecycle_OnDeactivateFailureReportsAndRemovesActivation(t *testing.T) 
 		}
 		select {
 		case got := <-errorsSeen:
-			if got.id != id || got.method != "OnDeactivate" || !errors.Is(got.err, deactivateErr) {
-				t.Fatalf("reported error = %#v, want id %v, method OnDeactivate, error %v", got, id, deactivateErr)
+			source, ok := got.Source.(Deactivation)
+			if !ok {
+				t.Fatalf("reported source = %#v, want Deactivation", got.Source)
+			}
+			if got.Identity != id || source.Reason != Idle || !errors.Is(got.Err, deactivateErr) {
+				t.Fatalf("reported error = %#v, want identity %v, Deactivation{Reason: Idle}, error %v", got, id, deactivateErr)
 			}
 		default:
 			t.Fatal("OnDeactivate error was not reported")
@@ -377,12 +375,12 @@ func TestLifecycle_OnDeactivateFailureReportsAndRemovesActivation(t *testing.T) 
 
 func TestLifecycle_KillSkipsOnDeactivate(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		errorsSeen := make(chan reportedError, 1)
+		errorsSeen := make(chan BackgroundError, 1)
 		rt := mustNew(t,
 			WithIdleTimeout(0),
 			WithEvictionInterval(0),
-			OnError(func(id Identity, method string, err error) {
-				errorsSeen <- reportedError{id: id, method: method, err: err}
+			OnError(func(event BackgroundError) {
+				errorsSeen <- event
 			}),
 		)
 		defer rt.Close()

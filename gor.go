@@ -64,6 +64,39 @@ type Scope interface {
 	scopeRuntime() *Runtime
 }
 
+// BackgroundError reports a failure of an application callback that has no
+// caller waiting for its result: a claimed scheduled invocation, or a normal
+// deactivation hook. Identity is the affected entity, Err is the callback's
+// error, and Source identifies which kind of callback failed.
+type BackgroundError struct {
+	Identity Identity
+	Err      error
+	Source   ErrorSource
+}
+
+// ErrorSource identifies the kind of callback that produced a BackgroundError.
+// Its unexported method seals the set: only the gor package can add sources,
+// so application code can branch on the concrete type without a fallback.
+type ErrorSource interface {
+	errorSource()
+}
+
+// ScheduledInvocation is the source of a failure from a claimed scheduled
+// invocation. Method is the entity method that was invoked.
+type ScheduledInvocation struct {
+	Method string
+}
+
+func (ScheduledInvocation) errorSource() {}
+
+// Deactivation is the source of a failure from a normal deactivation hook.
+// Reason is the reason of that deactivation.
+type Deactivation struct {
+	Reason DeactivationReason
+}
+
+func (Deactivation) errorSource() {}
+
 // Activatable is implemented by an entity that needs a hook after its state is
 // loaded and before its first method call. An OnActivate error prevents that
 // activation from being established and is returned by the triggering call.
@@ -91,7 +124,7 @@ type Runtime struct {
 	store            store.Store
 	scheduleStore    store.ScheduleStore
 	clock            clock.Clock
-	onError          func(Identity, string, error)
+	onError          func(BackgroundError)
 	onCall           func(CallObservation)
 	poller           *timer.Poller
 	transport        transport.Transport
@@ -124,7 +157,7 @@ type Config struct {
 	ScheduleStore     store.ScheduleStore
 	ScheduleInterval  time.Duration
 	Transport         transport.Transport
-	OnError           func(Identity, string, error)
+	OnError           func(BackgroundError)
 	OnCall            func(CallObservation)
 	MemberStore       store.MemberStore
 	NodeAddr          string
@@ -332,12 +365,15 @@ func WithTransport(value transport.Transport) Option {
 	}
 }
 
-// OnError sets the callback for errors from background scheduled invocations
-// and normal OnDeactivate hooks. If omitted, those errors are not reported.
-// The callback may run asynchronously and concurrently with application code;
-// it is not called for ordinary foreground Invoke errors. Cancellation errors
-// from scheduled invocations during shutdown are not reported.
-func OnError(f func(id Identity, method string, err error)) Option {
+// OnError sets the callback for failures of background application callbacks:
+// claimed scheduled invocations and normal OnDeactivate hooks. If omitted,
+// those errors are not reported. The callback may run asynchronously and
+// concurrently with application code; it is not called for ordinary foreground
+// Invoke errors. A scheduled invocation whose delivery is canceled because the
+// poller's context was canceled during shutdown is not reported. ListDue and
+// Claim failures are not reported either. Event sources are sealed: branch on
+// the concrete type of Source, never on method-name strings.
+func OnError(f func(BackgroundError)) Option {
 	return func(config *Config) {
 		config.OnError = f
 	}
@@ -597,7 +633,11 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 			}
 			err := deactivatable.OnDeactivate(ctx, reason)
 			if err != nil && rt.onError != nil {
-				rt.onError(Identity(id), "OnDeactivate", err)
+				rt.onError(BackgroundError{
+					Identity: Identity(id),
+					Err:      err,
+					Source:   Deactivation{Reason: reason},
+				})
 			}
 		},
 	})
@@ -896,8 +936,16 @@ type scheduleInvoker struct {
 
 func (i scheduleInvoker) Invoke(ctx context.Context, id store.Identity, method string) error {
 	err := i.runtime.Invoke(ctx, Identity(id), method, nil, nil)
+	// A delivery that failed because the poller's context was canceled is a
+	// clean shutdown, not a callback failure: reporting it would raise a false
+	// alarm on every orderly close. The judge is the poller context, not the
+	// shape of the error.
 	if err != nil && ctx.Err() == nil && i.runtime.onError != nil {
-		i.runtime.onError(Identity(id), method, err)
+		i.runtime.onError(BackgroundError{
+			Identity: Identity(id),
+			Err:      err,
+			Source:   ScheduledInvocation{Method: method},
+		})
 	}
 	return err
 }
