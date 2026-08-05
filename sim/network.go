@@ -192,6 +192,14 @@ func (t *simulationTransport) Close() error {
 	return nil
 }
 
+// Kill is the crash path: a crashed node does not close its transport
+// gracefully, and in-flight handler results are dropped.
+func (t *simulationTransport) Kill() error {
+	t.closeOnce.Do(func() { close(t.closed) })
+	<-t.done
+	return nil
+}
+
 type partitionedMemberStore struct {
 	backend *fakeStore
 

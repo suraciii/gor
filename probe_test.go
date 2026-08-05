@@ -122,6 +122,8 @@ func (*probeTransport) Addr() string { return "probe-test" }
 
 func (*probeTransport) Close() error { return nil }
 
+func (*probeTransport) Kill() error { return nil }
+
 func TestRuntime_HandleProbeReturnsCurrentMemberIDWithoutTableAccess(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(1500, 0).UTC()

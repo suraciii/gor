@@ -9,36 +9,51 @@ import (
 
 // Handler processes one incoming request payload.
 //
-// The context is canceled when the serving transport or the request's
-// connection is closed. How a returned error crosses the transport is defined
-// by the transport implementation: TCP sends it as text, so the peer receives
-// a new error with the same message and errors.Is and errors.As do not preserve
-// the handler's original error. Handlers should stop promptly after ctx is
-// canceled because Close waits for active handlers to return.
+// The context is canceled when the serving transport is killed or when the
+// connection carrying the request dies. A graceful Close never cancels the
+// context: the handler runs to completion and its reply is flushed to the
+// peer before the connection closes. How a returned error crosses the
+// transport is defined by the transport implementation: TCP sends it as text,
+// so the peer receives a new error with the same message and errors.Is and
+// errors.As do not preserve the handler's original error. Handlers should
+// stop promptly after ctx is canceled because an abrupt stop does not wait
+// for them.
 type Handler func(context.Context, []byte) ([]byte, error)
 
 // Transport moves opaque request payloads to an address and serves incoming
 // requests.
 //
 // Implementations must honor Send contexts, support concurrent calls, invoke
-// handlers with cancelable contexts, and ensure Close stops serving and waits
-// for active handlers and transport resources to finish. Handlers may be
-// invoked concurrently for different requests and must be safe for that use.
-// A canceled Send does not prove that the peer did not execute the request.
-// Send error representation is transport-specific. MaxPayloadSize limits
-// Frame-based wire protocols; a custom Transport implementation is not
-// required to enforce it.
+// handlers with cancelable contexts, and ensure Close and Kill stop serving
+// and wait for transport resources to finish. Close is a graceful stop and
+// Kill is an abrupt stop; what each owes an in-flight reply is defined in the
+// design's Closing section. Handlers may be invoked concurrently for different
+// requests and must be safe for that use. A canceled Send does not prove that
+// the peer did not execute the request. Send error representation is
+// transport-specific. MaxPayloadSize limits Frame-based wire protocols; a
+// custom Transport implementation is not required to enforce it.
 type Transport interface {
 	// Send sends payload to addr and returns the peer's response payload.
 	Send(context.Context, string, []byte) ([]byte, error)
-	// Serve accepts requests until ctx is canceled, Close is called, or the
-	// serving transport encounters an unrecoverable error. It may invoke handler
-	// concurrently for different requests.
+	// Serve accepts requests until ctx is canceled, Close completes, Kill
+	// completes, or the serving transport encounters an unrecoverable error.
+	// It may invoke handler concurrently for different requests.
 	Serve(context.Context, Handler) error
 	// Addr returns the address on which the transport is bound.
 	Addr() string
-	// Close stops the transport and waits for its active work to finish.
+	// Close stops serving and closes the transport gracefully: it stops
+	// accepting new requests, lets in-flight handlers finish, and flushes
+	// their replies to the wire before closing sockets. It does not complete
+	// while it still owes the peer a reply; it fails fast on a dead wire. It
+	// is safe to call more than once and to call concurrently with Kill; a
+	// concurrent Kill interrupts the graceful stop.
 	Close() error
+	// Kill stops serving and closes the transport abruptly: it cancels
+	// in-flight handlers, drops replies not yet written, and closes sockets.
+	// It does not wait for handlers that ignore their canceled contexts. It
+	// is safe to call more than once and to call concurrently with Close; it
+	// escalates an in-progress Close to the abrupt stop.
+	Kill() error
 }
 
 var (
@@ -106,8 +121,10 @@ func (t *TCP) Send(ctx context.Context, addr string, payload []byte) ([]byte, er
 
 // Serve accepts incoming TCP requests and invokes handler for each request.
 // Handlers may run concurrently. Serve returns ctx.Err when ctx is canceled,
-// returns nil when Close stops the listener, and returns an error for another
-// serving failure. Only one Serve call may be active at a time.
+// returns nil when Close or Kill stops the listener, and returns an error for
+// another serving failure. It stops accepting when it returns; established
+// connections are torn down by Close or Kill. Only one Serve call may be
+// active at a time.
 func (t *TCP) Serve(ctx context.Context, handler Handler) error {
 	t.mu.Lock()
 	if t.closed {
@@ -125,7 +142,6 @@ func (t *TCP) Serve(ctx context.Context, handler Handler) error {
 	t.mu.Unlock()
 
 	defer close(serveDone)
-	defer t.closeConnections()
 	wakeDone := make(chan struct{})
 	go func() {
 		select {
@@ -154,13 +170,38 @@ func (t *TCP) Serve(ctx context.Context, handler Handler) error {
 	}
 }
 
-// Close stops accepting connections, cancels active handlers, and waits for
-// handlers and connection loops to finish. It is safe to call more than once.
+// Close stops accepting connections, lets in-flight handlers finish, flushes
+// their replies to the wire, and then closes sockets and waits for connection
+// loops to finish. It is safe to call more than once; a concurrent Kill
+// escalates the stop.
 func (t *TCP) Close() error {
+	return t.stop(false)
+}
+
+// Kill stops accepting connections, cancels in-flight handlers, drops replies
+// not yet written, closes sockets, and waits for connection loops to finish.
+// It is safe to call more than once, and it escalates a Close that is still
+// in progress.
+func (t *TCP) Kill() error {
+	return t.stop(true)
+}
+
+func (t *TCP) stop(abrupt bool) error {
 	t.mu.Lock()
 	if t.closed {
+		connections := make([]*connection, 0, len(t.connections))
+		for conn := range t.connections {
+			connections = append(connections, conn)
+		}
 		closeDone := t.closeDone
 		t.mu.Unlock()
+		if abrupt {
+			// A Kill that lands on an in-progress Close escalates it: the
+			// graceful flush is interrupted on every connection.
+			for _, conn := range connections {
+				_ = conn.Kill()
+			}
+		}
 		<-closeDone
 		return nil
 	}
@@ -171,7 +212,7 @@ func (t *TCP) Close() error {
 	t.mu.Unlock()
 
 	err := listener.Close()
-	t.closeConnections()
+	t.closeConnections(abrupt)
 	if serveStarted {
 		<-serveDone
 	}
@@ -253,7 +294,7 @@ func (t *TCP) removeConnection(conn *connection) {
 	t.mu.Unlock()
 }
 
-func (t *TCP) closeConnections() {
+func (t *TCP) closeConnections(abrupt bool) {
 	t.mu.Lock()
 	connections := make([]*connection, 0, len(t.connections))
 	for conn := range t.connections {
@@ -262,9 +303,10 @@ func (t *TCP) closeConnections() {
 	t.mu.Unlock()
 
 	for _, conn := range connections {
-		_ = conn.conn.Close()
-	}
-	for _, conn := range connections {
-		<-conn.done
+		if abrupt {
+			_ = conn.Kill()
+		} else {
+			_ = conn.Close()
+		}
 	}
 }

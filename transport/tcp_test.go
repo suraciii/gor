@@ -156,3 +156,120 @@ func TestTCPTransportRejectsSecondServe(t *testing.T) {
 		t.Fatalf("first Serve error after Close = %v", err)
 	}
 }
+
+// TestTCPTransportGracefulCloseFlushesInFlightReply covers the flush
+// contract on real TCP: the in-flight Send must receive the business reply,
+// not a connection error, when the serving side closes gracefully while the
+// reply is still pending.
+func TestTCPTransportGracefulCloseFlushesInFlightReply(t *testing.T) {
+	server, err := New("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New("127.0.0.1:0")
+	if err != nil {
+		_ = server.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = client.Kill()
+		_ = server.Kill()
+	})
+
+	handlerStarted := make(chan struct{})
+	release := make(chan struct{})
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- server.Serve(context.Background(), func(ctx context.Context, payload []byte) ([]byte, error) {
+			close(handlerStarted)
+			// The handler distinguishes the two stop paths: a graceful Close
+			// never cancels it, while a misrouted Kill does. Under a Kill the
+			// handler returns an error reply that is dropped, so the caller
+			// gets a connection error instead of the business reply — no
+			// scheduling race involved.
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return append([]byte("reply:"), payload...), nil
+		})
+	}()
+
+	sendDone := make(chan connectionResult, 1)
+	go func() {
+		payload, err := client.Send(context.Background(), server.Addr(), []byte("ping"))
+		sendDone <- connectionResult{payload: payload, err: err}
+	}()
+	<-handlerStarted
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- server.Close()
+	}()
+
+	close(release)
+	result := <-sendDone
+	if result.err != nil || string(result.payload) != "reply:ping" {
+		t.Fatalf("Send after graceful close = %#v, want reply:ping", result)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close error = %v", err)
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatalf("Serve error after Close = %v", err)
+	}
+}
+
+// TestTCPTransportKillCancelsInFlightReply covers the abrupt counterpart on
+// real TCP: a Kill on the serving side may leave the in-flight Send with a
+// connection error instead of the business reply.
+func TestTCPTransportKillCancelsInFlightReply(t *testing.T) {
+	server, err := New("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New("127.0.0.1:0")
+	if err != nil {
+		_ = server.Kill()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = client.Kill()
+		_ = server.Kill()
+	})
+
+	handlerStarted := make(chan struct{})
+	canceled := make(chan struct{})
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- server.Serve(context.Background(), func(ctx context.Context, _ []byte) ([]byte, error) {
+			close(handlerStarted)
+			<-ctx.Done()
+			close(canceled)
+			return nil, ctx.Err()
+		})
+	}()
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := client.Send(context.Background(), server.Addr(), []byte("ping"))
+		sendDone <- err
+	}()
+	<-handlerStarted
+
+	if err := server.Kill(); err != nil {
+		t.Fatalf("Kill error = %v", err)
+	}
+	select {
+	case <-canceled:
+	default:
+		t.Fatal("Kill did not cancel the handler context")
+	}
+	if err := <-sendDone; err == nil {
+		t.Fatal("in-flight Send returned nil after Kill, want a connection error")
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatalf("Serve error after Kill = %v", err)
+	}
+}

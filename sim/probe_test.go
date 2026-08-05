@@ -178,6 +178,10 @@ func (t *probeScenarioTransport) Close() error {
 	return t.base.Close()
 }
 
+func (t *probeScenarioTransport) Kill() error {
+	return t.base.Kill()
+}
+
 type frozenMemberStore struct {
 	backend    store.MemberStore
 	nodeAddr   string

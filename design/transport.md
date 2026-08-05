@@ -18,12 +18,17 @@ type Transport interface {
     Serve(ctx context.Context, h Handler) error
     Addr() string
     Close() error
+    Kill() error
 }
 ```
 
 An address is a string, not a node type from `cluster`. The transport does not import `cluster` — the dependency runs the other way.
 
 **Binding is separated from serving.** The listen address is bound at construction, so `Addr()` can immediately return the actually bound address, and `Serve` is just the accept loop. A node must know its own address before writing its row into the membership table, and tests use `:0` to let the kernel pick a port — without the separation, this is impossible.
+
+**Two stop methods, not one.** `Close` is a graceful stop and `Kill` is an abrupt stop. This matches the rest of the system — `Runtime`, `cluster.Node`, and the execution runtime all split `Close` from `Kill`, and a crash is not a `Close` ([simulation.md](simulation.md)). Serving both stops with one `Close` is what let an in-flight forwarded reply be truncated during an owner's graceful close: one method cannot mean two things. The split is named, not parameterized; a `Close(mode)` boolean or enum leaves which stop is in progress implicit at the call site and does not match the vocabulary every other component already uses. The runtime's graceful stop calls `Close`; its abrupt stop and a declared-death collapse call `Kill`. `Serve` returns when its context is canceled, when `Close` completes, or when `Kill` completes. What each stop owes an in-flight reply is defined in the Closing section below.
+
+`Serve` owns only the accept loop. When it returns — context canceled, `Close` completed, `Kill` completed, or a serving failure — established connections are left for `Close` or `Kill` to tear down; a canceled Serve context alone never truncates an in-flight reply.
 
 ## One connection per direction
 
@@ -55,7 +60,19 @@ No mutex protects the pending table. This is not cleanliness for its own sake: b
 
 **Each server-side handler runs in its own goroutine; it must not run in the owner.** The owner only registers and hands over; running a handler to completion in the owner would block every other request on this connection behind it — the entire reason correlation ids exist is so requests do not wait on each other. The layer above can least afford this: `gor` packs calls of many entities into one connection, and entity calls are serial anyway, so one busy entity would stall every other entity from the same node.
 
-Handlers also write responses back to the owner through a channel; only the owner ever lays out frames. When the connection is dying, cancel the handlers' ctxs and wait for them to exit — leave one handler still running and `Close()` becomes a gamble.
+Handlers also write responses back to the owner through a channel; only the owner ever lays out frames.
+
+## Closing
+
+A connection has two stop paths, one per interface method. Mixing them in one method is what let an owner's graceful close truncate an in-flight forwarded reply.
+
+**Graceful (`Close`).** Stop accepting new requests on the connection. Let every in-flight handler finish and hand its reply to the owner; let the owner write every queued reply frame to the wire. Only then close the socket. A graceful close may not complete while it still owes the peer a reply.
+
+**Abrupt (`Kill`).** Cancel in-flight handlers, drop replies not yet written, close the socket. This is the path for a crash and for a `Kill` that escalates an in-progress `Close`.
+
+A graceful close must not hang on a dead peer. The flush waits for the owner to attempt the write, not for the peer to acknowledge it; a write that fails because the wire is dead fails fast and the close proceeds. A handler that ignores its context cannot be forced — the same limit the runtime's graceful stop already states — and `Kill` is the escape hatch.
+
+The in-flight join is expressed with channels, not a `sync.WaitGroup`. Counting in-flight handlers and waiting on them sits on the stop-coordination critical path: the runtime's graceful stop cannot finish until the transport's graceful close finishes. `WaitGroup.Wait` is not durably blocking under `synctest`, so it cannot be the join ([testing.md](testing.md) rule 4; [runtime.md](runtime.md) restates it for stop coordination). Each in-flight handler signals completion on a channel the owner receives; the graceful close joins on that channel.
 
 ## Unknown outcome
 
@@ -87,6 +104,14 @@ Real TCP tests only the dialing and listening slice, on a separate `make net` ta
 
 The fault-injecting fake transport — partition, reorder, drop — belongs to the simulation tests; see [simulation.md](simulation.md). It implements the same `Transport` interface, not the same code.
 
+**The graceful-close flush invariant is verified deterministically.** A test that fails one run in ten under full CPU is not a regression test. The invariant — a graceful `Close` may not complete while it still owes the peer a reply — is checked with a blocking handler: issue a `Send` whose server-side handler blocks on a channel the test owns, call `Close`, and assert `Close` has not returned while the reply is still pending; then release the handler and assert the caller received the business reply, after which `Close` returns. The reply cannot be written until the test releases it, so there is no schedule under which a broken `Close` wins — a regression that stops waiting for the flush fails this test every time.
+
+The blocking handler is the seam, and it is not a test-only hook in production code. A handler that takes arbitrarily long is real behavior the transport must honor; the test drives the real contract through the real interface. Injecting a yield or a test-only delay into the production reply path to pry a window open is forbidden — that would be changing production semantics for the test.
+
+Real-TCP close behavior is covered under `make net`: an in-flight `Send` followed by a graceful `Close` must still deliver the reply, and the abrupt counterpart (`Kill`) may let the caller receive a connection error instead.
+
 ## Gap
 
-Under the `sim` build tag, `simulationTransport` already implements this interface and can drop messages by partition; the current implementation does not yet provide the delay and reorder injection listed in the design.
+The interface specified above is implemented. `Transport` exposes `Close` (graceful) and `Kill` (abrupt): a graceful close stops accepting new requests, joins in-flight handlers through their completion signals on the owner channel, flushes every queued reply frame, and only then closes the socket; a Kill cancels in-flight handlers, drops replies not yet written, and closes sockets, and it escalates a graceful close still in progress. The runtime's graceful stop calls `Close`; its abrupt stop and a declared-death collapse call `Kill`, including when the Kill escalates a close already under way. The in-memory fakes (`testTransport`, `simulationTransport`) implement both stops, and the graceful-close flush invariant is verified deterministically with a blocking handler under `synctest`.
+
+Under the `sim` build tag, `simulationTransport` can drop messages by partition; the delay and reorder injection listed in the design are not yet provided.

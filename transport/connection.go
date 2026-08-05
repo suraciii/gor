@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"sync"
 )
 
 type connection struct {
@@ -21,10 +20,11 @@ type connection struct {
 	writes         chan Frame
 	dead           chan error
 	stop           chan struct{}
+	closeReq       chan struct{}
+	killReq        chan struct{}
 	done           chan struct{}
 	readerDone     chan struct{}
 	writerDone     chan struct{}
-	handlers       sync.WaitGroup
 	err            error
 }
 
@@ -60,6 +60,8 @@ func newConnectionState(conn net.Conn, parent context.Context, handler Handler, 
 		writes:         make(chan Frame),
 		dead:           make(chan error, 1),
 		stop:           make(chan struct{}),
+		closeReq:       make(chan struct{}),
+		killReq:        make(chan struct{}),
 		done:           make(chan struct{}),
 		readerDone:     make(chan struct{}),
 		writerDone:     make(chan struct{}),
@@ -97,10 +99,32 @@ func (c *connection) Send(ctx context.Context, payload []byte) ([]byte, error) {
 	}
 }
 
+// Close stops accepting new requests, lets in-flight handlers finish, flushes
+// their replies to the wire, and only then closes the socket. It may not
+// complete while the connection still owes the peer a reply; a dead wire
+// fails the flush fast and the close proceeds. A concurrent Kill interrupts
+// the flush.
 func (c *connection) Close() error {
-	err := c.conn.Close()
+	select {
+	case c.closeReq <- struct{}{}:
+	case <-c.done:
+		return nil
+	}
 	<-c.done
-	return err
+	return nil
+}
+
+// Kill cancels in-flight handlers, drops replies not yet written, and closes
+// the socket. It does not wait for handlers that ignore their canceled
+// contexts, and it escalates a Close that is still in progress.
+func (c *connection) Kill() error {
+	select {
+	case c.killReq <- struct{}{}:
+	case <-c.done:
+		return nil
+	}
+	<-c.done
+	return nil
 }
 
 func (c *connection) cancel(request *sendRequest) {
@@ -146,7 +170,13 @@ func (c *connection) ownerLoop() {
 	pending := make(map[uint64]*sendRequest)
 	queue := make([]Frame, 0)
 	nextID := uint64(1)
+	inflight := 0
+	closing := false
 	for {
+		var requestsCh chan *sendRequest
+		if !closing {
+			requestsCh = c.requests
+		}
 		var writeCh chan Frame
 		var head Frame
 		if len(queue) > 0 {
@@ -154,7 +184,7 @@ func (c *connection) ownerLoop() {
 			head = queue[0]
 		}
 		select {
-		case request := <-c.requests:
+		case request := <-requestsCh:
 			request.id = nextID
 			nextID++
 			pending[request.id] = request
@@ -164,21 +194,58 @@ func (c *connection) ownerLoop() {
 		case frame := <-c.responses:
 			switch frame.Type {
 			case FrameRequest:
-				if c.handler != nil {
+				// A graceful close stops accepting new requests: frames that
+				// arrive after it are discarded and the peer learns about the
+				// close when the socket goes away.
+				if c.handler != nil && !closing {
+					inflight++
 					c.startHandler(frame)
 				}
 			case FrameResponse, FrameError:
 				complete(pending, frame)
 			}
 		case frame := <-c.handlerResults:
+			// The reply frame is the handler's completion signal; the graceful
+			// close joins on it through the inflight count.
+			inflight--
 			queue = append(queue, frame)
 		case request := <-c.cancels:
 			// Drop timed-out requests so a silent peer cannot grow pending forever.
 			delete(pending, request.id)
+		case <-c.closeReq:
+			closing = true
+		case <-c.killReq:
+			c.stopWith(errTransportClosed)
+			return
 		case err := <-c.dead:
 			c.stopWith(err)
 			return
 		}
+		if closing && inflight == 0 && len(queue) == 0 {
+			c.finishGraceful()
+			return
+		}
+	}
+}
+
+func (c *connection) finishGraceful() {
+	c.err = errTransportClosed
+	// No reply is owed anymore: every handler delivered its reply and the
+	// owner handed every queued frame to the writer, which finishes the
+	// current write before observing stop. Closing the socket then unblocks
+	// the reader. A Kill that arrives while the writer is stuck on a dead
+	// wire takes the select below and aborts the flush.
+	close(c.stop)
+	select {
+	case <-c.writerDone:
+	case <-c.killReq:
+	}
+	_ = c.conn.Close()
+	<-c.writerDone
+	<-c.readerDone
+	close(c.done)
+	if c.onDone != nil {
+		c.onDone(c)
 	}
 }
 
@@ -196,9 +263,7 @@ func complete(pending map[uint64]*sendRequest, frame Frame) {
 }
 
 func (c *connection) startHandler(frame Frame) {
-	c.handlers.Add(1)
 	go func() {
-		defer c.handlers.Done()
 		payload, err := c.handler(c.handlerCtx, frame.Payload)
 		response := Frame{ID: frame.ID, Type: FrameResponse, Payload: payload}
 		if err != nil {
@@ -225,7 +290,6 @@ func (c *connection) stopWith(err error) {
 	c.handlerCancel()
 	close(c.stop)
 	_ = c.conn.Close()
-	c.handlers.Wait()
 	<-c.readerDone
 	<-c.writerDone
 	close(c.done)
