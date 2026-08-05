@@ -49,9 +49,15 @@ func (f *Fake) Advance(d time.Duration) {
 	end := f.now
 	deliveries := make([]fakeDelivery, 0)
 	for ticker := range f.tickers {
+		var at time.Time
+		due := false
 		for !ticker.next.After(end) {
-			deliveries = append(deliveries, fakeDelivery{ticker: ticker, at: ticker.next})
+			at = ticker.next
+			due = true
 			ticker.next = ticker.next.Add(ticker.interval)
+		}
+		if due {
+			deliveries = append(deliveries, fakeDelivery{ticker: ticker, at: at})
 		}
 	}
 	f.mu.Unlock()
@@ -59,8 +65,7 @@ func (f *Fake) Advance(d time.Duration) {
 	for _, delivery := range deliveries {
 		select {
 		case delivery.ticker.channel <- delivery.at:
-		case <-delivery.ticker.stopped:
-			continue
+		default:
 		}
 	}
 }

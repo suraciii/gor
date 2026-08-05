@@ -128,7 +128,7 @@ func TestSim_DoubleActivationRejectsETagConflict(t *testing.T) {
 func TestSim_CrashRestartRestoresState(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		backend := newFakeStore(newTimerTracker())
-		rt, err := newCounterRuntime(backend, newTimerTracker())
+		rt, err := newCounterRuntimeWithOptions(backend, newTimerTracker())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -141,7 +141,7 @@ func TestSim_CrashRestartRestoresState(t *testing.T) {
 		rt.Kill()
 		synctest.Wait()
 
-		rt, err = newCounterRuntime(backend, newTimerTracker())
+		rt, err = newCounterRuntimeWithOptions(backend, newTimerTracker())
 		if err != nil {
 			t.Fatal(err)
 		}

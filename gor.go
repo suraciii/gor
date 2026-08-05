@@ -28,6 +28,9 @@ type Runtime struct {
 	clusterNode   *cluster.Node
 	clusterView   atomic.Pointer[cluster.View]
 	clusterDone   chan struct{}
+	done          chan struct{}
+	stopOnce      sync.Once
+	shuttingDown  atomic.Bool
 	nodeAddr      string
 	typesMu       sync.Mutex
 	types         map[string]typeRegistration
@@ -107,6 +110,7 @@ func New(options ...Option) (*Runtime, error) {
 		store:         config.Store,
 		scheduleStore: config.ScheduleStore,
 		clock:         config.Clock,
+		done:          make(chan struct{}),
 		types:         make(map[string]typeRegistration),
 	}
 	if clusterNode != nil {
@@ -114,6 +118,10 @@ func New(options ...Option) (*Runtime, error) {
 		rt.clusterDone = make(chan struct{})
 		rt.nodeAddr = config.NodeAddr
 		rt.clusterView.Store(&initialView)
+		go func() {
+			<-clusterNode.Done()
+			rt.stopServing()
+		}()
 		go rt.watchCluster()
 	}
 	if config.ScheduleStore != nil && config.ScheduleInterval > 0 {
@@ -301,6 +309,8 @@ func (rt *Runtime) typeRegistration(name string) (typeRegistration, bool) {
 }
 
 func (rt *Runtime) Close() {
+	rt.shuttingDown.Store(true)
+	rt.stopServing()
 	if rt.poller != nil {
 		rt.poller.Close()
 	}
@@ -312,6 +322,8 @@ func (rt *Runtime) Close() {
 }
 
 func (rt *Runtime) Kill() {
+	rt.shuttingDown.Store(true)
+	rt.stopServing()
 	if rt.poller != nil {
 		rt.poller.Close()
 	}
@@ -322,12 +334,32 @@ func (rt *Runtime) Kill() {
 	rt.Runtime.Kill()
 }
 
+func (rt *Runtime) Done() <-chan struct{} {
+	return rt.done
+}
+
+func (rt *Runtime) stopServing() {
+	rt.stopOnce.Do(func() {
+		close(rt.done)
+	})
+}
+
 func (rt *Runtime) watchCluster() {
-	defer close(rt.clusterDone)
+	defer func() {
+		rt.stopServing()
+		close(rt.clusterDone)
+	}()
 	for view := range rt.clusterNode.ViewChanges() {
 		rt.clusterView.Store(&view)
 		rt.deactivateMovedActivations(view)
 	}
+	if rt.shuttingDown.Load() {
+		return
+	}
+	if rt.poller != nil {
+		rt.poller.Close()
+	}
+	rt.Runtime.Close()
 }
 
 func (rt *Runtime) deactivateMovedActivations(view cluster.View) {

@@ -6,12 +6,15 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"runtime"
 	"sort"
 	"testing/synctest"
 	"time"
 
 	"github.com/anishathalye/porcupine"
 	"github.com/suraciii/gor"
+	"github.com/suraciii/gor/clock"
+	"github.com/suraciii/gor/store"
 )
 
 const clusterNodeCount = 2
@@ -22,19 +25,23 @@ type clusterNode struct {
 }
 
 type simulationCluster struct {
-	backend *fakeStore
-	tracker *timerTracker
-	nodes   []*clusterNode
+	backend     *fakeStore
+	tracker     *timerTracker
+	clock       *clock.Fake
+	generations []int
+	nodes       []*clusterNode
 }
 
 func newSimulationCluster(backend *fakeStore, count int, tracker *timerTracker) (*simulationCluster, error) {
 	cluster := &simulationCluster{
-		backend: backend,
-		tracker: tracker,
-		nodes:   make([]*clusterNode, count),
+		backend:     backend,
+		tracker:     tracker,
+		clock:       clock.NewFake(time.Unix(0, 0)),
+		generations: make([]int, count),
+		nodes:       make([]*clusterNode, count),
 	}
 	for id := range cluster.nodes {
-		rt, err := newCounterRuntime(backend, tracker)
+		rt, err := cluster.newRuntime(id, 0)
 		if err != nil {
 			cluster.close()
 			return nil, err
@@ -42,6 +49,20 @@ func newSimulationCluster(backend *fakeStore, count int, tracker *timerTracker) 
 		cluster.nodes[id] = &clusterNode{id: id, rt: rt}
 	}
 	return cluster, nil
+}
+
+func (c *simulationCluster) newRuntime(id, generation int) (*gor.Runtime, error) {
+	return newCounterRuntimeWithOptions(
+		c.backend,
+		c.tracker,
+		gor.WithClock(c.clock),
+		gor.WithMemberStore(c.backend),
+		gor.WithNodeAddr(fmt.Sprintf("node-%d", id)),
+		gor.WithGeneration(memberGeneration(id, generation)),
+		gor.WithHeartbeatInterval(simulationStepDuration),
+		gor.WithViewInterval(simulationStepDuration),
+		gor.WithDeadAfter(3*simulationStepDuration),
+	)
 }
 
 func (c *simulationCluster) close() {
@@ -66,19 +87,105 @@ func (c *simulationCluster) crash(id int) error {
 	return nil
 }
 
+func (c *simulationCluster) leave(id int) error {
+	node, err := c.node(id)
+	if err != nil {
+		return err
+	}
+	if node.rt == nil {
+		return fmt.Errorf("node %d is already stopped", id)
+	}
+	done := make(chan struct{})
+	go func() {
+		node.rt.Close()
+		close(done)
+	}()
+	c.advance(10 * simulationStepDuration)
+	<-done
+	node.rt = nil
+	return nil
+}
+
 func (c *simulationCluster) restart(id int) error {
 	node, err := c.node(id)
 	if err != nil {
 		return err
 	}
 	if node.rt != nil {
-		return fmt.Errorf("node %d is already running", id)
+		if !runtimeStopped(node.rt) {
+			return fmt.Errorf("node %d is already running", id)
+		}
+		node.rt.Close()
+		node.rt = nil
 	}
-	rt, err := newCounterRuntime(c.backend, c.tracker)
-	if err != nil {
+	generation := c.generations[id] + 1
+	c.generations[id] = generation
+	result := make(chan struct {
+		rt  *gor.Runtime
+		err error
+	}, 1)
+	go func() {
+		rt, err := c.newRuntime(id, generation)
+		result <- struct {
+			rt  *gor.Runtime
+			err error
+		}{rt: rt, err: err}
+	}()
+	c.advance(10 * simulationStepDuration)
+	created := <-result
+	if created.err != nil {
+		return created.err
+	}
+	node.rt = created.rt
+	return nil
+}
+
+func memberGeneration(id, generation int) string {
+	return fmt.Sprintf("generation-%d-%d", id, generation)
+}
+
+func (c *simulationCluster) advance(duration time.Duration) {
+	for duration > 0 {
+		step := simulationStepDuration
+		if duration < step {
+			step = duration
+		}
+		c.clock.Advance(step)
+		runtime.Gosched()
+		synctest.Wait()
+		c.backend.waitForIdle()
+		duration -= step
+	}
+	synctest.Wait()
+}
+
+func (c *simulationCluster) settle() {
+	c.backend.setFaultPlans(nil)
+	c.backend.setMemberFault(memberFaultSpec{})
+	for range 20 {
+		c.advance(simulationStepDuration)
+	}
+}
+
+func (c *simulationCluster) checkInvariants(ids []store.Identity) error {
+	if err := c.backend.checkMemberStatuses(); err != nil {
 		return err
 	}
-	node.rt = rt
+	liveIDs := c.liveNodeIDs()
+	if len(liveIDs) == 0 {
+		return nil
+	}
+	for _, id := range ids {
+		owners := 0
+		for _, nodeID := range liveIDs {
+			if c.nodes[nodeID].rt.Owns(id) {
+				owners++
+			}
+		}
+		if owners != 1 {
+			return fmt.Errorf("identity %s/%s has %d live owners after settle", id.Type, id.Key, owners)
+		}
+	}
 	return nil
 }
 
@@ -92,7 +199,7 @@ func (c *simulationCluster) node(id int) (*clusterNode, error) {
 func (c *simulationCluster) liveNodeIDs() []int {
 	ids := make([]int, 0, len(c.nodes))
 	for _, node := range c.nodes {
-		if node.rt != nil {
+		if node.rt != nil && !runtimeStopped(node.rt) {
 			ids = append(ids, node.id)
 		}
 	}
@@ -102,11 +209,20 @@ func (c *simulationCluster) liveNodeIDs() []int {
 func (c *simulationCluster) stoppedNodeIDs() []int {
 	ids := make([]int, 0, len(c.nodes))
 	for _, node := range c.nodes {
-		if node.rt == nil {
+		if node.rt == nil || runtimeStopped(node.rt) {
 			ids = append(ids, node.id)
 		}
 	}
 	return ids
+}
+
+func runtimeStopped(rt *gor.Runtime) bool {
+	select {
+	case <-rt.Done():
+		return true
+	default:
+		return false
+	}
 }
 
 type clusterAction uint8
@@ -115,6 +231,7 @@ const (
 	clusterCall clusterAction = iota
 	clusterCrash
 	clusterRestart
+	clusterLeave
 	clusterSchedule
 	clusterDisarm
 )
@@ -123,7 +240,7 @@ func chooseClusterAction(rng *rand.Rand, cluster *simulationCluster) clusterActi
 	liveNodeIDs := cluster.liveNodeIDs()
 	actions := make([]clusterAction, 0, 5)
 	if len(liveNodeIDs) > 0 {
-		actions = append(actions, clusterCall, clusterCrash, clusterSchedule, clusterDisarm)
+		actions = append(actions, clusterCall, clusterCrash, clusterLeave, clusterSchedule, clusterDisarm)
 	}
 	if len(cluster.stoppedNodeIDs()) > 0 {
 		actions = append(actions, clusterRestart)

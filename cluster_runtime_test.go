@@ -154,6 +154,83 @@ func TestRuntime_ClusterKillLeavesMemberForFailureDetection(t *testing.T) {
 	})
 }
 
+func TestRuntime_DoneClosesForCloseAndKill(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		stop func(*Runtime)
+	}{
+		{name: "close", stop: (*Runtime).Close},
+		{name: "kill", stop: (*Runtime).Kill},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				fakeClock := clock.NewFake(time.Unix(900, 0).UTC())
+				members := store.NewMemory()
+				rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a")...)
+				test.stop(rt)
+
+				select {
+				case <-rt.Done():
+				default:
+					t.Fatal("runtime Done channel is still open after stop")
+				}
+			})
+		})
+	}
+}
+
+func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1000, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		backend := store.NewMemory()
+		firstOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a")
+		firstOptions = append(firstOptions,
+			WithHeartbeatInterval(time.Second),
+			WithViewInterval(time.Hour),
+			WithDeadAfter(time.Hour),
+		)
+		first := mustNew(t, firstOptions...)
+		registerAccount(t, first)
+		secondOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-b", "generation-b")
+		secondOptions = append(secondOptions,
+			WithHeartbeatInterval(time.Hour),
+			WithViewInterval(time.Hour),
+			WithDeadAfter(time.Hour),
+		)
+		second := mustNew(t, secondOptions...)
+
+		id := Identity{Type: TypeName[Account](), Key: "self-death"}
+		if err := first.Invoke(context.Background(), id, "Balance", nil, new(int64)); err != nil {
+			t.Fatalf("initial invocation error = %v", err)
+		}
+		self := findClusterMember(t, members, "node-a", "generation-a")
+		self.Status = store.MemberDead
+		if _, err := members.WriteMember(context.Background(), self); err != nil {
+			t.Fatalf("mark self dead: %v", err)
+		}
+
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+		select {
+		case <-first.Done():
+		default:
+			t.Fatal("runtime Done channel is still open after cluster death")
+		}
+		if identities := first.Runtime.Identities(); len(identities) != 0 {
+			t.Fatalf("identities after cluster death = %#v, want empty", identities)
+		}
+		var wrongOwner WrongOwnerError
+		if err := first.Invoke(context.Background(), id, "Balance", nil, new(int64)); !errors.As(err, &wrongOwner) || wrongOwner.Owner != "node-b" {
+			t.Fatalf("invocation after cluster death error = %v, want owner node-b", err)
+		}
+
+		first.Close()
+		second.Close()
+	})
+}
+
 func clusterRuntimeOptions(backend store.Store, members store.MemberStore, sourceClock clock.Clock, nodeAddr, generation string) []Option {
 	return []Option{
 		WithStore(backend),

@@ -68,3 +68,27 @@ func TestFakeClock_StopRemovesTicker(t *testing.T) {
 	default:
 	}
 }
+
+func TestFakeClock_DropsBackloggedTicks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fake := NewFake(time.Unix(0, 0).UTC())
+		ticker := fake.NewTicker(time.Second)
+		defer ticker.Stop()
+
+		done := make(chan struct{})
+		go func() {
+			for range 5 {
+				fake.Advance(time.Second)
+			}
+			close(done)
+		}()
+		<-done
+
+		<-ticker.C()
+		select {
+		case <-ticker.C():
+			t.Fatal("fake ticker retained more than one unread tick")
+		default:
+		}
+	})
+}

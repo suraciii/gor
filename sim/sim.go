@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/suraciii/gor"
+	clusterpkg "github.com/suraciii/gor/cluster"
 	"github.com/suraciii/gor/mail"
 	runtimepkg "github.com/suraciii/gor/runtime"
 	"github.com/suraciii/gor/store"
@@ -132,18 +133,22 @@ func installCounterWithTracker(rt *gor.Runtime, tracker *timerTracker) error {
 	})
 }
 
-func newRuntime(backend *fakeStore) (*gor.Runtime, error) {
-	return gor.New(
+func baseRuntimeOptions(backend *fakeStore) []gor.Option {
+	return []gor.Option{
 		gor.WithStore(backend),
 		gor.WithIdleTimeout(0),
 		gor.WithEvictionInterval(0),
 		gor.WithScheduleInterval(simulationStepDuration),
 		gor.WithMailboxCapacity(4),
-	)
+	}
 }
 
-func newCounterRuntime(backend *fakeStore, tracker *timerTracker) (*gor.Runtime, error) {
-	rt, err := newRuntime(backend)
+func newRuntime(backend *fakeStore) (*gor.Runtime, error) {
+	return gor.New(baseRuntimeOptions(backend)...)
+}
+
+func newCounterRuntimeWithOptions(backend *fakeStore, tracker *timerTracker, options ...gor.Option) (*gor.Runtime, error) {
+	rt, err := gor.New(append(baseRuntimeOptions(backend), options...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -158,6 +163,16 @@ func storeIdentity(id gor.Identity) store.Identity {
 	return store.Identity{Type: id.Type, Key: id.Key}
 }
 
+const probeCount = 64
+
+func probeIdentities(entityType string) []store.Identity {
+	probes := make([]store.Identity, probeCount)
+	for index := range probes {
+		probes[index] = store.Identity{Type: entityType, Key: fmt.Sprintf("probe-%03d", index)}
+	}
+	return probes
+}
+
 var randomFaultKinds = [...]faultKind{
 	faultNone,
 	faultReadError,
@@ -166,25 +181,43 @@ var randomFaultKinds = [...]faultKind{
 	faultDelay,
 }
 
+var randomMemberFaultKinds = [...]memberFaultKind{
+	memberFaultNone,
+	memberListError,
+	memberCASFailure,
+	memberCASAppliedError,
+	memberDelay,
+}
+
 func chooseFaultPlan(rng *rand.Rand) faultPlan {
+	plan := faultPlan{}
 	kind := randomFaultKinds[rng.IntN(len(randomFaultKinds))]
 	switch kind {
 	case faultNone:
-		return faultPlan{}
+		return plan
 	case faultReadError:
-		return faultPlan{read: faultSpec{kind: faultReadError}}
+		plan.read = faultSpec{kind: faultReadError}
 	case faultWriteError:
-		return faultPlan{write: faultSpec{kind: faultWriteError}}
+		plan.write = faultSpec{kind: faultWriteError}
 	case faultWriteAppliedError:
-		return faultPlan{write: faultSpec{kind: faultWriteAppliedError}}
+		plan.write = faultSpec{kind: faultWriteAppliedError}
 	case faultDelay:
 		delay := time.Duration(rng.IntN(3)+1) * time.Millisecond
 		if rng.IntN(2) == 0 {
-			return faultPlan{read: faultSpec{kind: faultDelay, delay: delay}}
+			plan.read = faultSpec{kind: faultDelay, delay: delay}
+			return plan
 		}
-		return faultPlan{write: faultSpec{kind: faultDelay, delay: delay}}
+		plan.write = faultSpec{kind: faultDelay, delay: delay}
 	}
-	return faultPlan{}
+	return plan
+}
+
+func chooseMemberFault(rng *rand.Rand) memberFaultSpec {
+	kind := randomMemberFaultKinds[rng.IntN(len(randomMemberFaultKinds))]
+	if kind == memberDelay {
+		return memberFaultSpec{kind: kind, delay: time.Duration(rng.IntN(3)+4) * time.Millisecond}
+	}
+	return memberFaultSpec{kind: kind}
 }
 
 func chooseScheduleFault(rng *rand.Rand) scheduleFaultKind {
@@ -203,6 +236,7 @@ func chooseScheduleFault(rng *rand.Rand) scheduleFaultKind {
 }
 
 func classifyOutcome(err error) (string, error) {
+	var wrongOwner gor.WrongOwnerError
 	switch {
 	case err == nil:
 		return "ok", nil
@@ -212,8 +246,16 @@ func classifyOutcome(err error) (string, error) {
 		return "store-write-error", nil
 	case errors.Is(err, errAppliedWriteFailure):
 		return "store-write-applied-then-error", nil
+	case errors.Is(err, errMemberListFailure):
+		return "member-list-error", nil
+	case errors.Is(err, errMemberAppliedFailure):
+		return "member-write-applied-then-error", nil
+	case errors.Is(err, clusterpkg.ErrNodeDead):
+		return "cluster-node-dead", nil
 	case errors.Is(err, store.ErrConflict):
 		return "store-conflict", nil
+	case errors.As(err, &wrongOwner):
+		return "wrong-owner", nil
 	case errors.Is(err, mail.ErrClosed), errors.Is(err, runtimepkg.ErrRuntimeClosed):
 		return "closed", nil
 	case errors.Is(err, mail.ErrOverloaded):
@@ -313,18 +355,26 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 		{Type: counterType, Key: "a"},
 		{Type: counterType, Key: "b"},
 	}
+	probes := probeIdentities(counterType)
+	checkedIdentities := append(append([]store.Identity(nil), entities...), probes...)
 	rng := rand.New(rand.NewPCG(seed, seed^0x517cc1b727220a95))
 	observations := newObservations()
 	history := newCounterHistory()
 
 	for step := 0; step < simulationSteps; step++ {
-		switch chooseClusterAction(rng, cluster) {
+		cluster.backend.setFaultPlans(nil)
+		action := chooseClusterAction(rng, cluster)
+		memberFault := chooseMemberFault(rng)
+		cluster.backend.setMemberFault(memberFault)
+		switch action {
 		case clusterCall:
 			entity := entities[rng.IntN(len(entities))]
 			id := gor.Identity{Type: entity.Type, Key: entity.Key}
 			plan := chooseFaultPlan(rng)
+			plan.member = memberFault
 			storeID := storeIdentity(id)
 			cluster.backend.setFaultPlans(map[store.Identity]faultPlan{storeID: plan})
+			cluster.backend.setMemberFault(plan.member)
 
 			liveIDs := cluster.liveNodeIDs()
 			decisions := make([]decision, callsPerStep)
@@ -356,15 +406,28 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 		case clusterCrash:
 			liveIDs := cluster.liveNodeIDs()
 			nodeID := liveIDs[rng.IntN(len(liveIDs))]
-			log.addCrashDecision(nodeID)
+			log.addCrashDecision(nodeID, memberFault)
 			if err := cluster.crash(nodeID); err != nil {
 				return log.String(), fmt.Errorf("step %d: %w", step, err)
 			}
 		case clusterRestart:
 			stoppedIDs := cluster.stoppedNodeIDs()
 			nodeID := stoppedIDs[rng.IntN(len(stoppedIDs))]
-			log.addRestartDecision(nodeID)
+			log.addRestartDecision(nodeID, memberFault)
 			if err := cluster.restart(nodeID); err != nil {
+				outcome, classifyErr := classifyOutcome(err)
+				if classifyErr != nil {
+					return log.String(), fmt.Errorf("step %d: restart node %d: %w", step, nodeID, classifyErr)
+				}
+				log.addClusterOutcome("restart", nodeID, outcome)
+			} else {
+				log.addClusterOutcome("restart", nodeID, "ok")
+			}
+		case clusterLeave:
+			liveIDs := cluster.liveNodeIDs()
+			nodeID := liveIDs[rng.IntN(len(liveIDs))]
+			log.addLeaveDecision(nodeID, memberFault)
+			if err := cluster.leave(nodeID); err != nil {
 				return log.String(), fmt.Errorf("step %d: %w", step, err)
 			}
 		case clusterSchedule:
@@ -381,7 +444,7 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 				delay = interval
 			}
 			fault := chooseScheduleFault(rng)
-			log.addScheduleDecision(nodeID, entity, name, delay, interval, fault)
+			log.addScheduleDecision(nodeID, entity, name, delay, interval, fault, memberFault)
 			err := cluster.nodes[nodeID].rt.Invoke(context.Background(), id, "Arm", []any{name, delay, interval}, nil)
 			outcome, classifyErr := classifyOutcome(err)
 			if classifyErr != nil {
@@ -398,7 +461,7 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 			id := gor.Identity{Type: entity.Type, Key: entity.Key}
 			name := "wake-" + entity.Key
 			backend.setFaultPlans(nil)
-			log.addDisarmDecision(nodeID, entity, name)
+			log.addDisarmDecision(nodeID, entity, name, memberFault)
 			err := cluster.nodes[nodeID].rt.Invoke(context.Background(), id, "Disarm", []any{name}, nil)
 			outcome, classifyErr := classifyOutcome(err)
 			if classifyErr != nil {
@@ -421,8 +484,12 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 		if err := timerTracker.check(); err != nil {
 			return log.String(), fmt.Errorf("step %d: %w", step, err)
 		}
-		time.Sleep(simulationStepDuration)
-		synctest.Wait()
+		cluster.advance(simulationStepDuration)
+		cluster.settle()
+		if err := cluster.checkInvariants(checkedIdentities); err != nil {
+			return log.String(), fmt.Errorf("step %d: %w", step, err)
+		}
+		log.addMemberObservation(backend.memberStatsSnapshot())
 	}
 	if err := timerTracker.check(); err != nil {
 		log.addScheduleObservation(backend.scheduleStats(), timerTracker.deliveryCount())

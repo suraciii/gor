@@ -28,8 +28,25 @@ type faultSpec struct {
 }
 
 type faultPlan struct {
-	read  faultSpec
-	write faultSpec
+	read   faultSpec
+	write  faultSpec
+	member memberFaultSpec
+}
+
+type memberFaultKind uint8
+
+const (
+	memberFaultNone memberFaultKind = iota
+	memberListError
+	memberCASFailure
+	memberCASAppliedError
+	memberDelay
+)
+
+type memberFaultSpec struct {
+	kind    memberFaultKind
+	delay   time.Duration
+	started chan struct{}
 }
 
 type scheduleFaultKind uint8
@@ -54,6 +71,17 @@ type scheduleStats struct {
 	claimAppliedErrors int
 }
 
+type memberStats struct {
+	listCalls        int
+	writeCalls       int
+	listErrors       int
+	casConflicts     int
+	casAppliedErrors int
+	delays           int
+	deadWrites       int
+	delayedDeadCAS   int
+}
+
 var (
 	errReadFailure                 = errors.New("sim store read failure")
 	errWriteFailure                = errors.New("sim store write failure")
@@ -61,6 +89,8 @@ var (
 	errScheduleListFailure         = errors.New("sim schedule list failure")
 	errScheduleClaimFailure        = errors.New("sim schedule claim failure")
 	errScheduleClaimAppliedFailure = errors.New("sim schedule claim applied before failure")
+	errMemberListFailure           = errors.New("sim member list failure")
+	errMemberAppliedFailure        = errors.New("sim member write applied before failure")
 )
 
 type scheduleKey struct {
@@ -73,16 +103,30 @@ type writeEvent struct {
 	data []byte
 }
 
+type fakeMemberKey struct {
+	nodeAddr   string
+	generation string
+}
+
+type memberWriteEvent struct {
+	key    fakeMemberKey
+	status store.MemberStatus
+}
+
 type fakeStore struct {
 	mu                  sync.Mutex
 	records             map[store.Identity]store.Record
 	plans               map[store.Identity]faultPlan
+	members             map[fakeMemberKey]store.Member
+	memberFault         memberFaultSpec
 	schedules           map[scheduleKey]store.Schedule
 	scheduleListFault   scheduleFaultKind
 	scheduleClaimFaults map[store.Identity]scheduleFaultKind
 	timerTracker        *timerTracker
 	stats               scheduleStats
+	memberStats         memberStats
 	writes              []writeEvent
+	memberWrites        []memberWriteEvent
 	delays              int
 	active              int
 	idle                chan struct{}
@@ -90,6 +134,7 @@ type fakeStore struct {
 
 var _ store.Store = (*fakeStore)(nil)
 var _ store.ScheduleStore = (*fakeStore)(nil)
+var _ store.MemberStore = (*fakeStore)(nil)
 
 func newFakeStore(tracker *timerTracker) *fakeStore {
 	idle := make(chan struct{})
@@ -97,6 +142,7 @@ func newFakeStore(tracker *timerTracker) *fakeStore {
 	return &fakeStore{
 		records:             make(map[store.Identity]store.Record),
 		plans:               make(map[store.Identity]faultPlan),
+		members:             make(map[fakeMemberKey]store.Member),
 		schedules:           make(map[scheduleKey]store.Schedule),
 		scheduleClaimFaults: make(map[store.Identity]scheduleFaultKind),
 		timerTracker:        tracker,
@@ -111,6 +157,12 @@ func (s *fakeStore) setFaultPlans(plans map[store.Identity]faultPlan) {
 	for id, plan := range plans {
 		s.plans[id] = plan
 	}
+}
+
+func (s *fakeStore) setMemberFault(fault memberFaultSpec) {
+	s.mu.Lock()
+	s.memberFault = fault
+	s.mu.Unlock()
 }
 
 func (s *fakeStore) setScheduleFault(id store.Identity, fault scheduleFaultKind) {
@@ -176,6 +228,105 @@ func (s *fakeStore) Write(_ context.Context, id store.Identity, data []byte, exp
 		return newETag, errAppliedWriteFailure
 	}
 	return newETag, nil
+}
+
+func (s *fakeStore) WriteMember(_ context.Context, member store.Member) (store.ETag, error) {
+	defer s.endOperation(s.beginOperation())
+	s.mu.Lock()
+	s.memberStats.writeCalls++
+	fault := s.memberFault
+	key := fakeMemberKey{nodeAddr: member.NodeAddr, generation: member.Generation}
+	current := s.members[key]
+	delayedActiveWrite := fault.kind == memberDelay && member.Status == store.MemberActive && member.ETag > 1
+	if fault.kind == memberCASFailure {
+		s.memberFault = memberFaultSpec{}
+		s.memberStats.casConflicts++
+		s.mu.Unlock()
+		return 0, store.ErrConflict
+	}
+	if delayedActiveWrite {
+		s.memberFault = memberFaultSpec{}
+		s.memberStats.delays++
+		s.mu.Unlock()
+		if fault.started != nil {
+			close(fault.started)
+		}
+		s.recordDelay()
+		time.Sleep(fault.delay)
+		s.mu.Lock()
+	}
+
+	current = s.members[key]
+	if current.ETag != member.ETag {
+		if delayedActiveWrite && current.Status == store.MemberDead {
+			s.memberStats.delayedDeadCAS++
+		}
+		s.mu.Unlock()
+		return 0, store.ErrConflict
+	}
+	if fault.kind == memberCASAppliedError {
+		s.memberFault = memberFaultSpec{}
+	}
+
+	member.ETag = current.ETag + 1
+	s.members[key] = member
+	s.memberWrites = append(s.memberWrites, memberWriteEvent{key: key, status: member.Status})
+	if member.Status == store.MemberDead {
+		s.memberStats.deadWrites++
+	}
+	if fault.kind == memberCASAppliedError {
+		s.memberStats.casAppliedErrors++
+		s.mu.Unlock()
+		return member.ETag, errMemberAppliedFailure
+	}
+	s.mu.Unlock()
+	return member.ETag, nil
+}
+
+func (s *fakeStore) ListMembers(_ context.Context) ([]store.Member, error) {
+	defer s.endOperation(s.beginOperation())
+	s.mu.Lock()
+	s.memberStats.listCalls++
+	fault := s.memberFault
+	if fault.kind == memberListError {
+		s.memberFault = memberFaultSpec{}
+		s.memberStats.listErrors++
+		s.mu.Unlock()
+		return nil, errMemberListFailure
+	}
+	members := make([]store.Member, 0, len(s.members))
+	for _, member := range s.members {
+		members = append(members, member)
+	}
+	s.mu.Unlock()
+	sort.Slice(members, func(i, j int) bool {
+		if members[i].NodeAddr != members[j].NodeAddr {
+			return members[i].NodeAddr < members[j].NodeAddr
+		}
+		return members[i].Generation < members[j].Generation
+	})
+	return members, nil
+}
+
+func (s *fakeStore) memberStatsSnapshot() memberStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.memberStats
+}
+
+func (s *fakeStore) checkMemberStatuses() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dead := make(map[fakeMemberKey]bool)
+	for _, event := range s.memberWrites {
+		if dead[event.key] && event.status != store.MemberDead {
+			return errors.New("dead member became active again")
+		}
+		if event.status == store.MemberDead {
+			dead[event.key] = true
+		}
+	}
+	return nil
 }
 
 func (s *fakeStore) snapshotDue(now time.Time) ([]store.Schedule, scheduleFaultKind) {

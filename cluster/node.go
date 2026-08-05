@@ -144,19 +144,20 @@ func (n *Node) run(self store.Member, view View) {
 	for {
 		select {
 		case <-heartbeat.C():
-			updated, alive := n.heartbeat(self)
+			updated, deadView, alive := n.heartbeat(self)
 			if !alive {
+				n.notify(deadView)
 				return
 			}
 			self = updated
 		case <-viewTicker.C():
 			updated, alive := n.pollView(self, view)
-			if !alive {
-				return
-			}
 			if !sameView(view, updated) {
 				view = updated
 				n.notify(view)
+			}
+			if !alive {
+				return
 			}
 		case <-n.ctx.Done():
 			n.leave(self)
@@ -165,7 +166,7 @@ func (n *Node) run(self store.Member, view View) {
 	}
 }
 
-func (n *Node) heartbeat(self store.Member) (store.Member, bool) {
+func (n *Node) heartbeat(self store.Member) (store.Member, View, bool) {
 	updated := self
 	updated.IamAliveAt = n.clock.Now()
 	etag, err := n.table.WriteMember(n.ctx, updated)
@@ -173,33 +174,34 @@ func (n *Node) heartbeat(self store.Member) (store.Member, bool) {
 		if errors.Is(err, store.ErrConflict) {
 			members, listErr := n.table.ListMembers(n.ctx)
 			if listErr != nil {
-				return self, true
+				return self, View{}, true
 			}
 			index := memberIndex(members, self)
 			if index < 0 || members[index].Status == store.MemberDead {
 				n.state.Store(uint32(StateDead))
-				return self, false
+				return self, NewView(members), false
 			}
-			return members[index], true
+			return members[index], View{}, true
 		}
-		return self, true
+		return self, View{}, true
 	}
 	updated.ETag = etag
-	return updated, true
+	return updated, View{}, true
 }
 
 func (n *Node) pollView(self store.Member, current View) (View, bool) {
-	members, err := n.table.ListMembers(n.ctx)
+	snapshot, err := n.table.ListMembers(n.ctx)
 	if err != nil {
 		return current, true
 	}
+	members := append([]store.Member(nil), snapshot...)
 	now := n.clock.Now()
 	for index := range members {
 		member := members[index]
 		if sameMember(member, self) {
 			if member.Status == store.MemberDead {
 				n.state.Store(uint32(StateDead))
-				return current, false
+				return NewView(members), false
 			}
 			continue
 		}
@@ -207,12 +209,14 @@ func (n *Node) pollView(self store.Member, current View) (View, bool) {
 			continue
 		}
 
-		member.Status = store.MemberDead
-		etag, err := n.table.WriteMember(n.ctx, member)
-		if err == nil {
-			member.ETag = etag
-			members[index] = member
+		candidate := member
+		candidate.Status = store.MemberDead
+		etag, err := n.table.WriteMember(n.ctx, candidate)
+		if err != nil {
+			continue
 		}
+		candidate.ETag = etag
+		members[index] = candidate
 	}
 	return NewView(members), true
 }
