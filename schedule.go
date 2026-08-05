@@ -9,6 +9,9 @@ import (
 	"github.com/suraciii/gor/store"
 )
 
+// ErrScheduleStoreUnavailable is returned by Schedule.Set and Schedule.Cancel
+// when no schedule store is configured. It is a sentinel suitable for
+// errors.Is.
 var ErrScheduleStoreUnavailable = errors.New("schedule store is not configured")
 
 // ScheduleTime describes when a schedule first runs and whether it repeats.

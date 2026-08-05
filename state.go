@@ -8,6 +8,9 @@ import (
 	"github.com/suraciii/gor/store"
 )
 
+// Binder is the runtime-bound context passed to an entity factory. Entity code
+// uses the Binder to create state, schedules, and references; application code
+// should use the supplied Binder rather than construct one.
 type Binder struct {
 	runtime  *Runtime
 	identity store.Identity

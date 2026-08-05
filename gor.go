@@ -19,12 +19,23 @@ import (
 	"github.com/suraciii/gor/transport"
 )
 
+// ErrTypeNotInstalled is wrapped by Register when the entity type has not
+// been installed in the target Runtime. Use errors.Is to test that condition;
+// Ref instead panics with a message based on this error.
 var ErrTypeNotInstalled = errors.New("entity type is not installed; call InstallType or run the generated Install")
 
 // Identity identifies an entity by its registered type name and key.
 type Identity = runtimepkg.Identity
 type Activation = runtimepkg.Activation
 
+// CallObservation describes one invocation observed by an OnCall callback.
+// EntityType and Method identify the call, Duration is measured with the
+// observing Runtime's configured clock, and Err is the error returned to the
+// caller.
+//
+// For a forwarded call, the initiating Runtime reports one observation whose
+// duration includes forwarding; the owning Runtime does not report a second
+// observation.
 type CallObservation struct {
 	EntityType string
 	Method     string
@@ -32,14 +43,23 @@ type CallObservation struct {
 	Err        error
 }
 
+// Scope is the generated-reference scope accepted by Ref. Runtime and Binder
+// implement it; application code should pass those values rather than
+// implement Scope.
 type Scope interface {
 	scopeRuntime() *Runtime
 }
 
+// Activatable is implemented by an entity that needs a hook after its state is
+// loaded and before its first method call. An OnActivate error prevents that
+// activation from being established and is returned by the triggering call.
 type Activatable interface {
 	OnActivate(context.Context) error
 }
 
+// Deactivatable is implemented by an entity that needs a hook when its
+// activation is normally stopped. Its error is reported through OnError when
+// configured; Kill skips this hook.
 type Deactivatable interface {
 	OnDeactivate(context.Context) error
 }
@@ -71,6 +91,10 @@ type Runtime struct {
 	types            map[string]typeRegistration
 }
 
+// Config contains the settings assembled by New from Option values. Use the
+// provided option functions for normal configuration; custom options may
+// inspect or modify Config directly. Omitted fields receive the defaults
+// described by their corresponding option.
 type Config struct {
 	runtimepkg.Config
 	Store             store.Store
@@ -92,6 +116,9 @@ type Config struct {
 	MaxTableLatency   time.Duration
 }
 
+// Invoker is the generated proxy call boundary. Generated code receives an
+// Invoker from the runtime; application code normally consumes generated
+// proxies instead of implementing Invoker.
 type Invoker interface {
 	Invoke(context.Context, Identity, string, any, any) error
 }
@@ -104,6 +131,8 @@ type typeRegistration struct {
 	newCall  func(string) (any, any)
 }
 
+// Option configures a Runtime created by New. New applies options in argument
+// order, then derives a schedule store when none was supplied.
 type Option func(*Config)
 
 func (rt *Runtime) scopeRuntime() *Runtime {
@@ -205,126 +234,192 @@ func New(options ...Option) (*Runtime, error) {
 	return rt, nil
 }
 
+// WithClock sets the clock used by runtime and cluster timers. If omitted, New
+// uses clock.Real{}.
 func WithClock(value clock.Clock) Option {
 	return func(config *Config) {
 		config.Clock = value
 	}
 }
 
+// WithMailboxCapacity sets the number of calls that may wait in one entity's
+// mailbox. If omitted, New allows 16 queued calls per entity; calls that cannot
+// be queued are rejected.
 func WithMailboxCapacity(value int) Option {
 	return func(config *Config) {
 		config.MailboxCapacity = value
 	}
 }
 
+// WithIdleTimeout sets how long an unused activation may remain before idle
+// eviction. If omitted, New uses one minute. A non-positive value disables
+// idle eviction.
 func WithIdleTimeout(value time.Duration) Option {
 	return func(config *Config) {
 		config.IdleTimeout = value
 	}
 }
 
+// WithEvictionInterval sets how often idle activations are checked. If omitted,
+// New checks once per second. A non-positive value disables idle eviction.
 func WithEvictionInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.EvictionInterval = value
 	}
 }
 
+// WithStore sets the store used for entity state. If omitted, New uses an
+// in-memory store; when the selected store also implements ScheduleStore and
+// no schedule store is supplied, New uses it for schedules too.
 func WithStore(value store.Store) Option {
 	return func(config *Config) {
 		config.Store = value
 	}
 }
 
+// WithScheduleStore sets the store used for entity schedules. If omitted, New
+// derives it from Store when Store implements ScheduleStore; otherwise schedule
+// operations return ErrScheduleStoreUnavailable.
 func WithScheduleStore(value store.ScheduleStore) Option {
 	return func(config *Config) {
 		config.ScheduleStore = value
 	}
 }
 
+// WithScheduleInterval sets the interval for background schedule polling. If
+// omitted, New polls once per second. A non-positive value keeps schedules
+// persisted but disables automatic polling.
 func WithScheduleInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.ScheduleInterval = value
 	}
 }
 
+// WithTransport sets the transport used by a clustered runtime for serving and
+// forwarding calls. If omitted, no transport is started; a transport must be
+// configured together with a MemberStore.
 func WithTransport(value transport.Transport) Option {
 	return func(config *Config) {
 		config.Transport = value
 	}
 }
 
+// OnError sets the callback for errors from background scheduled invocations
+// and normal OnDeactivate hooks. If omitted, those errors are not reported.
+// The callback may run asynchronously and concurrently with application code;
+// it is not called for ordinary foreground Invoke errors.
 func OnError(f func(id Identity, method string, err error)) Option {
 	return func(config *Config) {
 		config.OnError = f
 	}
 }
 
+// OnCall sets the callback invoked after each call initiated through this
+// Runtime, including calls that return an error and calls started by the
+// scheduler. If omitted, no observations are produced.
+//
+// The callback runs synchronously on the invoking goroutine and may be called
+// concurrently for different calls. For forwarded calls it runs only on the
+// initiating Runtime, and the duration includes forwarding.
 func OnCall(f func(CallObservation)) Option {
 	return func(config *Config) {
 		config.OnCall = f
 	}
 }
 
+// WithMemberStore sets the membership store used to enable clustering. If
+// omitted, the runtime operates without cluster membership; a MemberStore must
+// be configured together with a Transport.
 func WithMemberStore(value store.MemberStore) Option {
 	return func(config *Config) {
 		config.MemberStore = value
 	}
 }
 
+// WithNodeAddr sets this node's address in cluster membership and ownership
+// decisions. If omitted, the address is the empty string; the option has no
+// effect when clustering is disabled.
 func WithNodeAddr(value string) Option {
 	return func(config *Config) {
 		config.NodeAddr = value
 	}
 }
 
+// WithGeneration sets this node's membership generation. If omitted, the
+// generation is the empty string; the option has no effect when clustering is
+// disabled.
 func WithGeneration(value string) Option {
 	return func(config *Config) {
 		config.Generation = value
 	}
 }
 
+// WithHeartbeatInterval sets the cluster heartbeat interval. If omitted, New
+// uses one second; the option has no effect when clustering is disabled.
 func WithHeartbeatInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.HeartbeatInterval = value
 	}
 }
 
+// WithViewInterval sets how often the cluster membership view is refreshed. If
+// omitted, New uses one second; the option has no effect when clustering is
+// disabled.
 func WithViewInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.ViewInterval = value
 	}
 }
 
+// WithProbeInterval sets the cluster probe interval. If omitted, the value is
+// zero; a clustered New then returns an error because the interval must be
+// positive. It has no effect when clustering is disabled.
 func WithProbeInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.ProbeInterval = value
 	}
 }
 
+// WithProbeTimeout sets the deadline for a cluster probe. If omitted, the
+// value is zero; a clustered New then returns an error because the timeout must
+// be positive. It has no effect when clustering is disabled.
 func WithProbeTimeout(value time.Duration) Option {
 	return func(config *Config) {
 		config.ProbeTimeout = value
 	}
 }
 
+// WithProbeFailures sets the number of failed probes required before a member
+// is considered for a death vote. If omitted, the value is zero; a clustered
+// New then returns an error because the value must be positive. It has no effect
+// when clustering is disabled.
 func WithProbeFailures(value int) Option {
 	return func(config *Config) {
 		config.ProbeFailures = value
 	}
 }
 
+// WithVoteTTL sets how long a cluster suspect vote remains valid. If omitted,
+// the value is zero; a clustered New then returns an error because the duration
+// must be positive. It has no effect when clustering is disabled.
 func WithVoteTTL(value time.Duration) Option {
 	return func(config *Config) {
 		config.VoteTTL = value
 	}
 }
 
+// WithMaxTickGap sets the maximum allowed gap between healthy cluster ticks. If
+// omitted, the value is zero; a clustered New then returns an error because the
+// duration must be positive. It has no effect when clustering is disabled.
 func WithMaxTickGap(value time.Duration) Option {
 	return func(config *Config) {
 		config.MaxTickGap = value
 	}
 }
 
+// WithMaxTableLatency sets the maximum acceptable membership-store latency. If
+// omitted, the value is zero; a clustered New then returns an error because the
+// duration must be positive. It has no effect when clustering is disabled.
 func WithMaxTableLatency(value time.Duration) Option {
 	return func(config *Config) {
 		config.MaxTableLatency = value
@@ -387,6 +482,9 @@ func (rt *Runtime) invoke(ctx context.Context, id Identity, method string, args 
 	return rt.engine.Invoke(ctx, id, method, args, reply)
 }
 
+// Owns reports whether this runtime currently owns id. It is an integration
+// seam for scheduling and cluster plumbing; application code should normally
+// invoke a reference or Runtime.Invoke and let routing choose the owner.
 func (rt *Runtime) Owns(id store.Identity) bool {
 	if rt.clusterNode == nil {
 		return true
@@ -401,6 +499,10 @@ type boundInstance struct {
 	binder *Binder
 }
 
+// InstallType installs the dispatch and proxy factories required for T in rt.
+// Generated Install code normally calls it; application code should use the
+// generated installer rather than hand-writing this integration seam. It
+// returns an error when T is already installed in rt.
 func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, any, any) error, newProxy func(Invoker, Identity) T, newCall func(string) (any, any)) error {
 	name := TypeName[T]()
 	rt.typesMu.Lock()
@@ -619,6 +721,9 @@ func (i scheduleInvoker) Owns(id store.Identity) bool {
 	return i.runtime.Owns(id)
 }
 
+// TypeName returns the registered name used for T by the generated runtime
+// glue. Application code should use this helper rather than constructing type
+// names by hand.
 func TypeName[T any]() string {
 	return strings.TrimPrefix(fmt.Sprintf("%T", (*T)(nil)), "*")
 }
