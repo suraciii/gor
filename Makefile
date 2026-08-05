@@ -1,4 +1,4 @@
-.PHONY: test sim gen lint net fmt tidy bench
+.PHONY: test sim gen lint net fmt fmt-check ci tidy bench
 
 test:
 	go test ./...
@@ -27,6 +27,22 @@ lint:
 
 fmt:
 	gofmt -l -w .
+
+fmt-check:
+	@files="$$(gofmt -l .)"; \
+	if test -n "$$files"; then \
+		printf '%s\n' "$$files"; \
+		exit 1; \
+	fi
+
+ci:
+	$(MAKE) fmt-check
+	$(MAKE) lint
+	$(MAKE) test
+	go test -count=1 -race ./...
+	$(MAKE) sim
+	$(MAKE) gen
+	$(MAKE) net
 
 tidy:
 	go mod tidy
