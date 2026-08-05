@@ -99,6 +99,32 @@ func TestHTTPRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestHTTPReportWriteFailureIsNotBadRequest(t *testing.T) {
+	backend := &failingWorkshopStore{Memory: store.NewMemory()}
+	sourceClock := clock.NewFake(time.Unix(0, 0).UTC())
+	rt, err := gor.New(
+		gor.WithStore(backend),
+		gor.WithClock(sourceClock),
+		gor.WithScheduleInterval(time.Second),
+		gor.WithIdleTimeout(0),
+		gor.WithEvictionInterval(0),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := shadow.Register(rt); err != nil {
+		rt.Close()
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	backend.failWorkshopWrites.Store(true)
+
+	response := serve(shadow.NewHandler(rt), http.MethodPost, "/devices/device-1/reports", `{"workshop_id":"assembly","state":"temperature=20"}`)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("report status with workshop write failure = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+}
+
 func serve(handler http.Handler, method string, path string, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	response := httptest.NewRecorder()

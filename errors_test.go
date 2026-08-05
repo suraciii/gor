@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/suraciii/gor/store"
 )
 
 const testApplicationCode Code = "test.application_failure"
@@ -59,5 +61,63 @@ func TestInvokePreservesApplicationCodeAndMapsFrameworkCode(t *testing.T) {
 	err = rt.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Balance", &accountBalanceRequest{}, &accountBalanceReply{})
 	if !errors.Is(err, ErrRuntimeClosed) {
 		t.Fatalf("closed runtime error = %v, want ErrRuntimeClosed", err)
+	}
+}
+
+func TestInvokeMapsMethodPanicToErrPanic(t *testing.T) {
+	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
+	defer rt.Close()
+	installAccountWithDispatch(t, rt, func(ctx context.Context, instance Account, method string, args any, reply any) error {
+		if method == "Deposit" {
+			panic("method exploded")
+		}
+		return dispatchAccount(ctx, instance, method, args, reply)
+	})
+	if err := Register[Account](rt, func(b *Binder) Account {
+		return &account{value: NewState[int64](b, "value")}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Deposit", &accountDepositRequest{}, &accountDepositReply{})
+	if !errors.Is(err, ErrPanic) {
+		t.Fatalf("panic error = %v, want ErrPanic", err)
+	}
+	if got, ok := CodeOf(err); !ok || got != ErrPanic {
+		t.Fatalf("CodeOf(panic error) = (%q, %v), want (%q, true)", got, ok, ErrPanic)
+	}
+}
+
+func TestPublicErrorMapsPersistenceConflict(t *testing.T) {
+	err := publicError(store.ErrConflict)
+	if !errors.Is(err, ErrPersistenceConflict) {
+		t.Fatalf("publicError(store.ErrConflict) = %v, want ErrPersistenceConflict", err)
+	}
+	if got, ok := CodeOf(err); !ok || got != ErrPersistenceConflict {
+		t.Fatalf("CodeOf(publicError(store.ErrConflict)) = (%q, %v), want (%q, true)", got, ok, ErrPersistenceConflict)
+	}
+}
+
+func TestInvokePreservesContextDeadlineExceeded(t *testing.T) {
+	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
+	defer rt.Close()
+	installAccountWithDispatch(t, rt, func(ctx context.Context, instance Account, method string, args any, reply any) error {
+		if method == "Deposit" {
+			return context.DeadlineExceeded
+		}
+		return dispatchAccount(ctx, instance, method, args, reply)
+	})
+	if err := Register[Account](rt, func(b *Binder) Account {
+		return &account{value: NewState[int64](b, "value")}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Deposit", &accountDepositRequest{}, &accountDepositReply{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline error = %v, want context.DeadlineExceeded", err)
+	}
+	if got, ok := CodeOf(err); ok {
+		t.Fatalf("CodeOf(deadline error) = (%q, true), want no code", got)
 	}
 }

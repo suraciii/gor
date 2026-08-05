@@ -195,16 +195,16 @@ func TestRuntime_HandleProbeRejectsStoppedNode(t *testing.T) {
 		rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, clock.NewFake(start), "node-a", "generation-a", network.add("node-a"))...)
 		rt.Close()
 
-		payload, err := rt.handle(context.Background(), []byte(`{"kind":"probe"}`))
+		payload, err := rt.handleProbe()
 		if err != nil {
-			t.Fatalf("handle error = %v", err)
+			t.Fatalf("handle probe error = %v", err)
 		}
 		var response callResponse
 		if err := json.Unmarshal(payload, &response); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
-		if response.Error == nil {
-			t.Fatal("stopped node returned a probe reply")
+		if response.Error == nil || response.Error.Code != string(ErrNodeDead) {
+			t.Fatalf("stopped node probe response = %#v, want node-dead code", response.Error)
 		}
 	})
 }

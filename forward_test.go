@@ -113,8 +113,8 @@ func TestRuntime_HandleRejectsUnknownMethod(t *testing.T) {
 	if err := json.Unmarshal(payload, &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Error == nil {
-		t.Fatal("unknown method response has no error text")
+	if response.Error == nil || response.Error.Code != string(ErrUnknownMethod) {
+		t.Fatalf("response error = %#v, want unknown-method code", response.Error)
 	}
 }
 
@@ -316,22 +316,14 @@ func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
 		if errors.As(err, &typedFailure) {
 			t.Fatal("forwarded error retained the remote error type")
 		}
-		if !errors.Is(err, routedFailureCode) {
-			t.Fatalf("forwarded method error = %v, want routed failure code", err)
-		}
-		if got, ok := CodeOf(err); !ok || got != routedFailureCode {
-			t.Fatalf("forwarded CodeOf(error) = (%q, %v), want (%q, true)", got, ok, routedFailureCode)
-		}
+		assertRoutedFailureCode(t, err)
 
 		local := findForwardTarget(t, first, "node-a")
-		localFailure := first.Invoke(context.Background(), local, "Fail", &routedAccountFailRequest{}, nil)
-		if !errors.Is(localFailure, routedFailureCode) {
-			t.Fatalf("local method error = %v, want routed failure code", localFailure)
-		}
-		if got, ok := CodeOf(localFailure); !ok || got != routedFailureCode {
-			t.Fatalf("local CodeOf(error) = (%q, %v), want (%q, true)", got, ok, routedFailureCode)
-		}
+		assertRoutedFailureCode(t, first.Invoke(context.Background(), local, "Fail", &routedAccountFailRequest{}, nil))
 		opaqueErr := first.Invoke(context.Background(), remote, "Opaque", &routedAccountOpaqueRequest{}, nil)
+		if opaqueErr == nil {
+			t.Fatal("opaque forwarded error was dropped")
+		}
 		if errors.Is(opaqueErr, remoteFailure) {
 			t.Fatal("opaque forwarded error retained the remote sentinel")
 		}
@@ -788,6 +780,16 @@ type routedAccountOpaqueRequest struct{}
 type routedAccountOpaqueReply struct{}
 type accountFailRequest struct{}
 type accountFailReply struct{}
+
+func assertRoutedFailureCode(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, routedFailureCode) {
+		t.Fatalf("method error = %v, want routed failure code", err)
+	}
+	if got, ok := CodeOf(err); !ok || got != routedFailureCode {
+		t.Fatalf("CodeOf(error) = (%q, %v), want (%q, true)", got, ok, routedFailureCode)
+	}
+}
 
 const routedFailureCode Code = "test.routed_failure"
 
