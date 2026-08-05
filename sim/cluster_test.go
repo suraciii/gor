@@ -5,6 +5,7 @@ package sim
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -123,6 +124,128 @@ func TestSim_DoubleActivationRejectsETagConflict(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestSim_NetworkPartitionCreatesDualActivationAndRecovers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		tracker := newTimerTracker()
+		backend := newFakeStore(tracker)
+		cluster, err := newSimulationCluster(backend, clusterNodeCount, tracker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cluster.close()
+
+		cluster.advance(5 * simulationStepDuration)
+		counterType := gor.TypeName[counter]()
+		localID, remoteID := findPartitionIdentities(t, cluster, counterType)
+		local := gor.Identity(localID)
+		remote := gor.Identity(remoteID)
+
+		seed := awaitCall(invokeAsync(cluster.nodes[0].rt, local, 2))
+		if seed.err != nil || seed.value != 2 {
+			t.Fatalf("seed call = (%d, %v), want (2, nil)", seed.value, seed.err)
+		}
+		cluster.nodes[0].rt.Deactivate(local)
+		synctest.Wait()
+
+		if err := cluster.partition(map[int]int{0: 0, 1: 1}); err != nil {
+			t.Fatal(err)
+		}
+		partitioned := awaitCall(invokeAsync(cluster.nodes[0].rt, remote, 1))
+		if !errors.Is(partitioned.err, errSimNetworkPartition) {
+			t.Fatalf("cross-partition forward error = %v, want %v", partitioned.err, errSimNetworkPartition)
+		}
+		_, _, dropped := cluster.network.stats()
+		if dropped == 0 {
+			t.Fatal("partition dropped no transport messages")
+		}
+
+		cluster.advance(4 * simulationStepDuration)
+		if !cluster.nodes[0].rt.Owns(localID) || !cluster.nodes[1].rt.Owns(localID) {
+			t.Fatalf("partition did not create dual ownership: node0=%t node1=%t", cluster.nodes[0].rt.Owns(localID), cluster.nodes[1].rt.Owns(localID))
+		}
+
+		started := make(chan struct{}, 2)
+		release := make(chan struct{})
+		backend.setReadBarrier(localID, readBarrier{started: started, release: release})
+		first := invokeAsync(cluster.nodes[0].rt, local, 3)
+		second := invokeAsync(cluster.nodes[1].rt, local, 5)
+		synctest.Wait()
+		for range 2 {
+			<-started
+		}
+		close(release)
+		synctest.Wait()
+		firstResult := <-first
+		secondResult := <-second
+		conflicts := 0
+		successes := 0
+		for _, result := range []testCallResult{firstResult, secondResult} {
+			switch {
+			case errors.Is(result.err, store.ErrConflict):
+				conflicts++
+			case result.err == nil:
+				successes++
+			default:
+				t.Fatalf("partition write result = (%d, %v), want success or ErrConflict", result.value, result.err)
+			}
+		}
+		if conflicts != 1 || successes != 1 {
+			t.Fatalf("partition write results = (%v, %v), want one success and one conflict", firstResult.err, secondResult.err)
+		}
+		backend.setReadBarrier(localID, readBarrier{})
+
+		cluster.heal()
+		cluster.settle()
+		if err := cluster.checkInvariants([]store.Identity{localID, remoteID}); err != nil {
+			t.Fatal(err)
+		}
+		if cluster.nodes[0].rt.Owns(localID) == cluster.nodes[1].rt.Owns(localID) {
+			t.Fatalf("healed local ownership = (%t, %t), want exactly one owner", cluster.nodes[0].rt.Owns(localID), cluster.nodes[1].rt.Owns(localID))
+		}
+
+		healedRemote := findIdentityOwnedBy(t, cluster, 1, counterType)
+		sendsBefore, deliveredBefore, droppedBefore := cluster.network.stats()
+		recovered := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.Identity(healedRemote), 7))
+		if recovered.err != nil || recovered.value != 7 {
+			t.Fatalf("healed forwarded call = (%d, %v), want (7, nil)", recovered.value, recovered.err)
+		}
+		sendsAfter, deliveredAfter, droppedAfter := cluster.network.stats()
+		if sendsAfter <= sendsBefore || deliveredAfter <= deliveredBefore || droppedAfter != droppedBefore {
+			t.Fatalf("healed transport stats = (%d,%d,%d), before (%d,%d,%d), want one delivered send and no new drop", sendsAfter, deliveredAfter, droppedAfter, sendsBefore, deliveredBefore, droppedBefore)
+		}
+	})
+}
+
+func findPartitionIdentities(t *testing.T, cluster *simulationCluster, entityType string) (store.Identity, store.Identity) {
+	t.Helper()
+	var local, remote store.Identity
+	for index := 0; index < 4096 && (local == (store.Identity{}) || remote == (store.Identity{})); index++ {
+		id := store.Identity{Type: entityType, Key: fmt.Sprintf("partition-%04d", index)}
+		switch {
+		case cluster.nodes[0].rt.Owns(id) && local == (store.Identity{}):
+			local = id
+		case cluster.nodes[1].rt.Owns(id) && remote == (store.Identity{}):
+			remote = id
+		}
+	}
+	if local == (store.Identity{}) || remote == (store.Identity{}) {
+		t.Fatalf("could not find identities owned by separate nodes: local=%v remote=%v", local, remote)
+	}
+	return local, remote
+}
+
+func findIdentityOwnedBy(t *testing.T, cluster *simulationCluster, nodeID int, entityType string) store.Identity {
+	t.Helper()
+	for index := 0; index < 4096; index++ {
+		id := store.Identity{Type: entityType, Key: fmt.Sprintf("partition-%04d", index)}
+		if cluster.nodes[nodeID].rt.Owns(id) {
+			return id
+		}
+	}
+	t.Fatalf("could not find identity owned by node %d", nodeID)
+	return store.Identity{}
 }
 
 func TestSim_CrashRestartRestoresState(t *testing.T) {

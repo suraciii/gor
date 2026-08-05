@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"runtime"
 	"sort"
+	"sync/atomic"
 	"testing/synctest"
 	"time"
 
@@ -25,11 +26,13 @@ type clusterNode struct {
 }
 
 type simulationCluster struct {
-	backend     *fakeStore
-	tracker     *timerTracker
-	clock       *clock.Fake
-	generations []int
-	nodes       []*clusterNode
+	backend           *fakeStore
+	tracker           *timerTracker
+	clock             *clock.Fake
+	generations       []int
+	nodes             []*clusterNode
+	network           *simulationNetwork
+	operationSequence atomic.Int64
 }
 
 func newSimulationCluster(backend *fakeStore, count int, tracker *timerTracker) (*simulationCluster, error) {
@@ -39,6 +42,7 @@ func newSimulationCluster(backend *fakeStore, count int, tracker *timerTracker) 
 		clock:       clock.NewFake(time.Unix(0, 0)),
 		generations: make([]int, count),
 		nodes:       make([]*clusterNode, count),
+		network:     newSimulationNetwork(backend),
 	}
 	for id := range cluster.nodes {
 		rt, err := cluster.newRuntime(id, 0)
@@ -52,16 +56,19 @@ func newSimulationCluster(backend *fakeStore, count int, tracker *timerTracker) 
 }
 
 func (c *simulationCluster) newRuntime(id, generation int) (*gor.Runtime, error) {
+	addr := fmt.Sprintf("node-%d", id)
+	members, network := c.network.addNode(addr)
 	return newCounterRuntimeWithOptions(
 		c.backend,
 		c.tracker,
 		gor.WithClock(c.clock),
-		gor.WithMemberStore(c.backend),
-		gor.WithNodeAddr(fmt.Sprintf("node-%d", id)),
+		gor.WithMemberStore(members),
+		gor.WithNodeAddr(addr),
 		gor.WithGeneration(memberGeneration(id, generation)),
 		gor.WithHeartbeatInterval(simulationStepDuration),
 		gor.WithViewInterval(simulationStepDuration),
 		gor.WithDeadAfter(3*simulationStepDuration),
+		gor.WithTransport(network),
 	)
 }
 
@@ -167,6 +174,28 @@ func (c *simulationCluster) settle() {
 	}
 }
 
+func (c *simulationCluster) partition(groups map[int]int) error {
+	addressGroups := make(map[string]int, len(groups))
+	for id, group := range groups {
+		node, err := c.node(id)
+		if err != nil {
+			return err
+		}
+		if node.rt == nil || runtimeStopped(node.rt) {
+			return fmt.Errorf("cannot partition stopped node %d", id)
+		}
+		addressGroups[fmt.Sprintf("node-%d", id)] = group
+	}
+	if len(addressGroups) != len(c.liveNodeIDs()) {
+		return fmt.Errorf("partition groups cover %d nodes, want %d", len(addressGroups), len(c.liveNodeIDs()))
+	}
+	return c.network.partition(addressGroups)
+}
+
+func (c *simulationCluster) heal() {
+	c.network.heal(c.clock.Now())
+}
+
 func (c *simulationCluster) checkInvariants(ids []store.Identity) error {
 	if err := c.backend.checkMemberStatuses(); err != nil {
 		return err
@@ -265,16 +294,16 @@ func executeDecisions(cluster *simulationCluster, decisions []decision, crashNod
 	for _, selected := range decisions {
 		selected := selected
 		go func() {
-			call := time.Now().UnixNano()
-			var value int64
-			err := selected.rt.Invoke(context.Background(), selected.id, "Add", []any{selected.delta}, &value)
+			call := cluster.operationSequence.Add(1)
+			var reply counterAddReply
+			err := selected.rt.Invoke(context.Background(), selected.id, "Add", &counterAddRequest{A0: selected.delta}, &reply)
 			results <- invocationResult{
 				id: selected.id,
 				operation: porcupine.Operation{
 					Input:  selected.delta,
 					Call:   call,
-					Output: counterOperationOutputFor(value, err),
-					Return: time.Now().UnixNano(),
+					Output: counterOperationOutputFor(reply.R0, err),
+					Return: cluster.operationSequence.Add(1),
 				},
 				err: err,
 			}

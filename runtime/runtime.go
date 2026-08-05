@@ -12,9 +12,8 @@ import (
 )
 
 var (
-	ErrTypeNotRegistered  = errors.New("entity type is not registered")
-	ErrRuntimeClosed      = errors.New("runtime closed")
-	ErrRemoteNotSupported = errors.New("remote invocation is not implemented")
+	ErrTypeNotRegistered = errors.New("entity type is not registered")
+	ErrRuntimeClosed     = errors.New("runtime closed")
 )
 
 type Identity struct {
@@ -22,21 +21,7 @@ type Identity struct {
 	Key  string
 }
 
-type Node struct {
-	Local bool
-}
-
-type Locator interface {
-	Locate(context.Context, Identity) (Node, error)
-}
-
-type LocalLocator struct{}
-
-func (LocalLocator) Locate(context.Context, Identity) (Node, error) {
-	return Node{Local: true}, nil
-}
-
-type Dispatch func(context.Context, any, string, []any, any) error
+type Dispatch func(context.Context, any, string, any, any) error
 
 type Registration struct {
 	Factory      func(context.Context, Identity) (any, error)
@@ -62,7 +47,6 @@ func (d Discard) Unwrap() error {
 type Config struct {
 	Clock            clock.Clock
 	MailboxCapacity  int
-	Locator          Locator
 	IdleTimeout      time.Duration
 	EvictionInterval time.Duration
 }
@@ -70,7 +54,6 @@ type Config struct {
 type Runtime struct {
 	clock           clock.Clock
 	mailboxCapacity int
-	locator         Locator
 	idleTimeout     time.Duration
 
 	mu            sync.Mutex
@@ -119,7 +102,6 @@ func New(config Config) *Runtime {
 	r := &Runtime{
 		clock:           config.Clock,
 		mailboxCapacity: config.MailboxCapacity,
-		locator:         config.Locator,
 		idleTimeout:     config.IdleTimeout,
 		registrations:   make(map[string]Registration),
 		activations:     make(map[Identity]*activation),
@@ -148,18 +130,10 @@ func (r *Runtime) Register(name string, registration Registration) error {
 	return nil
 }
 
-func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args []any, reply any) error {
+func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(r.killCtx, cancel)()
-
-	node, err := r.locator.Locate(callCtx, id)
-	if err != nil {
-		return err
-	}
-	if !node.Local {
-		return ErrRemoteNotSupported
-	}
 
 	registration, err := r.registration(id.Type)
 	if err != nil {
@@ -397,7 +371,7 @@ func (r *Runtime) callFinished(act *activation) {
 	r.mu.Unlock()
 }
 
-func (r *Runtime) dispatch(registration Registration, act *activation, ctx context.Context, method string, args []any, reply any) (err error) {
+func (r *Runtime) dispatch(registration Registration, act *activation, ctx context.Context, method string, args any, reply any) (err error) {
 	defer func() {
 		if value := recover(); value != nil {
 			err = fmt.Errorf("entity method panicked: %v", value)

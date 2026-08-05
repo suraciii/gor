@@ -20,6 +20,20 @@ type Account interface {
 	Balance(context.Context) (int64, error)
 }
 
+type accountDepositRequest struct {
+	A0 int64
+}
+
+type accountDepositReply struct {
+	R0 int64
+}
+
+type accountBalanceRequest struct{}
+
+type accountBalanceReply struct {
+	R0 int64
+}
+
 type account struct {
 	value State[int64]
 }
@@ -41,6 +55,12 @@ func (a *writeIgnoringAccount) Balance(context.Context) (int64, error) {
 
 type lifecycleAccount interface {
 	Value(context.Context) (int, error)
+}
+
+type lifecycleAccountValueRequest struct{}
+
+type lifecycleAccountValueReply struct {
+	R0 int
 }
 
 type lifecycleAccountEntity struct {
@@ -81,27 +101,35 @@ func (e *lifecycleAccountEntity) Value(context.Context) (int, error) {
 }
 
 func (p *lifecycleAccountProxy) Value(ctx context.Context) (int, error) {
-	var value int
-	err := p.invoker.Invoke(ctx, p.id, "Value", nil, &value)
-	return value, err
+	var reply lifecycleAccountValueReply
+	err := p.invoker.Invoke(ctx, p.id, "Value", &lifecycleAccountValueRequest{}, &reply)
+	return reply.R0, err
 }
 
-func dispatchLifecycleAccount(ctx context.Context, instance lifecycleAccount, method string, _ []any, reply any) error {
+func dispatchLifecycleAccount(ctx context.Context, instance lifecycleAccount, method string, _ any, reply any) error {
 	if method != "Value" {
 		return fmt.Errorf("unknown method %q", method)
 	}
+	typedReply := reply.(*lifecycleAccountValueReply)
 	value, err := instance.Value(ctx)
 	if err == nil {
-		*(reply.(*int)) = value
+		typedReply.R0 = value
 	}
 	return err
+}
+
+func newLifecycleAccountCall(method string) (args any, reply any) {
+	if method != "Value" {
+		return nil, nil
+	}
+	return &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}
 }
 
 func installLifecycleAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int32, configure func(*lifecycleAccountEntity)) {
 	t.Helper()
 	if err := InstallType[lifecycleAccount](rt, dispatchLifecycleAccount, func(invoker Invoker, id Identity) lifecycleAccount {
 		return &lifecycleAccountProxy{invoker: invoker, id: id}
-	}); err != nil {
+	}, newLifecycleAccountCall); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register[lifecycleAccount](rt, func(b *Binder) lifecycleAccount {
@@ -125,6 +153,20 @@ type scopeAccount interface {
 	ForwardDeposit(context.Context, int64) (int64, error)
 }
 
+type scopeAccountCreatedAtRequest struct{}
+
+type scopeAccountCreatedAtReply struct {
+	R0 time.Time
+}
+
+type scopeAccountForwardDepositRequest struct {
+	A0 int64
+}
+
+type scopeAccountForwardDepositReply struct {
+	R0 int64
+}
+
 type scopeAccountEntity struct {
 	createdAt time.Time
 	target    Account
@@ -144,15 +186,26 @@ type scopeAccountProxy struct {
 }
 
 func (p *scopeAccountProxy) CreatedAt(ctx context.Context) (time.Time, error) {
-	var value time.Time
-	err := p.invoker.Invoke(ctx, p.id, "CreatedAt", nil, &value)
-	return value, err
+	var reply scopeAccountCreatedAtReply
+	err := p.invoker.Invoke(ctx, p.id, "CreatedAt", &scopeAccountCreatedAtRequest{}, &reply)
+	return reply.R0, err
 }
 
 func (p *scopeAccountProxy) ForwardDeposit(ctx context.Context, amount int64) (int64, error) {
-	var value int64
-	err := p.invoker.Invoke(ctx, p.id, "ForwardDeposit", []any{amount}, &value)
-	return value, err
+	var reply scopeAccountForwardDepositReply
+	err := p.invoker.Invoke(ctx, p.id, "ForwardDeposit", &scopeAccountForwardDepositRequest{A0: amount}, &reply)
+	return reply.R0, err
+}
+
+func newScopeAccountCall(method string) (args any, reply any) {
+	switch method {
+	case "CreatedAt":
+		return &scopeAccountCreatedAtRequest{}, &scopeAccountCreatedAtReply{}
+	case "ForwardDeposit":
+		return &scopeAccountForwardDepositRequest{}, &scopeAccountForwardDepositReply{}
+	default:
+		return nil, nil
+	}
 }
 
 func mustNew(t *testing.T, options ...Option) *Runtime {
@@ -211,13 +264,13 @@ func TestLifecycle_OnActivateFailureDoesNotEstablishActivation(t *testing.T) {
 		})
 
 		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
-		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); !errors.Is(err, activateErr) {
+		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); !errors.Is(err, activateErr) {
 			t.Fatalf("first activation error = %v, want %v", err, activateErr)
 		}
 		if identities := rt.Identities(); len(identities) != 0 {
 			t.Fatalf("Identities after failed activation = %#v, want empty", identities)
 		}
-		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); !errors.Is(err, activateErr) {
+		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); !errors.Is(err, activateErr) {
 			t.Fatalf("second activation error = %v, want %v", err, activateErr)
 		}
 		if got := factoryCalls.Load(); got != 2 {
@@ -245,7 +298,7 @@ func TestLifecycle_OnDeactivateFailureReportsAndRemovesActivation(t *testing.T) 
 		})
 
 		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
-		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); err != nil {
+		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial Value: %v", err)
 		}
 		rt.Deactivate(id)
@@ -277,7 +330,7 @@ func TestLifecycle_KillSkipsOnDeactivate(t *testing.T) {
 		})
 
 		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
-		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); err != nil {
+		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial Value: %v", err)
 		}
 		rt.Kill()
@@ -288,18 +341,21 @@ func TestLifecycle_KillSkipsOnDeactivate(t *testing.T) {
 	})
 }
 
-func dispatchScopeAccount(ctx context.Context, instance scopeAccount, method string, args []any, reply any) error {
+func dispatchScopeAccount(ctx context.Context, instance scopeAccount, method string, args any, reply any) error {
 	switch method {
 	case "CreatedAt":
+		typedReply := reply.(*scopeAccountCreatedAtReply)
 		value, err := instance.CreatedAt(ctx)
 		if err == nil {
-			*(reply.(*time.Time)) = value
+			typedReply.R0 = value
 		}
 		return err
 	case "ForwardDeposit":
-		value, err := instance.ForwardDeposit(ctx, args[0].(int64))
+		typedArgs := args.(*scopeAccountForwardDepositRequest)
+		typedReply := reply.(*scopeAccountForwardDepositReply)
+		value, err := instance.ForwardDeposit(ctx, typedArgs.A0)
 		if err == nil {
-			*(reply.(*int64)) = value
+			typedReply.R0 = value
 		}
 		return err
 	default:
@@ -320,20 +376,20 @@ func TestRegister_InvokesInstalledDispatch(t *testing.T) {
 		}
 
 		id := Identity{Type: TypeName[Account](), Key: "alice"}
-		var first int64
-		if err := rt.Invoke(context.Background(), id, "Deposit", []any{int64(2)}, &first); err != nil {
+		var first accountDepositReply
+		if err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 2}, &first); err != nil {
 			t.Fatalf("first invoke error = %v", err)
 		}
-		var second int64
-		if err := rt.Invoke(context.Background(), id, "Deposit", []any{int64(3)}, &second); err != nil {
+		var second accountDepositReply
+		if err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 3}, &second); err != nil {
 			t.Fatalf("second invoke error = %v", err)
 		}
-		var balance int64
-		if err := rt.Invoke(context.Background(), id, "Balance", nil, &balance); err != nil {
+		var balance accountBalanceReply
+		if err := rt.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &balance); err != nil {
 			t.Fatalf("balance invoke error = %v", err)
 		}
-		if first != 2 || second != 5 || balance != 5 {
-			t.Fatalf("replies = %d, %d, %d; want 2, 5, 5", first, second, balance)
+		if first.R0 != 2 || second.R0 != 5 || balance.R0 != 5 {
+			t.Fatalf("replies = %d, %d, %d; want 2, 5, 5", first.R0, second.R0, balance.R0)
 		}
 		if err := rt.Invoke(context.Background(), id, "Missing", nil, nil); err == nil {
 			t.Fatal("missing method returned nil error")
@@ -410,7 +466,7 @@ func TestBinderScope_ProvidesClockAndTypedReferences(t *testing.T) {
 		}
 		if err := InstallType[scopeAccount](rt, dispatchScopeAccount, func(invoker Invoker, id Identity) scopeAccount {
 			return &scopeAccountProxy{invoker: invoker, id: id}
-		}); err != nil {
+		}, newScopeAccountCall); err != nil {
 			t.Fatal(err)
 		}
 		if err := Register[scopeAccount](rt, func(b *Binder) scopeAccount {
@@ -478,20 +534,20 @@ func TestRegister_LoadsAndPersistsState(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		var balance int64
-		if err := rt.Invoke(context.Background(), Identity(id), "Balance", nil, &balance); err != nil {
+		var balance accountBalanceReply
+		if err := rt.Invoke(context.Background(), Identity(id), "Balance", &accountBalanceRequest{}, &balance); err != nil {
 			t.Fatalf("Balance invoke error = %v", err)
 		}
-		if balance != 7 {
-			t.Fatalf("loaded balance = %d, want 7", balance)
+		if balance.R0 != 7 {
+			t.Fatalf("loaded balance = %d, want 7", balance.R0)
 		}
 
-		var deposited int64
-		if err := rt.Invoke(context.Background(), Identity(id), "Deposit", []any{int64(2)}, &deposited); err != nil {
+		var deposited accountDepositReply
+		if err := rt.Invoke(context.Background(), Identity(id), "Deposit", &accountDepositRequest{A0: 2}, &deposited); err != nil {
 			t.Fatalf("Deposit invoke error = %v", err)
 		}
-		if deposited != 9 {
-			t.Fatalf("deposited balance = %d, want 9", deposited)
+		if deposited.R0 != 9 {
+			t.Fatalf("deposited balance = %d, want 9", deposited.R0)
 		}
 
 		record, err := backend.Read(context.Background(), id)
@@ -511,8 +567,8 @@ func TestRuntime_RestartRestoresStateFromMemoryStore(t *testing.T) {
 
 		first := mustNew(t, WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
 		registerAccount(t, first)
-		var written int64
-		if err := first.Invoke(context.Background(), id, "Deposit", []any{int64(42)}, &written); err != nil {
+		var written accountDepositReply
+		if err := first.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 42}, &written); err != nil {
 			t.Fatalf("first Deposit invoke error = %v", err)
 		}
 		first.Close()
@@ -520,12 +576,12 @@ func TestRuntime_RestartRestoresStateFromMemoryStore(t *testing.T) {
 		second := mustNew(t, WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
 		registerAccount(t, second)
 		defer second.Close()
-		var restored int64
-		if err := second.Invoke(context.Background(), id, "Balance", nil, &restored); err != nil {
+		var restored accountBalanceReply
+		if err := second.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &restored); err != nil {
 			t.Fatalf("restarted Balance invoke error = %v", err)
 		}
-		if restored != 42 {
-			t.Fatalf("restored balance = %d, want 42", restored)
+		if restored.R0 != 42 {
+			t.Fatalf("restored balance = %d, want 42", restored.R0)
 		}
 	})
 }
@@ -538,8 +594,8 @@ func TestRuntime_RestartRestoresStateFromSQLite(t *testing.T) {
 	}
 	first := mustNew(t, WithStore(firstStore), WithIdleTimeout(0), WithEvictionInterval(0))
 	registerAccount(t, first)
-	var written int64
-	if err := first.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Deposit", []any{int64(42)}, &written); err != nil {
+	var written accountDepositReply
+	if err := first.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Deposit", &accountDepositRequest{A0: 42}, &written); err != nil {
 		first.Close()
 		firstStore.Close()
 		t.Fatalf("first Deposit invoke error = %v", err)
@@ -557,16 +613,16 @@ func TestRuntime_RestartRestoresStateFromSQLite(t *testing.T) {
 	registerAccount(t, second)
 	defer second.Close()
 	defer secondStore.Close()
-	var restored int64
-	if err := second.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Balance", nil, &restored); err != nil {
+	var restored accountBalanceReply
+	if err := second.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Balance", &accountBalanceRequest{}, &restored); err != nil {
 		t.Fatalf("restarted Balance invoke error = %v", err)
 	}
-	if restored != 42 {
-		t.Fatalf("restored balance = %d, want 42", restored)
+	if restored.R0 != 42 {
+		t.Fatalf("restored balance = %d, want 42", restored.R0)
 	}
 }
 
-func dispatchAccountWithWrappedError(ctx context.Context, instance Account, method string, args []any, reply any) error {
+func dispatchAccountWithWrappedError(ctx context.Context, instance Account, method string, args any, reply any) error {
 	err := dispatchAccount(ctx, instance, method, args, reply)
 	if err != nil {
 		return fmt.Errorf("domain update: %w", err)
@@ -590,12 +646,12 @@ func TestRegister_ConflictDiscardsActivationBeforeReactivation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		var first int64
-		if err := rt.Invoke(context.Background(), id, "Deposit", []any{int64(10)}, &first); err != nil {
+		var first accountDepositReply
+		if err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 10}, &first); err != nil {
 			t.Fatalf("first Deposit invoke error = %v", err)
 		}
-		if first != 10 {
-			t.Fatalf("first balance = %d, want 10", first)
+		if first.R0 != 10 {
+			t.Fatalf("first balance = %d, want 10", first.R0)
 		}
 
 		storeID := store.Identity(id)
@@ -603,8 +659,8 @@ func TestRegister_ConflictDiscardsActivationBeforeReactivation(t *testing.T) {
 			t.Fatalf("external Write: %v", err)
 		}
 
-		var conflictResult int64
-		err := rt.Invoke(context.Background(), id, "Deposit", []any{int64(1)}, &conflictResult)
+		var conflictResult accountDepositReply
+		err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 1}, &conflictResult)
 		if !errors.Is(err, store.ErrConflict) {
 			t.Fatalf("conflicting Deposit error = %v, want store.ErrConflict", err)
 		}
@@ -612,12 +668,12 @@ func TestRegister_ConflictDiscardsActivationBeforeReactivation(t *testing.T) {
 			t.Fatalf("conflicting Deposit error = %v, want user error wrapper", err)
 		}
 
-		var second int64
-		if err := rt.Invoke(context.Background(), id, "Deposit", []any{int64(1)}, &second); err != nil {
+		var second accountDepositReply
+		if err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 1}, &second); err != nil {
 			t.Fatalf("reactivated Deposit invoke error = %v", err)
 		}
-		if second != 101 {
-			t.Fatalf("reactivated balance = %d, want 101", second)
+		if second.R0 != 101 {
+			t.Fatalf("reactivated balance = %d, want 101", second.R0)
 		}
 		if factoryCalls.Load() != 2 {
 			t.Fatalf("factory calls = %d, want 2", factoryCalls.Load())
@@ -649,8 +705,8 @@ func TestRegister_StateWriteFailureReturnsErrorAndDiscardsActivation(t *testing.
 		}
 
 		id := Identity{Type: TypeName[Account](), Key: "alice"}
-		var result int64
-		err := rt.Invoke(context.Background(), id, "Deposit", []any{int64(1)}, &result)
+		var result accountDepositReply
+		err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 1}, &result)
 		if err == nil {
 			t.Fatal("state write failure returned nil error")
 		}
@@ -658,8 +714,8 @@ func TestRegister_StateWriteFailureReturnsErrorAndDiscardsActivation(t *testing.
 			t.Fatalf("state write failure = %v, want %v", err, writeErr)
 		}
 
-		var balance int64
-		if err := rt.Invoke(context.Background(), id, "Balance", nil, &balance); err != nil {
+		var balance accountBalanceReply
+		if err := rt.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &balance); err != nil {
 			t.Fatalf("reactivated Balance invoke error = %v", err)
 		}
 		if factoryCalls.Load() != 2 {
@@ -683,8 +739,8 @@ func TestRegister_StateWriteFailureJoinsMethodError(t *testing.T) {
 		}
 
 		id := Identity{Type: TypeName[Account](), Key: "alice"}
-		var result int64
-		err := rt.Invoke(context.Background(), id, "Deposit", []any{int64(1)}, &result)
+		var result accountDepositReply
+		err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 1}, &result)
 		if err == nil {
 			t.Fatal("method and state write failures returned nil error")
 		}
@@ -697,24 +753,38 @@ func TestRegister_StateWriteFailureJoinsMethodError(t *testing.T) {
 	})
 }
 
-func dispatchAccount(ctx context.Context, instance Account, method string, args []any, reply any) error {
+func dispatchAccount(ctx context.Context, instance Account, method string, args any, reply any) error {
 	switch method {
 	case "Deposit":
-		value, err := instance.Deposit(ctx, args[0].(int64))
+		typedArgs := args.(*accountDepositRequest)
+		typedReply := reply.(*accountDepositReply)
+		value, err := instance.Deposit(ctx, typedArgs.A0)
 		if err != nil {
 			return err
 		}
-		*(reply.(*int64)) = value
+		typedReply.R0 = value
 		return nil
 	case "Balance":
+		typedReply := reply.(*accountBalanceReply)
 		value, err := instance.Balance(ctx)
 		if err != nil {
 			return err
 		}
-		*(reply.(*int64)) = value
+		typedReply.R0 = value
 		return nil
 	default:
 		return errors.New("unknown method")
+	}
+}
+
+func newAccountCall(method string) (args any, reply any) {
+	switch method {
+	case "Deposit":
+		return &accountDepositRequest{}, &accountDepositReply{}
+	case "Balance":
+		return &accountBalanceRequest{}, &accountBalanceReply{}
+	default:
+		return nil, nil
 	}
 }
 
@@ -734,15 +804,15 @@ type accountProxy struct {
 }
 
 func (p *accountProxy) Deposit(ctx context.Context, amount int64) (int64, error) {
-	var reply int64
-	err := p.invoker.Invoke(ctx, p.id, "Deposit", []any{amount}, &reply)
-	return reply, err
+	var reply accountDepositReply
+	err := p.invoker.Invoke(ctx, p.id, "Deposit", &accountDepositRequest{A0: amount}, &reply)
+	return reply.R0, err
 }
 
 func (p *accountProxy) Balance(ctx context.Context) (int64, error) {
-	var reply int64
-	err := p.invoker.Invoke(ctx, p.id, "Balance", nil, &reply)
-	return reply, err
+	var reply accountBalanceReply
+	err := p.invoker.Invoke(ctx, p.id, "Balance", &accountBalanceRequest{}, &reply)
+	return reply.R0, err
 }
 
 func installAccount(t *testing.T, rt *Runtime) {
@@ -750,11 +820,11 @@ func installAccount(t *testing.T, rt *Runtime) {
 	installAccountWithDispatch(t, rt, dispatchAccount)
 }
 
-func installAccountWithDispatch(t *testing.T, rt *Runtime, dispatch func(context.Context, Account, string, []any, any) error) {
+func installAccountWithDispatch(t *testing.T, rt *Runtime, dispatch func(context.Context, Account, string, any, any) error) {
 	t.Helper()
 	if err := InstallType[Account](rt, dispatch, func(invoker Invoker, id Identity) Account {
 		return &accountProxy{invoker: invoker, id: id}
-	}); err != nil {
+	}, newAccountCall); err != nil {
 		t.Fatal(err)
 	}
 }

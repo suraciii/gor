@@ -14,6 +14,7 @@ import (
 	runtimepkg "github.com/suraciii/gor/runtime"
 	"github.com/suraciii/gor/store"
 	"github.com/suraciii/gor/timer"
+	"github.com/suraciii/gor/transport"
 )
 
 var ErrTypeNotInstalled = errors.New("entity type is not installed; call InstallType or run the generated Install")
@@ -34,20 +35,24 @@ type Deactivatable interface {
 
 type Runtime struct {
 	*runtimepkg.Runtime
-	store         store.Store
-	scheduleStore store.ScheduleStore
-	clock         clock.Clock
-	onError       func(Identity, string, error)
-	poller        *timer.Poller
-	clusterNode   *cluster.Node
-	clusterView   atomic.Pointer[cluster.View]
-	clusterDone   chan struct{}
-	done          chan struct{}
-	stopOnce      sync.Once
-	shuttingDown  atomic.Bool
-	nodeAddr      string
-	typesMu       sync.Mutex
-	types         map[string]typeRegistration
+	store            store.Store
+	scheduleStore    store.ScheduleStore
+	clock            clock.Clock
+	onError          func(Identity, string, error)
+	poller           *timer.Poller
+	transport        transport.Transport
+	transportDone    chan struct{}
+	transportStop    context.CancelFunc
+	transportClosing atomic.Bool
+	clusterNode      *cluster.Node
+	clusterView      atomic.Pointer[cluster.View]
+	clusterDone      chan struct{}
+	done             chan struct{}
+	stopOnce         sync.Once
+	shuttingDown     atomic.Bool
+	nodeAddr         string
+	typesMu          sync.Mutex
+	types            map[string]typeRegistration
 }
 
 type Config struct {
@@ -55,6 +60,7 @@ type Config struct {
 	Store             store.Store
 	ScheduleStore     store.ScheduleStore
 	ScheduleInterval  time.Duration
+	Transport         transport.Transport
 	OnError           func(Identity, string, error)
 	MemberStore       store.MemberStore
 	NodeAddr          string
@@ -65,7 +71,7 @@ type Config struct {
 }
 
 type Invoker interface {
-	Invoke(context.Context, Identity, string, []any, any) error
+	Invoke(context.Context, Identity, string, any, any) error
 }
 
 var _ Invoker = (*Runtime)(nil)
@@ -73,6 +79,7 @@ var _ Invoker = (*Runtime)(nil)
 type typeRegistration struct {
 	dispatch runtimepkg.Dispatch
 	newProxy func(Invoker, Identity) any
+	newCall  func(string) (any, any)
 }
 
 type Option func(*Config)
@@ -90,7 +97,6 @@ func New(options ...Option) (*Runtime, error) {
 		Config: runtimepkg.Config{
 			Clock:            clock.Real{},
 			MailboxCapacity:  16,
-			Locator:          runtimepkg.LocalLocator{},
 			IdleTimeout:      time.Minute,
 			EvictionInterval: time.Second,
 		},
@@ -134,6 +140,7 @@ func New(options ...Option) (*Runtime, error) {
 		scheduleStore: config.ScheduleStore,
 		clock:         config.Clock,
 		onError:       config.OnError,
+		transport:     config.Transport,
 		done:          make(chan struct{}),
 		types:         make(map[string]typeRegistration),
 	}
@@ -151,6 +158,9 @@ func New(options ...Option) (*Runtime, error) {
 	if config.ScheduleStore != nil && config.ScheduleInterval > 0 {
 		rt.poller = timer.New(config.ScheduleStore, config.Clock, config.ScheduleInterval, scheduleInvoker{runtime: rt})
 	}
+	if rt.clusterNode != nil && rt.transport != nil {
+		rt.startTransport()
+	}
 	return rt, nil
 }
 
@@ -163,12 +173,6 @@ func WithClock(value clock.Clock) Option {
 func WithMailboxCapacity(value int) Option {
 	return func(config *Config) {
 		config.MailboxCapacity = value
-	}
-}
-
-func WithLocator(value runtimepkg.Locator) Option {
-	return func(config *Config) {
-		config.Locator = value
 	}
 }
 
@@ -199,6 +203,12 @@ func WithScheduleStore(value store.ScheduleStore) Option {
 func WithScheduleInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.ScheduleInterval = value
+	}
+}
+
+func WithTransport(value transport.Transport) Option {
+	return func(config *Config) {
+		config.Transport = value
 	}
 }
 
@@ -252,14 +262,20 @@ func (e WrongOwnerError) Error() string {
 	return fmt.Sprintf("identity belongs to node %q", e.Owner)
 }
 
-func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args []any, reply any) error {
+func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	if rt.clusterNode == nil {
 		return rt.Runtime.Invoke(ctx, id, method, args, reply)
 	}
 	view := rt.clusterView.Load()
-	owner, _ := cluster.Owner(*view, store.Identity(id))
-	if owner != rt.nodeAddr {
+	owner, ok := cluster.Owner(*view, store.Identity(id))
+	if !ok {
 		return WrongOwnerError{Owner: owner}
+	}
+	if owner != rt.nodeAddr {
+		if rt.transport == nil {
+			return WrongOwnerError{Owner: owner}
+		}
+		return rt.forward(ctx, owner, id, method, args, reply)
 	}
 	return rt.Runtime.Invoke(ctx, id, method, args, reply)
 }
@@ -278,7 +294,7 @@ type boundInstance struct {
 	binder *Binder
 }
 
-func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, []any, any) error, newProxy func(Invoker, Identity) T) error {
+func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, any, any) error, newProxy func(Invoker, Identity) T, newCall func(string) (any, any)) error {
 	name := TypeName[T]()
 	rt.typesMu.Lock()
 	defer rt.typesMu.Unlock()
@@ -286,12 +302,13 @@ func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, [
 		return fmt.Errorf("entity type %q is already installed", name)
 	}
 	rt.types[name] = typeRegistration{
-		dispatch: func(ctx context.Context, instance any, method string, args []any, reply any) error {
+		dispatch: func(ctx context.Context, instance any, method string, args any, reply any) error {
 			return dispatch(ctx, instance.(T), method, args, reply)
 		},
 		newProxy: func(invoker Invoker, id Identity) any {
 			return newProxy(invoker, id)
 		},
+		newCall: newCall,
 	}
 	return nil
 }
@@ -316,7 +333,7 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 			}
 			return boundInstance{entity: entity, binder: binder}, nil
 		},
-		Dispatch: func(ctx context.Context, instance any, method string, args []any, reply any) error {
+		Dispatch: func(ctx context.Context, instance any, method string, args any, reply any) error {
 			bound := instance.(boundInstance)
 			err := registration.dispatch(ctx, bound.entity, method, args, reply)
 			if discard := bound.binder.discardError(); discard != nil {
@@ -370,6 +387,7 @@ func (rt *Runtime) Close() {
 		<-rt.clusterDone
 	}
 	rt.Runtime.Close()
+	rt.closeTransport()
 }
 
 func (rt *Runtime) Kill() {
@@ -383,6 +401,7 @@ func (rt *Runtime) Kill() {
 		<-rt.clusterDone
 	}
 	rt.Runtime.Kill()
+	rt.closeTransport()
 }
 
 func (rt *Runtime) Done() <-chan struct{} {
@@ -395,15 +414,40 @@ func (rt *Runtime) stopServing() {
 	})
 }
 
+func (rt *Runtime) startTransport() {
+	serveContext, stopServe := context.WithCancel(context.Background())
+	rt.transportStop = stopServe
+	rt.transportDone = make(chan struct{})
+	go func() {
+		defer close(rt.transportDone)
+		_ = rt.transport.Serve(serveContext, rt.handle)
+	}()
+}
+
+func (rt *Runtime) closeTransport() {
+	if rt.transport == nil {
+		return
+	}
+	if rt.transportClosing.CompareAndSwap(false, true) {
+		if rt.transportStop != nil {
+			rt.transportStop()
+		}
+		_ = rt.transport.Close()
+	}
+	if rt.transportDone != nil {
+		<-rt.transportDone
+	}
+}
+
 func (rt *Runtime) watchCluster() {
 	defer func() {
-		rt.stopServing()
 		close(rt.clusterDone)
 	}()
 	for view := range rt.clusterNode.ViewChanges() {
 		rt.clusterView.Store(&view)
 		rt.deactivateMovedActivations(view)
 	}
+	rt.stopServing()
 	if rt.shuttingDown.Load() {
 		return
 	}

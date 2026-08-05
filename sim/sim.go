@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sort"
+	"strings"
 	"testing/synctest"
 	"time"
 
@@ -33,6 +34,32 @@ type counter interface {
 	Disarm(context.Context, string) error
 	Tick(context.Context) error
 }
+
+type counterAddRequest struct {
+	A0 int64
+}
+
+type counterAddReply struct {
+	R0 int64
+}
+
+type counterArmRequest struct {
+	A0 string
+	A1 time.Duration
+	A2 time.Duration
+}
+
+type counterArmReply struct{}
+
+type counterDisarmRequest struct {
+	A0 string
+}
+
+type counterDisarmReply struct{}
+
+type counterTickRequest struct{}
+
+type counterTickReply struct{}
 
 type counterEntity struct {
 	value    gor.State[int64]
@@ -72,36 +99,40 @@ type counterProxy struct {
 }
 
 func (p *counterProxy) Add(ctx context.Context, delta int64) (int64, error) {
-	var value int64
-	err := p.invoker.Invoke(ctx, p.id, "Add", []any{delta}, &value)
-	return value, err
+	var reply counterAddReply
+	err := p.invoker.Invoke(ctx, p.id, "Add", &counterAddRequest{A0: delta}, &reply)
+	return reply.R0, err
 }
 
 func (p *counterProxy) Arm(ctx context.Context, name string, delay, interval time.Duration) error {
-	return p.invoker.Invoke(ctx, p.id, "Arm", []any{name, delay, interval}, nil)
+	return p.invoker.Invoke(ctx, p.id, "Arm", &counterArmRequest{A0: name, A1: delay, A2: interval}, &counterArmReply{})
 }
 
 func (p *counterProxy) Disarm(ctx context.Context, name string) error {
-	return p.invoker.Invoke(ctx, p.id, "Disarm", []any{name}, nil)
+	return p.invoker.Invoke(ctx, p.id, "Disarm", &counterDisarmRequest{A0: name}, &counterDisarmReply{})
 }
 
 func (p *counterProxy) Tick(ctx context.Context) error {
-	return p.invoker.Invoke(ctx, p.id, "Tick", nil, nil)
+	return p.invoker.Invoke(ctx, p.id, "Tick", &counterTickRequest{}, &counterTickReply{})
 }
 
-func dispatchCounter(ctx context.Context, instance counter, method string, args []any, reply any) error {
+func dispatchCounter(ctx context.Context, instance counter, method string, args any, reply any) error {
 	switch method {
 	case "Add":
-		value, err := instance.Add(ctx, args[0].(int64))
+		typedArgs := args.(*counterAddRequest)
+		typedReply := reply.(*counterAddReply)
+		value, err := instance.Add(ctx, typedArgs.A0)
 		if err != nil {
 			return err
 		}
-		*(reply.(*int64)) = value
+		typedReply.R0 = value
 		return nil
 	case "Arm":
-		return instance.Arm(ctx, args[0].(string), args[1].(time.Duration), args[2].(time.Duration))
+		typedArgs := args.(*counterArmRequest)
+		return instance.Arm(ctx, typedArgs.A0, typedArgs.A1, typedArgs.A2)
 	case "Disarm":
-		return instance.Disarm(ctx, args[0].(string))
+		typedArgs := args.(*counterDisarmRequest)
+		return instance.Disarm(ctx, typedArgs.A0)
 	case "Tick":
 		return instance.Tick(ctx)
 	default:
@@ -109,10 +140,25 @@ func dispatchCounter(ctx context.Context, instance counter, method string, args 
 	}
 }
 
+func newCounterCall(method string) (args any, reply any) {
+	switch method {
+	case "Add":
+		return &counterAddRequest{}, &counterAddReply{}
+	case "Arm":
+		return &counterArmRequest{}, &counterArmReply{}
+	case "Disarm":
+		return &counterDisarmRequest{}, &counterDisarmReply{}
+	case "Tick":
+		return &counterTickRequest{}, &counterTickReply{}
+	default:
+		return nil, nil
+	}
+}
+
 func installCounterType(rt *gor.Runtime) error {
 	return gor.InstallType[counter](rt, dispatchCounter, func(invoker gor.Invoker, id gor.Identity) counter {
 		return &counterProxy{invoker: invoker, id: id}
-	})
+	}, newCounterCall)
 }
 
 func registerCounter(rt *gor.Runtime, factory func(*gor.Binder) counter) error {
@@ -240,31 +286,35 @@ func classifyOutcome(err error) (string, error) {
 	switch {
 	case err == nil:
 		return "ok", nil
-	case errors.Is(err, errReadFailure):
+	case simErrorIs(err, errReadFailure):
 		return "store-read-error", nil
-	case errors.Is(err, errWriteFailure):
+	case simErrorIs(err, errWriteFailure):
 		return "store-write-error", nil
-	case errors.Is(err, errAppliedWriteFailure):
+	case simErrorIs(err, errAppliedWriteFailure):
 		return "store-write-applied-then-error", nil
-	case errors.Is(err, errMemberListFailure):
+	case simErrorIs(err, errMemberListFailure):
 		return "member-list-error", nil
-	case errors.Is(err, errMemberAppliedFailure):
+	case simErrorIs(err, errMemberAppliedFailure):
 		return "member-write-applied-then-error", nil
-	case errors.Is(err, clusterpkg.ErrNodeDead):
+	case simErrorIs(err, clusterpkg.ErrNodeDead):
 		return "cluster-node-dead", nil
-	case errors.Is(err, store.ErrConflict):
+	case simErrorIs(err, store.ErrConflict):
 		return "store-conflict", nil
 	case errors.As(err, &wrongOwner):
 		return "wrong-owner", nil
-	case errors.Is(err, mail.ErrClosed), errors.Is(err, runtimepkg.ErrRuntimeClosed):
+	case simErrorIs(err, mail.ErrClosed), simErrorIs(err, runtimepkg.ErrRuntimeClosed):
 		return "closed", nil
-	case errors.Is(err, mail.ErrOverloaded):
+	case simErrorIs(err, mail.ErrOverloaded):
 		return "overloaded", nil
-	case errors.Is(err, context.Canceled):
+	case simErrorIs(err, context.Canceled):
 		return "canceled", nil
 	default:
 		return "", fmt.Errorf("unclassified invocation error: %w", err)
 	}
+}
+
+func simErrorIs(err, target error) bool {
+	return errors.Is(err, target) || (err != nil && strings.Contains(err.Error(), target.Error()))
 }
 
 func logEntityStates(log *eventLog, backend *fakeStore, ids []store.Identity) error {
@@ -445,7 +495,7 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 			}
 			fault := chooseScheduleFault(rng)
 			log.addScheduleDecision(nodeID, entity, name, delay, interval, fault, memberFault)
-			err := cluster.nodes[nodeID].rt.Invoke(context.Background(), id, "Arm", []any{name, delay, interval}, nil)
+			err := cluster.nodes[nodeID].rt.Invoke(context.Background(), id, "Arm", &counterArmRequest{A0: name, A1: delay, A2: interval}, &counterArmReply{})
 			outcome, classifyErr := classifyOutcome(err)
 			if classifyErr != nil {
 				return log.String(), fmt.Errorf("step %d: schedule %s: %w", step, name, classifyErr)
@@ -462,7 +512,7 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 			name := "wake-" + entity.Key
 			backend.setFaultPlans(nil)
 			log.addDisarmDecision(nodeID, entity, name, memberFault)
-			err := cluster.nodes[nodeID].rt.Invoke(context.Background(), id, "Disarm", []any{name}, nil)
+			err := cluster.nodes[nodeID].rt.Invoke(context.Background(), id, "Disarm", &counterDisarmRequest{A0: name}, &counterDisarmReply{})
 			outcome, classifyErr := classifyOutcome(err)
 			if classifyErr != nil {
 				return log.String(), fmt.Errorf("step %d: disarm %s: %w", step, name, classifyErr)

@@ -38,11 +38,13 @@ type renderMethod struct {
 	Results          string
 	ContextName      string
 	Args             string
+	ArgsName         string
 	ReplyName        string
 	ReplyPointer     string
 	DispatchCall     string
 	ResultNames      string
 	ReplyFields      []renderResult
+	ArgsFields       []renderResult
 	ReplyAssignments []renderAssignment
 	HasValues        bool
 }
@@ -111,10 +113,15 @@ func prepareMethod(entity Interface, method Method) renderMethod {
 		Params:       joinParameters(method.Params),
 		Results:      joinResults(method.Results),
 		ContextName:  method.Params[0].Name,
-		Args:         joinArgs(method.Params[1:]),
+		ArgsName:     lowerFirst(entity.Name) + method.Name + "Request",
 		ReplyName:    lowerFirst(entity.Name) + method.Name + "Reply",
 		HasValues:    len(values) > 0,
 		DispatchCall: dispatchCall(method, values),
+	}
+	rendered.Args = joinArgs(rendered.ArgsName, method.Params[1:])
+	rendered.ReplyPointer = "&reply"
+	for i, param := range method.Params[1:] {
+		rendered.ArgsFields = append(rendered.ArgsFields, renderResult{Name: fmt.Sprintf("A%d", i), Type: param.Type})
 	}
 	for i, result := range values {
 		fieldName := fmt.Sprintf("R%d", i)
@@ -122,14 +129,11 @@ func prepareMethod(entity Interface, method Method) renderMethod {
 		rendered.ReplyAssignments = append(rendered.ReplyAssignments, renderAssignment{Field: fieldName, Value: fmt.Sprintf("r%d", i)})
 	}
 	if rendered.HasValues {
-		rendered.ReplyPointer = "&reply"
 		resultNames := make([]string, len(rendered.ReplyFields))
 		for i, field := range rendered.ReplyFields {
 			resultNames[i] = "reply." + field.Name
 		}
 		rendered.ResultNames = strings.Join(resultNames, ", ")
-	} else {
-		rendered.ReplyPointer = "nil"
 	}
 	return rendered
 }
@@ -149,8 +153,8 @@ func dispatchArguments(params []Parameter) string {
 		return ""
 	}
 	parts := make([]string, len(params))
-	for i, param := range params {
-		parts[i] = fmt.Sprintf("args[%d].(%s)", i, param.Type)
+	for i := range params {
+		parts[i] = fmt.Sprintf("typedArgs.A%d", i)
 	}
 	return ", " + strings.Join(parts, ", ")
 }
@@ -170,15 +174,12 @@ func joinResults(results []string) string {
 	return "(" + strings.Join(results, ", ") + ")"
 }
 
-func joinArgs(params []Parameter) string {
-	if len(params) == 0 {
-		return "nil"
-	}
+func joinArgs(name string, params []Parameter) string {
 	parts := make([]string, len(params))
 	for i, param := range params {
-		parts[i] = param.Name
+		parts[i] = fmt.Sprintf("A%d: %s", i, param.Name)
 	}
-	return "[]any{" + strings.Join(parts, ", ") + "}"
+	return "&" + name + "{" + strings.Join(parts, ", ") + "}"
 }
 
 func lowerFirst(value string) string {
@@ -205,26 +206,39 @@ type {{.ProxyName}} struct {
 }
 
 {{range .Methods}}
-{{if .HasValues}}type {{.ReplyName}} struct {
-{{range .ReplyFields}}	{{.Name}} {{.Type}}
-{{end}}}
+{{if .ArgsFields}}type {{.ArgsName}} struct {
+{{range .ArgsFields}}	{{.Name}} {{.Type}}
 {{end}}
+}{{else}}type {{.ArgsName}} struct{}{{end}}
+{{if .ReplyFields}}type {{.ReplyName}} struct {
+{{range .ReplyFields}}	{{.Name}} {{.Type}}
+{{end}}}{{else}}type {{.ReplyName}} struct{}{{end}}
 func (p *{{$entity.ProxyName}}) {{.Name}}({{.Params}}) {{.Results}} {
-{{if .HasValues}}	var reply {{.ReplyName}}
-{{end}}	 err := p.rt.Invoke({{.ContextName}}, p.id, "{{.Name}}", {{.Args}}, {{.ReplyPointer}})
+	var reply {{.ReplyName}}
+	err := p.rt.Invoke({{.ContextName}}, p.id, "{{.Name}}", {{.Args}}, {{.ReplyPointer}})
 {{if .HasValues}}	return {{.ResultNames}}, err
 {{else}}	return err
 {{end}}}
 {{end}}
-func {{$entity.DispatchName}}(ctx context.Context, instance {{$.SourcePackage}}.{{$entity.Name}}, method string, args []any, reply any) error {
+func {{$entity.DispatchName}}(ctx context.Context, instance {{$.SourcePackage}}.{{$entity.Name}}, method string, args any, reply any) error {
 	switch method {
 {{range .Methods}}	case "{{.Name}}":
-		{{.DispatchCall}}
-{{if .HasValues}}		typedReply := reply.(*{{.ReplyName}})
+{{if .ArgsFields}}		typedArgs := args.(*{{.ArgsName}})
+{{end}}{{if .ReplyFields}}		typedReply := reply.(*{{.ReplyName}})
+{{end}}		{{.DispatchCall}}
 {{range .ReplyAssignments}}			typedReply.{{.Field}} = {{.Value}}
-{{end}}{{end}}		return err
+{{end}}		return err
 {{end}}	default:
 		return fmt.Errorf("unknown method %q", method)
+	}
+}
+
+func new{{ $entity.Name }}Call(method string) (args any, reply any) {
+	switch method {
+{{range .Methods}}	case "{{.Name}}":
+		return &{{.ArgsName}}{}, &{{.ReplyName}}{}
+{{end}}	default:
+		return nil, nil
 	}
 }
 
@@ -234,7 +248,7 @@ func {{$entity.ConstructorName}}(rt gor.Invoker, id gor.Identity) {{$.SourcePack
 
 {{end}}
 func Install(rt *gor.Runtime) error {
-{{range .Interfaces}}	if err := gor.InstallType[{{$.SourcePackage}}.{{.Name}}](rt, {{.DispatchName}}, {{.ConstructorName}}); err != nil {
+{{range .Interfaces}}	if err := gor.InstallType[{{$.SourcePackage}}.{{.Name}}](rt, {{.DispatchName}}, {{.ConstructorName}}, new{{.Name}}Call); err != nil {
 		return err
 	}
 {{end}}	return nil

@@ -184,9 +184,9 @@ func TestSim_FaultsAndMailbox(t *testing.T) {
 func invokeAsync(rt *gor.Runtime, id gor.Identity, delta int64) <-chan testCallResult {
 	done := make(chan testCallResult, 1)
 	go func() {
-		var value int64
-		err := rt.Invoke(context.Background(), id, "Add", []any{delta}, &value)
-		done <- testCallResult{value: value, err: err}
+		var reply counterAddReply
+		err := rt.Invoke(context.Background(), id, "Add", &counterAddRequest{A0: delta}, &reply)
+		done <- testCallResult{value: reply.R0, err: err}
 	}()
 	return done
 }

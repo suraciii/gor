@@ -16,7 +16,7 @@ type testEntity struct{}
 
 func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 4, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 4})
 		defer rt.Close()
 
 		factoryStarted := make(chan struct{})
@@ -29,7 +29,7 @@ func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
 				<-releaseFactory
 				return &testEntity{}, nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				if method != "Ping" {
 					return errors.New("unknown method")
 				}
@@ -77,14 +77,14 @@ func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
 
 func TestRuntime_DifferentKeysRunConcurrently(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2})
 		defer rt.Close()
 
 		entered := make(chan struct{}, 2)
 		release := make(chan struct{})
 		if err := rt.Register("account", Registration{
 			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, _ any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, _ any) error {
 				if method != "Block" {
 					return errors.New("unknown method")
 				}
@@ -135,7 +135,6 @@ func TestRuntime_EvictsIdleActivationAndReactivates(t *testing.T) {
 		rt := New(Config{
 			Clock:            fakeClock,
 			MailboxCapacity:  2,
-			Locator:          LocalLocator{},
 			IdleTimeout:      10 * time.Second,
 			EvictionInterval: time.Second,
 		})
@@ -146,7 +145,7 @@ func TestRuntime_EvictsIdleActivationAndReactivates(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				if method != "Value" {
 					return errors.New("unknown method")
 				}
@@ -181,7 +180,6 @@ func TestRuntime_DeactivateStopsActivationAndReactivates(t *testing.T) {
 		rt := New(Config{
 			Clock:           clock.Real{},
 			MailboxCapacity: 2,
-			Locator:         LocalLocator{},
 		})
 		defer rt.Close()
 
@@ -190,7 +188,7 @@ func TestRuntime_DeactivateStopsActivationAndReactivates(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				if method != "Value" {
 					return errors.New("unknown method")
 				}
@@ -224,13 +222,13 @@ func TestRuntime_DeactivateStopsActivationAndReactivates(t *testing.T) {
 
 func TestRuntime_CloseWaitsForRunningCall(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 
 		started := make(chan struct{})
 		release := make(chan struct{})
 		if err := rt.Register("account", Registration{
 			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
-			Dispatch: func(_ context.Context, _ any, _ string, _ []any, _ any) error {
+			Dispatch: func(_ context.Context, _ any, _ string, _ any, _ any) error {
 				close(started)
 				<-release
 				return nil
@@ -267,7 +265,7 @@ func TestRuntime_CloseWaitsForRunningCall(t *testing.T) {
 
 func TestRuntime_KillCancelsRunningCallAndRejectsQueuedCalls(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 
 		started := make(chan struct{})
 		cancelObserved := make(chan struct{})
@@ -277,7 +275,7 @@ func TestRuntime_KillCancelsRunningCallAndRejectsQueuedCalls(t *testing.T) {
 		var calls atomic.Int32
 		if err := rt.Register("account", Registration{
 			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
-			Dispatch: func(ctx context.Context, _ any, method string, _ []any, _ any) error {
+			Dispatch: func(ctx context.Context, _ any, method string, _ any, _ any) error {
 				if method != "Block" {
 					return errors.New("unknown method")
 				}
@@ -358,14 +356,13 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 		rt := New(Config{
 			Clock:           fakeClock,
 			MailboxCapacity: 1,
-			Locator:         LocalLocator{},
 			IdleTimeout:     time.Second,
 		})
 		defer rt.Close()
 		hookCalled := make(chan struct{}, 1)
 		if err := rt.Register("account", Registration{
 			Factory:  func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
-			Dispatch: func(context.Context, any, string, []any, any) error { return nil },
+			Dispatch: func(context.Context, any, string, any, any) error { return nil },
 			OnDeactivate: func(context.Context, Identity, any) {
 				hookCalled <- struct{}{}
 			},
@@ -401,7 +398,7 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 
 func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2})
 		defer rt.Close()
 
 		entered := make(chan struct{})
@@ -411,7 +408,7 @@ func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				switch method {
 				case "Panic":
 					close(entered)
@@ -457,7 +454,7 @@ func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 
 func TestRuntime_FactoryPanicReleasesActivationWaiters(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 		defer rt.Close()
 
 		started := make(chan struct{})
@@ -468,7 +465,7 @@ func TestRuntime_FactoryPanicReleasesActivationWaiters(t *testing.T) {
 				<-release
 				panic("factory failure")
 			},
-			Dispatch: func(context.Context, any, string, []any, any) error { return nil },
+			Dispatch: func(context.Context, any, string, any, any) error { return nil },
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -497,7 +494,7 @@ func TestRuntime_FactoryPanicReleasesActivationWaiters(t *testing.T) {
 
 func TestRuntime_FactoryErrorIsReturned(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 		defer rt.Close()
 
 		factoryErr := errors.New("factory failed")
@@ -505,7 +502,7 @@ func TestRuntime_FactoryErrorIsReturned(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return nil, factoryErr
 			},
-			Dispatch: func(context.Context, any, string, []any, any) error { return nil },
+			Dispatch: func(context.Context, any, string, any, any) error { return nil },
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -519,7 +516,7 @@ func TestRuntime_FactoryErrorIsReturned(t *testing.T) {
 
 func TestRuntime_DiscardStopsActivationAndReturnsCause(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 		defer rt.Close()
 
 		var factoryCalls atomic.Int32
@@ -528,7 +525,7 @@ func TestRuntime_DiscardStopsActivationAndReturnsCause(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				if method == "Discard" {
 					return Discard{Err: discardErr}
 				}
@@ -556,7 +553,7 @@ func TestRuntime_DiscardStopsActivationAndReturnsCause(t *testing.T) {
 
 func TestRuntime_DiscardWithNilErrorStillStopsActivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 		defer rt.Close()
 
 		var factoryCalls atomic.Int32
@@ -564,7 +561,7 @@ func TestRuntime_DiscardWithNilErrorStillStopsActivation(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				if method == "Discard" {
 					return Discard{}
 				}
@@ -598,7 +595,7 @@ func TestDiscard_ErrorHandlesNil(t *testing.T) {
 
 func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 		defer rt.Close()
 
 		started := make(chan struct{})
@@ -608,7 +605,7 @@ func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				switch method {
 				case "Block":
 					close(started)
@@ -677,7 +674,7 @@ func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
 
 func TestRuntime_SerializesConcurrentCallsPerKey(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2})
 		defer rt.Close()
 
 		firstStarted := make(chan struct{})
@@ -685,7 +682,7 @@ func TestRuntime_SerializesConcurrentCallsPerKey(t *testing.T) {
 		release := make(chan struct{})
 		if err := rt.Register("account", Registration{
 			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
-			Dispatch: func(_ context.Context, _ any, method string, _ []any, _ any) error {
+			Dispatch: func(_ context.Context, _ any, method string, _ any, _ any) error {
 				if method != "Block" {
 					return errors.New("unknown method")
 				}

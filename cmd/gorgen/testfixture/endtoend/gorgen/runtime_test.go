@@ -37,6 +37,21 @@ func TestGeneratedAccountPersistsAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestNewAccountCallUnknownMethodReturnsNil(t *testing.T) {
+	args, reply := newAccountCall("Missing")
+	if args != nil || reply != nil {
+		t.Fatalf("newAccountCall(Missing) = (%T, %T), want (nil, nil)", args, reply)
+	}
+
+	args, reply = newAccountCall("Reset")
+	if _, ok := args.(*accountResetRequest); !ok {
+		t.Fatalf("newAccountCall(Reset) args = %T, want *accountResetRequest", args)
+	}
+	if _, ok := reply.(*accountResetReply); !ok {
+		t.Fatalf("newAccountCall(Reset) reply = %T, want *accountResetReply", reply)
+	}
+}
+
 func newRuntime(t *testing.T, backend store.Store) *gor.Runtime {
 	t.Helper()
 	rt, err := gor.New(gor.WithStore(backend), gor.WithIdleTimeout(0), gor.WithEvictionInterval(0))
