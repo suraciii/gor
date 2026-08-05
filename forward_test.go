@@ -798,6 +798,7 @@ type testTransport struct {
 	serveOnce    sync.Once
 	closeOnce    sync.Once
 	sends        atomic.Int32
+	probeSends   atomic.Int32
 	sendError    error
 	sendResponse []byte
 }
@@ -830,7 +831,14 @@ func (t *testTransport) Serve(ctx context.Context, handler transport.Handler) er
 }
 
 func (t *testTransport) Send(ctx context.Context, addr string, payload []byte) ([]byte, error) {
-	t.sends.Add(1)
+	var request struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(payload, &request); err == nil && request.Kind == requestKindProbe {
+		t.probeSends.Add(1)
+	} else {
+		t.sends.Add(1)
+	}
 	if t.sendError != nil {
 		return nil, t.sendError
 	}

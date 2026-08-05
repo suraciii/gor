@@ -78,6 +78,8 @@ type Config struct {
 	HeartbeatInterval time.Duration
 	ViewInterval      time.Duration
 	DeadAfter         time.Duration
+	ProbeInterval     time.Duration
+	ProbeTimeout      time.Duration
 }
 
 type Invoker interface {
@@ -115,6 +117,8 @@ func New(options ...Option) (*Runtime, error) {
 		HeartbeatInterval: time.Second,
 		ViewInterval:      time.Second,
 		DeadAfter:         3 * time.Second,
+		ProbeInterval:     time.Second,
+		ProbeTimeout:      500 * time.Millisecond,
 	}
 	for _, option := range options {
 		option(&config)
@@ -133,11 +137,14 @@ func New(options ...Option) (*Runtime, error) {
 		clusterNode, err = cluster.New(cluster.Config{
 			Table:             config.MemberStore,
 			Clock:             config.Clock,
+			Prober:            transportProber{transport: config.Transport},
 			NodeAddr:          config.NodeAddr,
 			Generation:        config.Generation,
 			HeartbeatInterval: config.HeartbeatInterval,
 			ViewInterval:      config.ViewInterval,
 			DeadAfter:         config.DeadAfter,
+			ProbeInterval:     config.ProbeInterval,
+			ProbeTimeout:      config.ProbeTimeout,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("start cluster node: %w", err)
@@ -268,6 +275,18 @@ func WithViewInterval(value time.Duration) Option {
 func WithDeadAfter(value time.Duration) Option {
 	return func(config *Config) {
 		config.DeadAfter = value
+	}
+}
+
+func WithProbeInterval(value time.Duration) Option {
+	return func(config *Config) {
+		config.ProbeInterval = value
+	}
+}
+
+func WithProbeTimeout(value time.Duration) Option {
+	return func(config *Config) {
+		config.ProbeTimeout = value
 	}
 }
 
