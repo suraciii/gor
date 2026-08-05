@@ -855,10 +855,6 @@ func (rt *Runtime) watchCluster() {
 	}
 	rt.engine.BeginKill()
 	<-rt.engine.Done()
-	// Unlike closeImmediately, the drain runs before the transport closes: a
-	// forwarded request already admitted here holds the root inflight until
-	// its transport round trip completes.
-	rt.waitDrained()
 	rt.closeTransport()
 	rt.finishStop()
 }
