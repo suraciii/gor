@@ -363,7 +363,6 @@ func (rt *Runtime) typeRegistration(name string) (typeRegistration, bool) {
 
 func (rt *Runtime) Close() {
 	rt.shuttingDown.Store(true)
-	rt.stopServing()
 	if rt.poller != nil {
 		rt.poller.Close()
 	}
@@ -372,11 +371,11 @@ func (rt *Runtime) Close() {
 		<-rt.clusterDone
 	}
 	rt.Runtime.Close()
+	rt.stopServing()
 }
 
 func (rt *Runtime) Kill() {
 	rt.shuttingDown.Store(true)
-	rt.stopServing()
 	if rt.poller != nil {
 		rt.poller.Close()
 	}
@@ -385,6 +384,7 @@ func (rt *Runtime) Kill() {
 		<-rt.clusterDone
 	}
 	rt.Runtime.Kill()
+	rt.stopServing()
 }
 
 func (rt *Runtime) Done() <-chan struct{} {
@@ -399,7 +399,9 @@ func (rt *Runtime) stopServing() {
 
 func (rt *Runtime) watchCluster() {
 	defer func() {
-		rt.stopServing()
+		if !rt.shuttingDown.Load() {
+			rt.stopServing()
+		}
 		close(rt.clusterDone)
 	}()
 	for view := range rt.clusterNode.ViewChanges() {

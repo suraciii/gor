@@ -2,6 +2,7 @@ package gor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"sync/atomic"
@@ -228,6 +229,48 @@ func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
 		}
 		if err := first.Runtime.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); !errors.Is(err, runtimepkg.ErrRuntimeClosed) {
 			t.Fatalf("direct runtime invocation after cluster death error = %v, want %v", err, runtimepkg.ErrRuntimeClosed)
+		}
+
+		first.Close()
+		second.Close()
+	})
+}
+
+func TestRuntime_HandleRejectsAfterClusterDeath(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1100, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		first := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a")...)
+		second := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-b", "generation-b")...)
+
+		self := findClusterMember(t, members, "node-a", "generation-a")
+		self.Status = store.MemberDead
+		if _, err := members.WriteMember(context.Background(), self); err != nil {
+			t.Fatalf("mark node dead: %v", err)
+		}
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		select {
+		case <-first.done:
+		default:
+			t.Fatal("runtime done is still open after cluster death")
+		}
+		if first.shuttingDown.Load() {
+			t.Fatal("cluster death incorrectly marked runtime as shutting down")
+		}
+
+		payload, err := first.handle(context.Background(), []byte(`{"type":"gor.Account","key":"alice","method":"Balance","args":{}}`))
+		if err != nil {
+			t.Fatalf("handle error = %v, want nil", err)
+		}
+		var response callResponse
+		if err := json.Unmarshal(payload, &response); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if response.Error != runtimepkg.ErrRuntimeClosed.Error() {
+			t.Fatalf("response error = %q, want %q", response.Error, runtimepkg.ErrRuntimeClosed.Error())
 		}
 
 		first.Close()
