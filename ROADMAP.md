@@ -133,7 +133,7 @@
 
 - 文档英文化。**放在最后**——文档还在改，早翻一遍等于翻两遍。
 - ~~公开 API doc comment。第 6c 步完成、公开 API 定型为发布候选后补齐；`v0.1.0` 前必须符合 [design/api-documentation.md](design/api-documentation.md)。~~ **已完成**。
-- ~~错误与取消契约。`v0.1.0` 前必须实现稳定错误码和跨节点取消边界。~~ **已完成**，规格见 [docs/errors.md](docs/errors.md) 和 [design/errors.md](design/errors.md)。稳定码是唯一的跨节点错误身份，取消边界按规格实装。规格里有一处自相矛盾尚未解决：一篇要求本地与远端对稳定码的 `errors.Is` 完全对等，另一篇规定码的查找不检查合并起来的错误，于是方法返回合并错误时本地匹配、跨节点不匹配。裁定与修复正在另一条分支上进行，尚未合并。
+- ~~错误与取消契约。`v0.1.0` 前必须实现稳定错误码和跨节点取消边界。~~ **已完成**，规格见 [docs/errors.md](docs/errors.md) 和 [design/errors.md](design/errors.md)。稳定码是唯一的跨节点错误身份，取消边界按规格实装。规格此前有一处自相矛盾（合并错误本地匹配、跨节点不匹配），已裁定为「错误码按错误树唯一可达取值」并修齐实装。
 - 根运行时关闭契约。规格已完成，见 [design/runtime.md](design/runtime.md)、[design/cluster.md](design/cluster.md) 和 [docs/programming-model.md](docs/programming-model.md)；实装尚未开始。`v0.1.0` 前必须停止关闭窗口内对新调用的接纳。
 - 生命周期钩子的停用原因与后台失败出口。规格已完成，见 [design/runtime.md](design/runtime.md)、[design/timers.md](design/timers.md) 和 [docs/programming-model.md](docs/programming-model.md)；钩子本体已实装，停用原因（`DeactivationReason`）与结构化后台失败出口（`BackgroundError`）尚未实装，两者都伴随公开 API 破坏性变更。`v0.1.0` 前必须交出这两项。
 - ~~一个真实的示例应用，并在第 5.5 步后用新签名复跑~~ **已完成**，见 [examples/shadow/](examples/shadow/)，设计见 [docs/example.md](docs/example.md)。它的产出是 [FINDINGS.md](FINDINGS.md)——九条 API 摩擦；前六条分别进入第 5.5 步、README 的非目标或文档补充，后三条记录了当前仍存在的使用摩擦。
