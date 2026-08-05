@@ -13,6 +13,9 @@ type accountProxy struct {
 	rt gor.Invoker
 }
 
+type accountLookupRequest struct {
+	A0 string
+}
 type accountLookupReply struct {
 	R0 int64
 	R1 string
@@ -20,20 +23,25 @@ type accountLookupReply struct {
 
 func (p *accountProxy) Lookup(ctx context.Context, key string) (int64, string, error) {
 	var reply accountLookupReply
-	err := p.rt.Invoke(ctx, p.id, "Lookup", []any{key}, &reply)
+	err := p.rt.Invoke(ctx, p.id, "Lookup", &accountLookupRequest{A0: key}, &reply)
 	return reply.R0, reply.R1, err
 }
 
+type accountResetRequest struct{}
+type accountResetReply struct{}
+
 func (p *accountProxy) Reset(ctx context.Context) error {
-	err := p.rt.Invoke(ctx, p.id, "Reset", nil, nil)
+	var reply accountResetReply
+	err := p.rt.Invoke(ctx, p.id, "Reset", &accountResetRequest{}, &reply)
 	return err
 }
 
-func dispatchAccount(ctx context.Context, instance domain.Account, method string, args []any, reply any) error {
+func dispatchAccount(ctx context.Context, instance domain.Account, method string, args any, reply any) error {
 	switch method {
 	case "Lookup":
-		r0, r1, err := instance.Lookup(ctx, args[0].(string))
+		typedArgs := args.(*accountLookupRequest)
 		typedReply := reply.(*accountLookupReply)
+		r0, r1, err := instance.Lookup(ctx, typedArgs.A0)
 		typedReply.R0 = r0
 		typedReply.R1 = r1
 		return err
@@ -42,6 +50,17 @@ func dispatchAccount(ctx context.Context, instance domain.Account, method string
 		return err
 	default:
 		return fmt.Errorf("unknown method %q", method)
+	}
+}
+
+func newAccountCall(method string) (args any, reply any) {
+	switch method {
+	case "Lookup":
+		return &accountLookupRequest{}, &accountLookupReply{}
+	case "Reset":
+		return &accountResetRequest{}, &accountResetReply{}
+	default:
+		return nil, nil
 	}
 }
 
@@ -54,25 +73,35 @@ type ledgerProxy struct {
 	rt gor.Invoker
 }
 
+type ledgerBalanceRequest struct{}
 type ledgerBalanceReply struct {
 	R0 int64
 }
 
 func (p *ledgerProxy) Balance(ctx context.Context) (int64, error) {
 	var reply ledgerBalanceReply
-	err := p.rt.Invoke(ctx, p.id, "Balance", nil, &reply)
+	err := p.rt.Invoke(ctx, p.id, "Balance", &ledgerBalanceRequest{}, &reply)
 	return reply.R0, err
 }
 
-func dispatchLedger(ctx context.Context, instance domain.Ledger, method string, args []any, reply any) error {
+func dispatchLedger(ctx context.Context, instance domain.Ledger, method string, args any, reply any) error {
 	switch method {
 	case "Balance":
-		r0, err := instance.Balance(ctx)
 		typedReply := reply.(*ledgerBalanceReply)
+		r0, err := instance.Balance(ctx)
 		typedReply.R0 = r0
 		return err
 	default:
 		return fmt.Errorf("unknown method %q", method)
+	}
+}
+
+func newLedgerCall(method string) (args any, reply any) {
+	switch method {
+	case "Balance":
+		return &ledgerBalanceRequest{}, &ledgerBalanceReply{}
+	default:
+		return nil, nil
 	}
 }
 
@@ -81,10 +110,10 @@ func newLedgerProxy(rt gor.Invoker, id gor.Identity) domain.Ledger {
 }
 
 func Install(rt *gor.Runtime) error {
-	if err := gor.InstallType[domain.Account](rt, dispatchAccount, newAccountProxy); err != nil {
+	if err := gor.InstallType[domain.Account](rt, dispatchAccount, newAccountProxy, newAccountCall); err != nil {
 		return err
 	}
-	if err := gor.InstallType[domain.Ledger](rt, dispatchLedger, newLedgerProxy); err != nil {
+	if err := gor.InstallType[domain.Ledger](rt, dispatchLedger, newLedgerProxy, newLedgerCall); err != nil {
 		return err
 	}
 	return nil

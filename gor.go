@@ -65,7 +65,7 @@ type Config struct {
 }
 
 type Invoker interface {
-	Invoke(context.Context, Identity, string, []any, any) error
+	Invoke(context.Context, Identity, string, any, any) error
 }
 
 var _ Invoker = (*Runtime)(nil)
@@ -73,6 +73,7 @@ var _ Invoker = (*Runtime)(nil)
 type typeRegistration struct {
 	dispatch runtimepkg.Dispatch
 	newProxy func(Invoker, Identity) any
+	newCall  func(string) (any, any)
 }
 
 type Option func(*Config)
@@ -252,7 +253,7 @@ func (e WrongOwnerError) Error() string {
 	return fmt.Sprintf("identity belongs to node %q", e.Owner)
 }
 
-func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args []any, reply any) error {
+func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	if rt.clusterNode == nil {
 		return rt.Runtime.Invoke(ctx, id, method, args, reply)
 	}
@@ -278,7 +279,7 @@ type boundInstance struct {
 	binder *Binder
 }
 
-func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, []any, any) error, newProxy func(Invoker, Identity) T) error {
+func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, any, any) error, newProxy func(Invoker, Identity) T, newCall func(string) (any, any)) error {
 	name := TypeName[T]()
 	rt.typesMu.Lock()
 	defer rt.typesMu.Unlock()
@@ -286,12 +287,13 @@ func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, [
 		return fmt.Errorf("entity type %q is already installed", name)
 	}
 	rt.types[name] = typeRegistration{
-		dispatch: func(ctx context.Context, instance any, method string, args []any, reply any) error {
+		dispatch: func(ctx context.Context, instance any, method string, args any, reply any) error {
 			return dispatch(ctx, instance.(T), method, args, reply)
 		},
 		newProxy: func(invoker Invoker, id Identity) any {
 			return newProxy(invoker, id)
 		},
+		newCall: newCall,
 	}
 	return nil
 }
@@ -316,7 +318,7 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 			}
 			return boundInstance{entity: entity, binder: binder}, nil
 		},
-		Dispatch: func(ctx context.Context, instance any, method string, args []any, reply any) error {
+		Dispatch: func(ctx context.Context, instance any, method string, args any, reply any) error {
 			bound := instance.(boundInstance)
 			err := registration.dispatch(ctx, bound.entity, method, args, reply)
 			if discard := bound.binder.discardError(); discard != nil {

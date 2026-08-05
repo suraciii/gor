@@ -266,14 +266,14 @@ func executeDecisions(cluster *simulationCluster, decisions []decision, crashNod
 		selected := selected
 		go func() {
 			call := time.Now().UnixNano()
-			var value int64
-			err := selected.rt.Invoke(context.Background(), selected.id, "Add", []any{selected.delta}, &value)
+			var reply counterAddReply
+			err := selected.rt.Invoke(context.Background(), selected.id, "Add", &counterAddRequest{A0: selected.delta}, &reply)
 			results <- invocationResult{
 				id: selected.id,
 				operation: porcupine.Operation{
 					Input:  selected.delta,
 					Call:   call,
-					Output: counterOperationOutputFor(value, err),
+					Output: counterOperationOutputFor(reply.R0, err),
 					Return: time.Now().UnixNano(),
 				},
 				err: err,

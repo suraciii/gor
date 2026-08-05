@@ -36,7 +36,7 @@ func (LocalLocator) Locate(context.Context, Identity) (Node, error) {
 	return Node{Local: true}, nil
 }
 
-type Dispatch func(context.Context, any, string, []any, any) error
+type Dispatch func(context.Context, any, string, any, any) error
 
 type Registration struct {
 	Factory      func(context.Context, Identity) (any, error)
@@ -148,7 +148,7 @@ func (r *Runtime) Register(name string, registration Registration) error {
 	return nil
 }
 
-func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args []any, reply any) error {
+func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(r.killCtx, cancel)()
@@ -397,7 +397,7 @@ func (r *Runtime) callFinished(act *activation) {
 	r.mu.Unlock()
 }
 
-func (r *Runtime) dispatch(registration Registration, act *activation, ctx context.Context, method string, args []any, reply any) (err error) {
+func (r *Runtime) dispatch(registration Registration, act *activation, ctx context.Context, method string, args any, reply any) (err error) {
 	defer func() {
 		if value := recover(); value != nil {
 			err = fmt.Errorf("entity method panicked: %v", value)

@@ -41,7 +41,7 @@ func TestRuntime_ClusterRejectsInvocationForAnotherOwner(t *testing.T) {
 		var owner string
 		for index := 0; index < 4096; index++ {
 			candidate := Identity{Type: TypeName[Account](), Key: strconv.Itoa(index)}
-			err := first.Invoke(context.Background(), candidate, "Balance", nil, new(int64))
+			err := first.Invoke(context.Background(), candidate, "Balance", &accountBalanceRequest{}, &accountBalanceReply{})
 			var wrongOwner WrongOwnerError
 			if errors.As(err, &wrongOwner) {
 				target = candidate
@@ -59,8 +59,8 @@ func TestRuntime_ClusterRejectsInvocationForAnotherOwner(t *testing.T) {
 			t.Fatalf("wrong owner = %q, want node-b", owner)
 		}
 
-		var balance int64
-		if err := second.Invoke(context.Background(), target, "Balance", nil, &balance); err != nil {
+		var balance accountBalanceReply
+		if err := second.Invoke(context.Background(), target, "Balance", &accountBalanceRequest{}, &balance); err != nil {
 			t.Fatalf("owner invocation error = %v", err)
 		}
 		first.Close()
@@ -115,7 +115,7 @@ func TestRuntime_ClusterDeactivatesMovedActivation(t *testing.T) {
 			t.Fatal("no identity moved from node-a to node-b")
 		}
 
-		if err := first.Invoke(context.Background(), target, "Balance", nil, new(int64)); err != nil {
+		if err := first.Invoke(context.Background(), target, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); err != nil {
 			t.Fatalf("initial local invocation error = %v", err)
 		}
 		if got := registerFactoryCalls.Load(); got != 1 {
@@ -128,8 +128,8 @@ func TestRuntime_ClusterDeactivatesMovedActivation(t *testing.T) {
 		fakeClock.Advance(time.Second)
 		synctest.Wait()
 
-		var balance int64
-		if err := first.Runtime.Invoke(context.Background(), target, "Balance", nil, &balance); err != nil {
+		var balance accountBalanceReply
+		if err := first.Runtime.Invoke(context.Background(), target, "Balance", &accountBalanceRequest{}, &balance); err != nil {
 			t.Fatalf("direct runtime invocation after ownership change = %v", err)
 		}
 		if got := registerFactoryCalls.Load(); got != 2 {
@@ -203,7 +203,7 @@ func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
 		second := mustNew(t, secondOptions...)
 
 		id := Identity{Type: TypeName[Account](), Key: "self-death"}
-		if err := first.Invoke(context.Background(), id, "Balance", nil, new(int64)); err != nil {
+		if err := first.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); err != nil {
 			t.Fatalf("initial invocation error = %v", err)
 		}
 		self := findClusterMember(t, members, "node-a", "generation-a")
@@ -223,10 +223,10 @@ func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
 			t.Fatalf("identities after cluster death = %#v, want empty", identities)
 		}
 		var wrongOwner WrongOwnerError
-		if err := first.Invoke(context.Background(), id, "Balance", nil, new(int64)); !errors.As(err, &wrongOwner) || wrongOwner.Owner != "node-b" {
+		if err := first.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); !errors.As(err, &wrongOwner) || wrongOwner.Owner != "node-b" {
 			t.Fatalf("invocation after cluster death error = %v, want owner node-b", err)
 		}
-		if err := first.Runtime.Invoke(context.Background(), id, "Balance", nil, new(int64)); !errors.Is(err, runtimepkg.ErrRuntimeClosed) {
+		if err := first.Runtime.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); !errors.Is(err, runtimepkg.ErrRuntimeClosed) {
 			t.Fatalf("direct runtime invocation after cluster death error = %v, want %v", err, runtimepkg.ErrRuntimeClosed)
 		}
 

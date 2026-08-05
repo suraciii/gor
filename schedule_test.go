@@ -19,6 +19,20 @@ type scheduledAccount interface {
 	Value(context.Context) (int64, error)
 }
 
+type scheduledAccountArmRequest struct{}
+
+type scheduledAccountArmReply struct{}
+
+type scheduledAccountWakeRequest struct{}
+
+type scheduledAccountWakeReply struct{}
+
+type scheduledAccountValueRequest struct{}
+
+type scheduledAccountValueReply struct {
+	R0 int64
+}
+
 type scheduledAccountEntity struct {
 	value       State[int64]
 	schedule    Schedule
@@ -52,33 +66,47 @@ func (a *scheduledAccountEntity) Value(context.Context) (int64, error) {
 }
 
 func (p *scheduledAccountProxy) Arm(ctx context.Context) error {
-	return p.invoker.Invoke(ctx, p.id, "Arm", nil, nil)
+	return p.invoker.Invoke(ctx, p.id, "Arm", &scheduledAccountArmRequest{}, &scheduledAccountArmReply{})
 }
 
 func (p *scheduledAccountProxy) Wake(ctx context.Context) error {
-	return p.invoker.Invoke(ctx, p.id, "Wake", nil, nil)
+	return p.invoker.Invoke(ctx, p.id, "Wake", &scheduledAccountWakeRequest{}, &scheduledAccountWakeReply{})
 }
 
 func (p *scheduledAccountProxy) Value(ctx context.Context) (int64, error) {
-	var value int64
-	err := p.invoker.Invoke(ctx, p.id, "Value", nil, &value)
-	return value, err
+	var reply scheduledAccountValueReply
+	err := p.invoker.Invoke(ctx, p.id, "Value", &scheduledAccountValueRequest{}, &reply)
+	return reply.R0, err
 }
 
-func dispatchScheduledAccount(ctx context.Context, instance scheduledAccount, method string, _ []any, reply any) error {
+func dispatchScheduledAccount(ctx context.Context, instance scheduledAccount, method string, _ any, reply any) error {
 	switch method {
 	case "Arm":
 		return instance.Arm(ctx)
 	case "Wake":
 		return instance.Wake(ctx)
 	case "Value":
+		typedReply := reply.(*scheduledAccountValueReply)
 		value, err := instance.Value(ctx)
 		if err == nil {
-			*(reply.(*int64)) = value
+			typedReply.R0 = value
 		}
 		return err
 	default:
 		return fmt.Errorf("unknown method %q", method)
+	}
+}
+
+func newScheduledAccountCall(method string) (args any, reply any) {
+	switch method {
+	case "Arm":
+		return &scheduledAccountArmRequest{}, &scheduledAccountArmReply{}
+	case "Wake":
+		return &scheduledAccountWakeRequest{}, &scheduledAccountWakeReply{}
+	case "Value":
+		return &scheduledAccountValueRequest{}, &scheduledAccountValueReply{}
+	default:
+		return nil, nil
 	}
 }
 
@@ -95,7 +123,7 @@ func installScheduledAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int
 	}
 	if err := InstallType[scheduledAccount](rt, dispatchScheduledAccount, func(invoker Invoker, id Identity) scheduledAccount {
 		return &scheduledAccountProxy{invoker: invoker, id: id}
-	}); err != nil {
+	}, newScheduledAccountCall); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register[scheduledAccount](rt, func(b *Binder) scheduledAccount {

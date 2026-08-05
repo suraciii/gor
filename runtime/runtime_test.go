@@ -29,7 +29,7 @@ func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
 				<-releaseFactory
 				return &testEntity{}, nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				if method != "Ping" {
 					return errors.New("unknown method")
 				}
@@ -84,7 +84,7 @@ func TestRuntime_DifferentKeysRunConcurrently(t *testing.T) {
 		release := make(chan struct{})
 		if err := rt.Register("account", Registration{
 			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, _ any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, _ any) error {
 				if method != "Block" {
 					return errors.New("unknown method")
 				}
@@ -146,7 +146,7 @@ func TestRuntime_EvictsIdleActivationAndReactivates(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				if method != "Value" {
 					return errors.New("unknown method")
 				}
@@ -190,7 +190,7 @@ func TestRuntime_DeactivateStopsActivationAndReactivates(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				if method != "Value" {
 					return errors.New("unknown method")
 				}
@@ -230,7 +230,7 @@ func TestRuntime_CloseWaitsForRunningCall(t *testing.T) {
 		release := make(chan struct{})
 		if err := rt.Register("account", Registration{
 			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
-			Dispatch: func(_ context.Context, _ any, _ string, _ []any, _ any) error {
+			Dispatch: func(_ context.Context, _ any, _ string, _ any, _ any) error {
 				close(started)
 				<-release
 				return nil
@@ -277,7 +277,7 @@ func TestRuntime_KillCancelsRunningCallAndRejectsQueuedCalls(t *testing.T) {
 		var calls atomic.Int32
 		if err := rt.Register("account", Registration{
 			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
-			Dispatch: func(ctx context.Context, _ any, method string, _ []any, _ any) error {
+			Dispatch: func(ctx context.Context, _ any, method string, _ any, _ any) error {
 				if method != "Block" {
 					return errors.New("unknown method")
 				}
@@ -365,7 +365,7 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 		hookCalled := make(chan struct{}, 1)
 		if err := rt.Register("account", Registration{
 			Factory:  func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
-			Dispatch: func(context.Context, any, string, []any, any) error { return nil },
+			Dispatch: func(context.Context, any, string, any, any) error { return nil },
 			OnDeactivate: func(context.Context, Identity, any) {
 				hookCalled <- struct{}{}
 			},
@@ -411,7 +411,7 @@ func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				switch method {
 				case "Panic":
 					close(entered)
@@ -468,7 +468,7 @@ func TestRuntime_FactoryPanicReleasesActivationWaiters(t *testing.T) {
 				<-release
 				panic("factory failure")
 			},
-			Dispatch: func(context.Context, any, string, []any, any) error { return nil },
+			Dispatch: func(context.Context, any, string, any, any) error { return nil },
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -505,7 +505,7 @@ func TestRuntime_FactoryErrorIsReturned(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return nil, factoryErr
 			},
-			Dispatch: func(context.Context, any, string, []any, any) error { return nil },
+			Dispatch: func(context.Context, any, string, any, any) error { return nil },
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -528,7 +528,7 @@ func TestRuntime_DiscardStopsActivationAndReturnsCause(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				if method == "Discard" {
 					return Discard{Err: discardErr}
 				}
@@ -564,7 +564,7 @@ func TestRuntime_DiscardWithNilErrorStillStopsActivation(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				if method == "Discard" {
 					return Discard{}
 				}
@@ -608,7 +608,7 @@ func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
 			Factory: func(context.Context, Identity) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
-			Dispatch: func(_ context.Context, instance any, method string, _ []any, reply any) error {
+			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
 				switch method {
 				case "Block":
 					close(started)
@@ -685,7 +685,7 @@ func TestRuntime_SerializesConcurrentCallsPerKey(t *testing.T) {
 		release := make(chan struct{})
 		if err := rt.Register("account", Registration{
 			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
-			Dispatch: func(_ context.Context, _ any, method string, _ []any, _ any) error {
+			Dispatch: func(_ context.Context, _ any, method string, _ any, _ any) error {
 				if method != "Block" {
 					return errors.New("unknown method")
 				}
