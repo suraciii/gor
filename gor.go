@@ -35,24 +35,24 @@ type Deactivatable interface {
 
 type Runtime struct {
 	*runtimepkg.Runtime
-	store         store.Store
-	scheduleStore store.ScheduleStore
-	clock         clock.Clock
-	onError       func(Identity, string, error)
-	poller        *timer.Poller
-	transport     transport.Transport
-	transportDone chan struct{}
-	transportStop context.CancelFunc
-	transportOnce sync.Once
-	clusterNode   *cluster.Node
-	clusterView   atomic.Pointer[cluster.View]
-	clusterDone   chan struct{}
-	done          chan struct{}
-	stopOnce      sync.Once
-	shuttingDown  atomic.Bool
-	nodeAddr      string
-	typesMu       sync.Mutex
-	types         map[string]typeRegistration
+	store            store.Store
+	scheduleStore    store.ScheduleStore
+	clock            clock.Clock
+	onError          func(Identity, string, error)
+	poller           *timer.Poller
+	transport        transport.Transport
+	transportDone    chan struct{}
+	transportStop    context.CancelFunc
+	transportClosing atomic.Bool
+	clusterNode      *cluster.Node
+	clusterView      atomic.Pointer[cluster.View]
+	clusterDone      chan struct{}
+	done             chan struct{}
+	stopOnce         sync.Once
+	shuttingDown     atomic.Bool
+	nodeAddr         string
+	typesMu          sync.Mutex
+	types            map[string]typeRegistration
 }
 
 type Config struct {
@@ -435,15 +435,15 @@ func (rt *Runtime) closeTransport() {
 	if rt.transport == nil {
 		return
 	}
-	rt.transportOnce.Do(func() {
+	if rt.transportClosing.CompareAndSwap(false, true) {
 		if rt.transportStop != nil {
 			rt.transportStop()
 		}
 		_ = rt.transport.Close()
-		if rt.transportDone != nil {
-			<-rt.transportDone
-		}
-	})
+	}
+	if rt.transportDone != nil {
+		<-rt.transportDone
+	}
 }
 
 func (rt *Runtime) watchCluster() {

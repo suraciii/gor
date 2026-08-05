@@ -254,6 +254,13 @@ func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
 		if err == nil || err.Error() != "remote failure" {
 			t.Fatalf("forwarded method error = %v, want remote failure", err)
 		}
+		if errors.Is(err, remoteFailure) {
+			t.Fatal("forwarded error retained the remote sentinel")
+		}
+		var typedFailure *routedFailureError
+		if errors.As(err, &typedFailure) {
+			t.Fatal("forwarded error retained the remote error type")
+		}
 
 		local := findForwardTarget(t, first, "node-a")
 		beforeLocal := firstTransport.sends.Load()
@@ -268,6 +275,31 @@ func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
 			t.Fatalf("local invocation sent %d transport requests, want none", got-beforeLocal)
 		}
 
+		var unmarshalableReply routedAccountWhoReply
+		if err := first.Invoke(context.Background(), local, "Who", &unmarshalableArgs{Callback: func() {}}, &unmarshalableReply); err != nil {
+			t.Fatalf("local invocation with unmarshalable args error = %v", err)
+		}
+		if unmarshalableReply.R0 != "node-a" {
+			t.Fatalf("local invocation with unmarshalable args reply = %q, want node-a", unmarshalableReply.R0)
+		}
+		if got := firstTransport.sends.Load(); got != beforeLocal {
+			t.Fatalf("local unmarshalable invocation sent %d transport requests, want none", got-beforeLocal)
+		}
+
+		firstTransport.sendResponse = []byte("{")
+		err = first.Invoke(context.Background(), remote, "Who", &routedAccountWhoRequest{}, nil)
+		if err == nil || !strings.Contains(err.Error(), "decode invocation response") {
+			t.Fatalf("invalid response envelope error = %v, want response decode error", err)
+		}
+
+		firstTransport.sendResponse = []byte(`{"reply":"invalid","error":""}`)
+		var invalidReply routedAccountWhoReply
+		err = first.Invoke(context.Background(), remote, "Who", &routedAccountWhoRequest{}, &invalidReply)
+		if err == nil || !strings.Contains(err.Error(), "decode Who reply") {
+			t.Fatalf("invalid response reply error = %v, want reply decode error", err)
+		}
+		firstTransport.sendResponse = nil
+
 		sendError := errors.New("network down")
 		firstTransport.sendError = sendError
 		beforeFailure := firstTransport.sends.Load()
@@ -277,6 +309,132 @@ func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
 		}
 		if got := firstTransport.sends.Load(); got != beforeFailure+1 {
 			t.Fatalf("transport sends after failure = %d, want one attempt", got-beforeFailure)
+		}
+	})
+}
+
+func TestRuntime_HandleDoesNotRouteAgain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1250, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		backend := store.NewMemory()
+		network := newTestTransportNetwork()
+		firstTransport := network.add("node-a")
+		secondTransport := network.add("node-b")
+		firstOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a")
+		firstOptions = append(firstOptions, WithTransport(firstTransport))
+		secondOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-b", "generation-b")
+		secondOptions = append(secondOptions, WithTransport(secondTransport))
+		first := mustNew(t, firstOptions...)
+		second := mustNew(t, secondOptions...)
+		defer first.Close()
+		defer second.Close()
+		installRoutedAccount(t, first, "node-a")
+		installRoutedAccount(t, second, "node-b")
+		synctest.Wait()
+		<-firstTransport.served
+		<-secondTransport.served
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		remote := findForwardTarget(t, first, "node-b")
+		conflictingView := cluster.NewView([]store.Member{{
+			NodeAddr:   "node-a",
+			Generation: "generation-a",
+			Status:     store.MemberActive,
+		}})
+		second.clusterView.Store(&conflictingView)
+		var reply routedAccountEchoReply
+		if err := first.Invoke(context.Background(), remote, "Echo", &routedAccountEchoRequest{A0: "direct"}, &reply); err != nil {
+			t.Fatalf("forwarded invocation error = %v", err)
+		}
+		if reply.R0 != "node-b:direct" {
+			t.Fatalf("forwarded reply = %q, want direct node-b execution", reply.R0)
+		}
+		if got := firstTransport.sends.Load(); got != 1 {
+			t.Fatalf("initial transport sends = %d, want 1", got)
+		}
+		if got := secondTransport.sends.Load(); got != 0 {
+			t.Fatalf("second transport sends = %d, want 0 after direct handling", got)
+		}
+	})
+}
+
+func TestRuntime_ForwardCancellationDoesNotCancelRemote(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1275, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		backend := store.NewMemory()
+		network := newTestTransportNetwork()
+		firstTransport := network.add("node-a")
+		secondTransport := network.add("node-b")
+		firstOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a")
+		firstOptions = append(firstOptions, WithTransport(firstTransport))
+		secondOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-b", "generation-b")
+		secondOptions = append(secondOptions, WithTransport(secondTransport))
+		first := mustNew(t, firstOptions...)
+		second := mustNew(t, secondOptions...)
+		defer first.Close()
+		defer second.Close()
+		installRoutedAccount(t, first, "node-a")
+		started := make(chan struct{})
+		release := make(chan struct{})
+		observedContext := make(chan context.Context)
+		finished := make(chan struct{})
+		installRoutedAccountWithFactory(t, second, func(*Binder) routedAccount {
+			return &routedAccountEntity{
+				label:         "node-b",
+				blockStarted:  started,
+				blockRelease:  release,
+				blockContext:  observedContext,
+				blockFinished: finished,
+			}
+		})
+		synctest.Wait()
+		<-firstTransport.served
+		<-secondTransport.served
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		remote := findForwardTarget(t, first, "node-b")
+		ctx, cancel := context.WithCancel(context.Background())
+		callDone := make(chan error, 1)
+		go func() {
+			callDone <- first.Invoke(ctx, remote, "Block", &routedAccountBlockRequest{}, &routedAccountBlockReply{})
+		}()
+		<-started
+		remoteContext := <-observedContext
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-callDone:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancelled forwarded invocation error = %v, want context.Canceled", err)
+			}
+		default:
+			close(release)
+			synctest.Wait()
+			t.Fatal("cancelled forwarded invocation did not return")
+		}
+		if _, ok := remoteContext.Deadline(); ok {
+			t.Fatal("remote forwarded context unexpectedly has a deadline")
+		}
+		if err := remoteContext.Err(); err != nil {
+			t.Fatalf("remote forwarded context was cancelled: %v", err)
+		}
+		select {
+		case <-finished:
+			t.Fatal("remote invocation finished before release")
+		default:
+		}
+		close(release)
+		synctest.Wait()
+		select {
+		case <-finished:
+		default:
+			t.Fatal("remote invocation did not finish after release")
 		}
 	})
 }
@@ -322,12 +480,31 @@ func TestRuntime_StartsAndClosesConfiguredTransport(t *testing.T) {
 		fakeClock := clock.NewFake(start)
 		members := store.NewMemory()
 		fakeTransport := newTestTransportNetwork().add("node-a")
+		fakeTransport.serveHold = make(chan struct{})
 		options := clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a")
 		options = append(options, WithTransport(fakeTransport))
 		rt := mustNew(t, options...)
 		<-fakeTransport.served
 
-		rt.Close()
+		closeDone := make(chan struct{}, 2)
+		go func() {
+			rt.Close()
+			closeDone <- struct{}{}
+		}()
+		go func() {
+			rt.Close()
+			closeDone <- struct{}{}
+		}()
+		synctest.Wait()
+		close(fakeTransport.serveHold)
+		synctest.Wait()
+		for range 2 {
+			select {
+			case <-closeDone:
+			default:
+				t.Fatal("concurrent Runtime.Close did not return")
+			}
+		}
 		select {
 		case <-fakeTransport.closed:
 		default:
@@ -344,11 +521,16 @@ func TestRuntime_StartsAndClosesConfiguredTransport(t *testing.T) {
 type routedAccount interface {
 	Who(context.Context) (string, error)
 	Echo(context.Context, string) (string, error)
+	Block(context.Context) error
 	Fail(context.Context) error
 }
 
 type routedAccountEntity struct {
-	label string
+	label         string
+	blockStarted  chan struct{}
+	blockRelease  chan struct{}
+	blockContext  chan context.Context
+	blockFinished chan struct{}
 }
 
 type routedAccountWhoRequest struct{}
@@ -361,8 +543,22 @@ type routedAccountEchoRequest struct {
 type routedAccountEchoReply struct {
 	R0 string
 }
+type routedAccountBlockRequest struct{}
+type routedAccountBlockReply struct{}
 type routedAccountFailRequest struct{}
 type routedAccountFailReply struct{}
+
+type routedFailureError struct{}
+
+func (*routedFailureError) Error() string {
+	return "remote failure"
+}
+
+var remoteFailure = &routedFailureError{}
+
+type unmarshalableArgs struct {
+	Callback func()
+}
 
 func (a *routedAccountEntity) Who(context.Context) (string, error) {
 	return a.label, nil
@@ -372,8 +568,22 @@ func (a *routedAccountEntity) Echo(_ context.Context, value string) (string, err
 	return a.label + ":" + value, nil
 }
 
+func (a *routedAccountEntity) Block(ctx context.Context) error {
+	if a.blockStarted != nil {
+		close(a.blockStarted)
+	}
+	if a.blockContext != nil {
+		a.blockContext <- ctx
+	}
+	<-a.blockRelease
+	if a.blockFinished != nil {
+		close(a.blockFinished)
+	}
+	return nil
+}
+
 func (*routedAccountEntity) Fail(context.Context) error {
-	return errors.New("remote failure")
+	return remoteFailure
 }
 
 func dispatchRoutedAccount(ctx context.Context, instance routedAccount, method string, args any, reply any) error {
@@ -390,6 +600,8 @@ func dispatchRoutedAccount(ctx context.Context, instance routedAccount, method s
 			reply.(*routedAccountEchoReply).R0 = value
 		}
 		return err
+	case "Block":
+		return instance.Block(ctx)
 	case "Fail":
 		return instance.Fail(ctx)
 	default:
@@ -403,6 +615,8 @@ func newRoutedAccountCall(method string) (args any, reply any) {
 		return &routedAccountWhoRequest{}, &routedAccountWhoReply{}
 	case "Echo":
 		return &routedAccountEchoRequest{}, &routedAccountEchoReply{}
+	case "Block":
+		return &routedAccountBlockRequest{}, &routedAccountBlockReply{}
 	case "Fail":
 		return &routedAccountFailRequest{}, &routedAccountFailReply{}
 	default:
@@ -411,15 +625,19 @@ func newRoutedAccountCall(method string) (args any, reply any) {
 }
 
 func installRoutedAccount(t *testing.T, rt *Runtime, label string) {
+	installRoutedAccountWithFactory(t, rt, func(*Binder) routedAccount {
+		return &routedAccountEntity{label: label}
+	})
+}
+
+func installRoutedAccountWithFactory(t *testing.T, rt *Runtime, factory func(*Binder) routedAccount) {
 	t.Helper()
 	if err := InstallType[routedAccount](rt, dispatchRoutedAccount, func(invoker Invoker, id Identity) routedAccount {
 		return &routedAccountProxy{invoker: invoker, id: id}
 	}, newRoutedAccountCall); err != nil {
 		t.Fatal(err)
 	}
-	if err := Register[routedAccount](rt, func(*Binder) routedAccount {
-		return &routedAccountEntity{label: label}
-	}); err != nil {
+	if err := Register[routedAccount](rt, factory); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -433,6 +651,11 @@ func (p *routedAccountProxy) Echo(ctx context.Context, value string) (string, er
 	var reply routedAccountEchoReply
 	err := p.invoker.Invoke(ctx, p.id, "Echo", &routedAccountEchoRequest{A0: value}, &reply)
 	return reply.R0, err
+}
+
+func (p *routedAccountProxy) Block(ctx context.Context) error {
+	var reply routedAccountBlockReply
+	return p.invoker.Invoke(ctx, p.id, "Block", &routedAccountBlockRequest{}, &reply)
 }
 
 func (p *routedAccountProxy) Who(ctx context.Context) (string, error) {
@@ -490,13 +713,15 @@ type testTransport struct {
 	mu      sync.Mutex
 	handler transport.Handler
 
-	served    chan struct{}
-	closed    chan struct{}
-	serveDone chan struct{}
-	serveOnce sync.Once
-	closeOnce sync.Once
-	sends     atomic.Int32
-	sendError error
+	served       chan struct{}
+	closed       chan struct{}
+	serveDone    chan struct{}
+	serveHold    chan struct{}
+	serveOnce    sync.Once
+	closeOnce    sync.Once
+	sends        atomic.Int32
+	sendError    error
+	sendResponse []byte
 }
 
 var _ transport.Transport = (*testTransport)(nil)
@@ -513,6 +738,13 @@ func (t *testTransport) Serve(ctx context.Context, handler transport.Handler) er
 	defer close(t.serveDone)
 	select {
 	case <-ctx.Done():
+	case <-t.closed:
+	}
+	if t.serveHold != nil {
+		<-t.serveHold
+	}
+	select {
+	case <-ctx.Done():
 		return ctx.Err()
 	case <-t.closed:
 		return nil
@@ -523,6 +755,9 @@ func (t *testTransport) Send(ctx context.Context, addr string, payload []byte) (
 	t.sends.Add(1)
 	if t.sendError != nil {
 		return nil, t.sendError
+	}
+	if t.sendResponse != nil {
+		return t.sendResponse, nil
 	}
 	t.network.mu.Lock()
 	peer := t.network.transports[addr]
