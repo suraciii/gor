@@ -15,19 +15,26 @@ import (
 var ErrScheduleStoreUnavailable = errors.New("schedule store is not configured")
 
 // ScheduleTime describes when a schedule first runs and whether it repeats.
-// Use After for a one-shot schedule or Every for a recurring schedule.
+// Its zero value is valid and is equivalent to After(0): a one-shot schedule
+// due at the clock time used by Set.
 type ScheduleTime struct {
 	delay    time.Duration
 	interval time.Duration
 }
 
-// After returns a one-shot schedule time due delay after it is set.
+// After returns a one-shot schedule due delay after Set uses its clock. A zero
+// delay is due immediately; a negative delay is due in the past and is
+// eligible on the next scheduler poll.
 func After(delay time.Duration) ScheduleTime {
 	return ScheduleTime{delay: delay}
 }
 
-// Every returns a recurring schedule time whose first and subsequent runs are
-// separated by interval.
+// Every returns a schedule whose first due time is interval after Set uses its
+// clock and whose subsequent due times use the same interval when interval is
+// positive. Every(0) is accepted and produces a one-shot schedule, just like
+// After(0). A negative interval is also accepted and stored; it places the
+// schedule in the past so it remains due instead of producing a future
+// recurring deadline.
 func Every(interval time.Duration) ScheduleTime {
 	return ScheduleTime{delay: interval, interval: interval}
 }
@@ -51,11 +58,15 @@ func NewSchedule(b *Binder) Schedule {
 	}
 }
 
-// Set creates or replaces the named schedule for the bound entity. The
-// schedule invokes method after the time described by when; setting the same
-// name again replaces its method and timing. It returns
-// ErrScheduleStoreUnavailable when no schedule store is configured, or the
-// error returned by the store.
+// Set creates or replaces the named schedule for the bound entity. method must
+// name a generated entity method callable as func(context.Context) error; Set
+// does not validate the name or signature, so an invalid method is stored and
+// fails when the scheduler invokes it. A successful Set persists the schedule.
+// The scheduler claims each due occurrence before invoking it, providing
+// at-most-once delivery, and does not automatically retry an invocation that
+// returns an error. Setting the same name again replaces its method and timing.
+// Set returns ErrScheduleStoreUnavailable when no schedule store is configured,
+// or the error returned by the store.
 func (s Schedule) Set(ctx context.Context, name string, when ScheduleTime, method string) error {
 	if s.store == nil {
 		return ErrScheduleStoreUnavailable
@@ -70,8 +81,9 @@ func (s Schedule) Set(ctx context.Context, name string, when ScheduleTime, metho
 }
 
 // Cancel asks the schedule store to delete the named schedule for the bound
-// entity. It returns ErrScheduleStoreUnavailable when no schedule store is
-// configured, or the error returned by the store.
+// entity. Canceling a name that does not exist succeeds as a no-op. It returns
+// ErrScheduleStoreUnavailable when no schedule store is configured, or the
+// error returned by the store.
 func (s Schedule) Cancel(ctx context.Context, name string) error {
 	if s.store == nil {
 		return ErrScheduleStoreUnavailable

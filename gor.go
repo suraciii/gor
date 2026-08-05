@@ -19,9 +19,10 @@ import (
 	"github.com/suraciii/gor/transport"
 )
 
-// ErrTypeNotInstalled is wrapped by Register when the entity type has not
-// been installed in the target Runtime. Use errors.Is to test that condition;
-// Ref instead panics with a message based on this error.
+// ErrTypeNotInstalled is the sentinel that Register wraps when an entity type
+// has not been installed in the target Runtime. Ref instead panics with a
+// string message based on this value; it does not panic with an error that
+// callers can inspect with errors.Is.
 var ErrTypeNotInstalled = errors.New("entity type is not installed; call InstallType or run the generated Install")
 
 // Identity identifies an entity by its registered type name and key.
@@ -147,11 +148,13 @@ func (b *Binder) scopeRuntime() *Runtime {
 
 // New creates and starts a Runtime.
 //
-// With no options, New uses a real clock, an in-memory state and schedule
-// store, a mailbox capacity of 16, a one-minute idle timeout, one-second
+// By default, New uses clock.Real{}, store.NewMemory for entity state and
+// schedules, a mailbox capacity of 16, a one-minute idle timeout, one-second
 // eviction and schedule intervals, and one-second heartbeat and view
-// intervals. A MemberStore and Transport must be configured together;
-// configuring only one returns an error.
+// intervals. A MemberStore and Transport must be configured together. In
+// clustered mode, ProbeInterval, ProbeTimeout, ProbeFailures, VoteTTL,
+// MaxTickGap, and MaxTableLatency must also be positive; leaving them at their
+// zero values returns an error matching cluster.ErrInvalidConfig.
 //
 // New returns an error if cluster initialization fails. The returned Runtime
 // is ready for entity installation and registration.
@@ -431,15 +434,14 @@ func WithMaxTableLatency(value time.Duration) Option {
 
 // WrongOwnerError reports that a clustered Runtime has no current owner for
 // an identity. Invoke returns this error without forwarding a request when the
-// current view has no active owner.
-//
-// Owner identifies the owner associated with the error. It is empty when no
-// owner is available.
+// current view has no active owner. Owner is always the empty string in the
+// current behavior.
 type WrongOwnerError struct {
 	Owner string
 }
 
-// Error returns a description of the unavailable owner.
+// Error returns the message "identity belongs to node %q", formatted with
+// e.Owner.
 func (e WrongOwnerError) Error() string {
 	return fmt.Sprintf("identity belongs to node %q", e.Owner)
 }
@@ -448,9 +450,11 @@ func (e WrongOwnerError) Error() string {
 // dispatch. Calls for the same identity are serialized; calls for different
 // identities may run concurrently.
 //
-// ctx limits waiting for activation and delivery and is passed to the entity
-// call. In a clustered runtime, an invocation for a remote owner is forwarded;
-// an identity with no current owner returns WrongOwnerError without being
+// For a local call, ctx limits waiting for activation and delivery and is
+// passed to the entity method. For a remote owner, ctx limits the forwarding
+// operation at the initiating Runtime; canceling it does not cancel the
+// already forwarded entity call, which may continue on the remote Runtime.
+// An identity with no current owner returns WrongOwnerError without being
 // forwarded. Errors from registration, activation, dispatch, context
 // cancellation, or forwarding are returned to the caller. When a forwarded
 // call returns an error from the remote Runtime, the error crosses the
@@ -458,7 +462,9 @@ func (e WrongOwnerError) Error() string {
 // errors.Is or errors.As against the original remote error is therefore not
 // applicable.
 //
-// After the runtime has shut down, Invoke does not start a new entity call.
+// Once the embedded runtime has entered shutdown, it rejects new local entity
+// calls. A direct Invoke may still be admitted during the outer Runtime's
+// closing window before that point.
 func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	if rt.onCall == nil {
 		return rt.invoke(ctx, id, method, args, reply)
@@ -507,9 +513,9 @@ type boundInstance struct {
 }
 
 // InstallType installs the dispatch and proxy factories required for T in rt.
-// Generated Install code normally calls it; application code should use the
-// generated installer rather than hand-writing this integration seam. It
-// returns an error when T is already installed in rt.
+// Generated Install code calls it; application code should use the generated
+// installer rather than hand-writing this integration seam. It returns an
+// error when T is already installed in rt.
 func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, any, any) error, newProxy func(Invoker, Identity) T, newCall func(string) (any, any)) error {
 	name := TypeName[T]()
 	rt.typesMu.Lock()
@@ -584,7 +590,7 @@ func Now(b *Binder) time.Time {
 	return b.runtime.clock.Now()
 }
 
-// Ref returns a typed reference to T with key as its entity key. The type must
+// Ref returns a typed reference to entity T identified by key. The type must
 // already be installed in the runtime represented by scope; otherwise Ref
 // panics with an ErrTypeNotInstalled message. Creating a reference does not
 // activate the entity; activation begins when a method is invoked on it.
@@ -605,12 +611,22 @@ func (rt *Runtime) typeRegistration(name string) (typeRegistration, bool) {
 	return registration, ok
 }
 
-// Close begins an orderly shutdown. It stops scheduling and serving new work,
-// waits for in-flight invocations and normal deactivation callbacks to finish,
-// and closes configured cluster and transport resources.
+// Close begins an orderly shutdown. It closes Done, stops the scheduler, and
+// then waits for in-flight invocations and normal deactivation callbacks to
+// finish before closing configured cluster and transport resources.
 //
-// Calls already in progress are allowed to finish. Unlike Kill, Close does
-// not cancel their contexts or skip deactivation callbacks.
+// For ordinary calls, Close leaves the caller's context unchanged and allows
+// calls already admitted to finish. Scheduled calls use the scheduler's
+// context; Close cancels that context while stopping the scheduler, so an
+// in-progress scheduled method receives cancellation. Close waits for both
+// kinds of calls to return. Direct Invoke calls can still be admitted between
+// Done being closed and the embedded runtime entering shutdown, and Close may
+// wait for those calls as well.
+//
+// Repeated Close or Kill calls are safe and do not start another shutdown. If
+// Close and Kill run concurrently, the first shutdown mode accepted by the
+// embedded runtime determines whether running invocation contexts are
+// canceled and whether deactivation callbacks run.
 func (rt *Runtime) Close() {
 	rt.shuttingDown.Store(true)
 	rt.stopServing()
@@ -627,7 +643,9 @@ func (rt *Runtime) Close() {
 
 // Kill begins an immediate shutdown. It cancels the contexts of running and
 // queued invocations, rejects queued work, and skips deactivation callbacks.
-// Unlike Close, Kill does not wait for deactivation callbacks to finish.
+// Unlike Close, Kill does not wait for deactivation callbacks to finish. It is
+// safe to call repeatedly; if it races with Close, the first shutdown mode
+// accepted by the embedded runtime determines the result.
 func (rt *Runtime) Kill() {
 	rt.shuttingDown.Store(true)
 	rt.stopServing()
@@ -647,9 +665,10 @@ func (rt *Runtime) Activations() []Activation {
     return rt.engine.Activations()
 }
 
-// Done returns a channel that is closed when the runtime stops serving
-// invocations. It closes after Close or Kill and when a clustered runtime's
-// node is declared dead.
+// Done returns a channel that is closed when shutdown begins and the runtime
+// stops accepting forwarded requests. It may close before Close or Kill has
+// finished waiting for invocations, deactivation callbacks, or resources.
+// It also closes when a clustered runtime's node is declared dead.
 func (rt *Runtime) Done() <-chan struct{} {
 	return rt.done
 }
