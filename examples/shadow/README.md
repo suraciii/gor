@@ -34,6 +34,15 @@ if err := shadow.Register(rt); err != nil {
 }
 ```
 
+定时任务和生命周期钩子没有请求方等待。启动运行时要安装统一的错误出口，否则这两类错误会被丢弃：
+
+```go
+rt, err := gor.New(
+    gor.WithStore(database),
+    gor.OnError(shadow.LogBackgroundError),
+)
+```
+
 服务监听 `:8080`，数据写入 `data/gor.db`。也可以指定地址和数据库文件：
 
 ```bash
@@ -96,4 +105,4 @@ curl http://localhost:8080/workshops/assembly/online-count
 go run ./examples/shadow/cmd/load
 ```
 
-等待之后，程序先断言本地活跃目录为空，确认闲置实体已经被驱逐；随后再次读取影子，从 store 重新激活 `device-000`，并确认配置仍然读得到。程序退出时会删除临时目录。也可以用 `-devices` 调整这批设备的规模。
+程序从 `OnDeactivate` 的 channel 信号等待所有设备和车间被闲置驱逐，再断言本地活跃目录为空；随后读取影子，触发 `OnActivate` 从 store 重新加载，并确认配置仍然读得到。程序退出时会删除临时目录。也可以用 `-devices` 调整这批设备的规模。

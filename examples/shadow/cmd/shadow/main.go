@@ -51,7 +51,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 		}
 	}()
 
-	rt, err := gor.New(gor.WithStore(database))
+	rt, err := newRuntime(database)
 	if err != nil {
 		return fmt.Errorf("create runtime: %w", err)
 	}
@@ -84,4 +84,9 @@ func run(ctx context.Context, args []string) (runErr error) {
 		}
 		return nil
 	}
+}
+
+func newRuntime(database store.Store, options ...gor.Option) (*gor.Runtime, error) {
+	options = append([]gor.Option{gor.WithStore(database), gor.OnError(shadow.LogBackgroundError)}, options...)
+	return gor.New(options...)
 }
