@@ -24,6 +24,14 @@ type Scope interface {
 	scopeRuntime() *Runtime
 }
 
+type Activatable interface {
+	OnActivate(context.Context) error
+}
+
+type Deactivatable interface {
+	OnDeactivate(context.Context) error
+}
+
 type Runtime struct {
 	*runtimepkg.Runtime
 	store         store.Store
@@ -301,6 +309,11 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 			if err := binder.load(ctx); err != nil {
 				return nil, err
 			}
+			if activatable, ok := any(entity).(Activatable); ok {
+				if err := activatable.OnActivate(ctx); err != nil {
+					return nil, err
+				}
+			}
 			return boundInstance{entity: entity, binder: binder}, nil
 		},
 		Dispatch: func(ctx context.Context, instance any, method string, args []any, reply any) error {
@@ -310,6 +323,17 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 				return runtimepkg.Discard{Err: err}
 			}
 			return err
+		},
+		OnDeactivate: func(ctx context.Context, id runtimepkg.Identity, instance any) {
+			bound := instance.(boundInstance)
+			deactivatable, ok := bound.entity.(Deactivatable)
+			if !ok {
+				return
+			}
+			err := deactivatable.OnDeactivate(ctx)
+			if err != nil && rt.onError != nil {
+				rt.onError(Identity(id), "OnDeactivate", err)
+			}
 		},
 	})
 }

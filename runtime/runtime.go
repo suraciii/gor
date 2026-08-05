@@ -39,8 +39,9 @@ func (LocalLocator) Locate(context.Context, Identity) (Node, error) {
 type Dispatch func(context.Context, any, string, []any, any) error
 
 type Registration struct {
-	Factory  func(context.Context, Identity) (any, error)
-	Dispatch Dispatch
+	Factory      func(context.Context, Identity) (any, error)
+	Dispatch     Dispatch
+	OnDeactivate func(context.Context, Identity, any)
 }
 
 type Discard struct {
@@ -96,13 +97,15 @@ const (
 )
 
 type activation struct {
-	id       Identity
-	instance any
-	mailbox  *mail.Box
-	lastUsed time.Time
-	calls    int
-	state    ActivationState
-	done     chan struct{}
+	id               Identity
+	instance         any
+	onDeactivate     func(context.Context, Identity, any)
+	skipOnDeactivate bool
+	mailbox          *mail.Box
+	lastUsed         time.Time
+	calls            int
+	state            ActivationState
+	done             chan struct{}
 }
 
 type entry struct {
@@ -206,23 +209,24 @@ func (r *Runtime) Identities() []Identity {
 }
 
 func (r *Runtime) Close() {
-	down, ok := r.beginShutdown()
+	down, ok := r.beginShutdown(false)
 	if !ok {
 		return
 	}
+	r.mu.Lock()
+	for _, act := range down.newlyDeactivating {
+		r.startDeactivationWaiterLocked(act)
+	}
+	r.mu.Unlock()
 	for _, act := range down.activations {
 		act.mailbox.Close()
-	}
-	for _, act := range down.activations {
-		<-act.mailbox.Done()
-		r.finishDeactivation(act)
 	}
 	<-r.evictionDone
 	r.deactivationWaiters.Wait()
 }
 
 func (r *Runtime) Kill() {
-	down, ok := r.beginShutdown()
+	down, ok := r.beginShutdown(true)
 	if !ok {
 		return
 	}
@@ -243,7 +247,7 @@ type shutdown struct {
 	newlyDeactivating []*activation
 }
 
-func (r *Runtime) beginShutdown() (shutdown, bool) {
+func (r *Runtime) beginShutdown(skipOnDeactivate bool) (shutdown, bool) {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -257,6 +261,9 @@ func (r *Runtime) beginShutdown() (shutdown, bool) {
 	}
 	for _, act := range r.activations {
 		result.activations = append(result.activations, act)
+		if skipOnDeactivate {
+			act.skipOnDeactivate = true
+		}
 		if beginDeactivation(act) {
 			result.newlyDeactivating = append(result.newlyDeactivating, act)
 		}
@@ -357,9 +364,10 @@ func (r *Runtime) createActivation(ctx context.Context, id Identity, registratio
 
 func (r *Runtime) activate(ctx context.Context, id Identity, registration Registration) (*activation, error) {
 	act := &activation{
-		id:    id,
-		state: ActivationActivating,
-		done:  make(chan struct{}),
+		id:           id,
+		onDeactivate: registration.OnDeactivate,
+		state:        ActivationActivating,
+		done:         make(chan struct{}),
 	}
 	instance, err := registration.Factory(ctx, id)
 	if err != nil {
@@ -464,6 +472,15 @@ func (r *Runtime) startDeactivationWaiterLocked(act *activation) {
 
 func (r *Runtime) waitForDeactivation(act *activation) {
 	<-act.mailbox.Done()
+	r.mu.Lock()
+	var onDeactivate func(context.Context, Identity, any)
+	if !act.skipOnDeactivate {
+		onDeactivate = act.onDeactivate
+	}
+	r.mu.Unlock()
+	if onDeactivate != nil {
+		onDeactivate(context.Background(), act.id, act.instance)
+	}
 	r.finishDeactivation(act)
 }
 

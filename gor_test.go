@@ -24,6 +24,87 @@ type account struct {
 	value State[int64]
 }
 
+type lifecycleAccount interface {
+	Value(context.Context) (int, error)
+}
+
+type lifecycleAccountEntity struct {
+	value           State[int]
+	activateErr     error
+	deactivateErr   error
+	deactivateCalls *atomic.Int32
+	events          chan string
+}
+
+type lifecycleAccountProxy struct {
+	invoker Invoker
+	id      Identity
+}
+
+func (e *lifecycleAccountEntity) OnActivate(context.Context) error {
+	if e.events != nil {
+		e.events <- fmt.Sprintf("activate:%d", e.value.Get())
+	}
+	return e.activateErr
+}
+
+func (e *lifecycleAccountEntity) OnDeactivate(context.Context) error {
+	if e.deactivateCalls != nil {
+		e.deactivateCalls.Add(1)
+	}
+	if e.events != nil {
+		e.events <- "deactivate"
+	}
+	return e.deactivateErr
+}
+
+func (e *lifecycleAccountEntity) Value(context.Context) (int, error) {
+	if e.events != nil {
+		e.events <- "value"
+	}
+	return e.value.Get(), nil
+}
+
+func (p *lifecycleAccountProxy) Value(ctx context.Context) (int, error) {
+	var value int
+	err := p.invoker.Invoke(ctx, p.id, "Value", nil, &value)
+	return value, err
+}
+
+func dispatchLifecycleAccount(ctx context.Context, instance lifecycleAccount, method string, _ []any, reply any) error {
+	if method != "Value" {
+		return fmt.Errorf("unknown method %q", method)
+	}
+	value, err := instance.Value(ctx)
+	if err == nil {
+		*(reply.(*int)) = value
+	}
+	return err
+}
+
+func installLifecycleAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int32, configure func(*lifecycleAccountEntity)) {
+	t.Helper()
+	if err := InstallType[lifecycleAccount](rt, dispatchLifecycleAccount, func(invoker Invoker, id Identity) lifecycleAccount {
+		return &lifecycleAccountProxy{invoker: invoker, id: id}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Register[lifecycleAccount](rt, func(b *Binder) lifecycleAccount {
+		factoryCalls.Add(1)
+		entity := &lifecycleAccountEntity{value: NewState[int](b, "value")}
+		configure(entity)
+		return entity
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type reportedError struct {
+	id     Identity
+	method string
+	err    error
+}
+
 type scopeAccount interface {
 	CreatedAt(context.Context) (time.Time, error)
 	ForwardDeposit(context.Context, int64) (int64, error)
@@ -78,6 +159,118 @@ func (a *account) Deposit(ctx context.Context, amount int64) (int64, error) {
 
 func (a *account) Balance(context.Context) (int64, error) {
 	return a.value.Get(), nil
+}
+
+func TestLifecycle_OnActivateRunsAfterLoadBeforeFirstCall(t *testing.T) {
+	backend := store.NewMemory()
+	id := store.Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+	if _, err := backend.Write(context.Background(), id, []byte(`{"value":7}`), 0); err != nil {
+		t.Fatalf("seed Write: %v", err)
+	}
+	events := make(chan string, 3)
+	rt := mustNew(t, WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
+	defer rt.Close()
+	installLifecycleAccount(t, rt, new(atomic.Int32), func(entity *lifecycleAccountEntity) {
+		entity.events = events
+	})
+
+	value, err := Ref[lifecycleAccount](rt, "alice").Value(context.Background())
+	if err != nil || value != 7 {
+		t.Fatalf("Value = (%d, %v), want (7, nil)", value, err)
+	}
+	got := []string{<-events, <-events}
+	want := []string{"activate:7", "value"}
+	if got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("lifecycle events = %v, want %v", got, want)
+	}
+}
+
+func TestLifecycle_OnActivateFailureDoesNotEstablishActivation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		activateErr := errors.New("activate failed")
+		factoryCalls := new(atomic.Int32)
+		rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
+		defer rt.Close()
+		installLifecycleAccount(t, rt, factoryCalls, func(entity *lifecycleAccountEntity) {
+			entity.activateErr = activateErr
+		})
+
+		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); !errors.Is(err, activateErr) {
+			t.Fatalf("first activation error = %v, want %v", err, activateErr)
+		}
+		if identities := rt.Identities(); len(identities) != 0 {
+			t.Fatalf("Identities after failed activation = %#v, want empty", identities)
+		}
+		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); !errors.Is(err, activateErr) {
+			t.Fatalf("second activation error = %v, want %v", err, activateErr)
+		}
+		if got := factoryCalls.Load(); got != 2 {
+			t.Fatalf("factory calls after failed activations = %d, want 2", got)
+		}
+	})
+}
+
+func TestLifecycle_OnDeactivateFailureReportsAndRemovesActivation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		deactivateErr := errors.New("deactivate failed")
+		errorsSeen := make(chan reportedError, 1)
+		rt := mustNew(t,
+			WithIdleTimeout(0),
+			WithEvictionInterval(0),
+			OnError(func(id Identity, method string, err error) {
+				errorsSeen <- reportedError{id: id, method: method, err: err}
+			}),
+		)
+		defer rt.Close()
+		deactivateCalls := new(atomic.Int32)
+		installLifecycleAccount(t, rt, new(atomic.Int32), func(entity *lifecycleAccountEntity) {
+			entity.deactivateErr = deactivateErr
+			entity.deactivateCalls = deactivateCalls
+		})
+
+		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); err != nil {
+			t.Fatalf("initial Value: %v", err)
+		}
+		rt.Deactivate(id)
+		synctest.Wait()
+		if identities := rt.Identities(); len(identities) != 0 {
+			t.Fatalf("Identities after failed deactivation = %#v, want empty", identities)
+		}
+		if got := deactivateCalls.Load(); got != 1 {
+			t.Fatalf("OnDeactivate calls = %d, want 1", got)
+		}
+		select {
+		case got := <-errorsSeen:
+			if got.id != id || got.method != "OnDeactivate" || !errors.Is(got.err, deactivateErr) {
+				t.Fatalf("reported error = %#v, want id %v, method OnDeactivate, error %v", got, id, deactivateErr)
+			}
+		default:
+			t.Fatal("OnDeactivate error was not reported")
+		}
+	})
+}
+
+func TestLifecycle_KillSkipsOnDeactivate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
+		defer rt.Close()
+		deactivateCalls := new(atomic.Int32)
+		installLifecycleAccount(t, rt, new(atomic.Int32), func(entity *lifecycleAccountEntity) {
+			entity.deactivateCalls = deactivateCalls
+		})
+
+		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); err != nil {
+			t.Fatalf("initial Value: %v", err)
+		}
+		rt.Kill()
+		synctest.Wait()
+		if got := deactivateCalls.Load(); got != 0 {
+			t.Fatalf("OnDeactivate calls after Kill = %d, want 0", got)
+		}
+	})
 }
 
 func dispatchScopeAccount(ctx context.Context, instance scopeAccount, method string, args []any, reply any) error {

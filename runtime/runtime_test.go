@@ -351,6 +351,54 @@ func TestRuntime_KillCancelsRunningCallAndRejectsQueuedCalls(t *testing.T) {
 	})
 }
 
+func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(0, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		rt := New(Config{
+			Clock:           fakeClock,
+			MailboxCapacity: 1,
+			Locator:         LocalLocator{},
+			IdleTimeout:     time.Second,
+		})
+		defer rt.Close()
+		hookCalled := make(chan struct{}, 1)
+		if err := rt.Register("account", Registration{
+			Factory:  func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Dispatch: func(context.Context, any, string, []any, any) error { return nil },
+			OnDeactivate: func(context.Context, Identity, any) {
+				hookCalled <- struct{}{}
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		if err := rt.Invoke(context.Background(), id, "Value", nil, nil); err != nil {
+			t.Fatalf("initial Invoke: %v", err)
+		}
+
+		// This is the state after idle eviction has started its waiter. Keep the
+		// mailbox open so Kill can mark the instance before the waiter wakes.
+		rt.mu.Lock()
+		act := rt.activations[id]
+		if !beginDeactivation(act) {
+			rt.mu.Unlock()
+			t.Fatal("activation did not enter deactivating state")
+		}
+		rt.startDeactivationWaiterLocked(act)
+		rt.mu.Unlock()
+
+		rt.Kill()
+		synctest.Wait()
+		select {
+		case <-hookCalled:
+			t.Fatal("OnDeactivate ran after Kill marked the pending deactivation")
+		default:
+		}
+	})
+}
+
 func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2, Locator: LocalLocator{}})
