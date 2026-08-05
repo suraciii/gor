@@ -11,6 +11,7 @@ import (
 
 	"github.com/suraciii/gor/clock"
 	"github.com/suraciii/gor/cluster"
+	runtimepkg "github.com/suraciii/gor/runtime"
 	"github.com/suraciii/gor/store"
 )
 
@@ -224,6 +225,9 @@ func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
 		var wrongOwner WrongOwnerError
 		if err := first.Invoke(context.Background(), id, "Balance", nil, new(int64)); !errors.As(err, &wrongOwner) || wrongOwner.Owner != "node-b" {
 			t.Fatalf("invocation after cluster death error = %v, want owner node-b", err)
+		}
+		if err := first.Runtime.Invoke(context.Background(), id, "Balance", nil, new(int64)); !errors.Is(err, runtimepkg.ErrRuntimeClosed) {
+			t.Fatalf("direct runtime invocation after cluster death error = %v, want %v", err, runtimepkg.ErrRuntimeClosed)
 		}
 
 		first.Close()

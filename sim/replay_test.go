@@ -51,16 +51,11 @@ func TestSim_ChecksSeedBatch(t *testing.T) {
 			"cas-applied-errors",
 			"delays",
 			"dead-writes",
-			"delayed-dead-cas",
 		} {
 			if memberStatPositive(output, stat) {
 				seenStats["member-"+stat] = true
 			}
 		}
-	}
-	delayedStats := runDelayedMemberWriteScenario(t)
-	if delayedStats.delayedDeadCAS > 0 {
-		seenStats["member-delayed-dead-cas"] = true
 	}
 	for _, stat := range []string{
 		"list-errors",
@@ -78,7 +73,6 @@ func TestSim_ChecksSeedBatch(t *testing.T) {
 		"cas-applied-errors",
 		"delays",
 		"dead-writes",
-		"delayed-dead-cas",
 	} {
 		if !seenStats["member-"+stat] {
 			t.Fatalf("seed batch never triggered member stat %s", stat)

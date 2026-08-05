@@ -159,6 +159,41 @@ func TestNodeViewPollingNotifiesWhenMemberJoins(t *testing.T) {
 	})
 }
 
+func TestNodePollPreservesViewWhenListMembersFails(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(350, 0).UTC()
+		backend := store.NewMemory()
+		other := store.Member{
+			NodeAddr:   "node-other",
+			Generation: "generation-other",
+			Status:     store.MemberActive,
+			IamAliveAt: start,
+		}
+		if _, err := backend.WriteMember(context.Background(), other); err != nil {
+			t.Fatalf("seed other member: %v", err)
+		}
+
+		fakeClock := clock.NewFake(start)
+		table := &failingListMemberStore{backend: backend}
+		node, err := New(testNodeConfig(table, fakeClock, "node-a", "generation-a"))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		previous := <-node.ViewChanges()
+		self := findTestMember(t, backend, "node-a", "generation-a")
+		table.failNext.Store(true)
+
+		got, alive := node.pollView(self, previous)
+		if !alive {
+			t.Fatal("node stopped after ListMembers failure")
+		}
+		if !sameView(got, previous) {
+			t.Fatalf("view after ListMembers failure = %#v, want unchanged from %#v", got, previous)
+		}
+		node.Close()
+	})
+}
+
 func TestNodePollMarksStaleMemberDeadAndDeadIsTerminal(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(400, 0).UTC()
@@ -216,6 +251,47 @@ func TestNodePollMarksStaleMemberDeadAndDeadIsTerminal(t *testing.T) {
 		stillDead := findTestMember(t, backend, stale.NodeAddr, stale.Generation)
 		if stillDead.Status != store.MemberDead || stillDead.ETag != 2 {
 			t.Fatalf("member after resurrection attempt = %#v, want unchanged dead row", stillDead)
+		}
+		node.Close()
+	})
+}
+
+func TestNodePollKeepsStaleMemberWhenDeadWriteFails(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(450, 0).UTC()
+		backend := store.NewMemory()
+		stale := store.Member{
+			NodeAddr:   "node-stale",
+			Generation: "generation-stale",
+			Status:     store.MemberActive,
+			IamAliveAt: start.Add(-10 * time.Second),
+		}
+		staleETag, err := backend.WriteMember(context.Background(), stale)
+		if err != nil {
+			t.Fatalf("seed stale member: %v", err)
+		}
+		stale.ETag = staleETag
+
+		fakeClock := clock.NewFake(start)
+		table := &failingDeadWriteMemberStore{backend: backend, target: stale}
+		node, err := New(testNodeConfig(table, fakeClock, "node-observer", "generation-observer"))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		previous := <-node.ViewChanges()
+		self := findTestMember(t, backend, "node-observer", "generation-observer")
+		table.failNext.Store(true)
+
+		got, alive := node.pollView(self, previous)
+		if !alive {
+			t.Fatal("node stopped after stale-member write failure")
+		}
+		if !sameView(got, previous) {
+			t.Fatalf("view after stale-member write failure = %#v, want stale member retained", got)
+		}
+		stillActive := findTestMember(t, backend, stale.NodeAddr, stale.Generation)
+		if stillActive.Status != store.MemberActive {
+			t.Fatalf("stale member after failed dead write = %#v, want active", stillActive)
 		}
 		node.Close()
 	})
@@ -297,6 +373,17 @@ type appliedConflictMemberStore struct {
 	nextAppliedConflict atomic.Bool
 }
 
+type failingListMemberStore struct {
+	backend  store.MemberStore
+	failNext atomic.Bool
+}
+
+type failingDeadWriteMemberStore struct {
+	backend  store.MemberStore
+	target   store.Member
+	failNext atomic.Bool
+}
+
 func (s *appliedConflictMemberStore) WriteMember(ctx context.Context, member store.Member) (store.ETag, error) {
 	if s.nextAppliedConflict.CompareAndSwap(true, false) {
 		if _, err := s.backend.WriteMember(ctx, member); err != nil {
@@ -308,6 +395,28 @@ func (s *appliedConflictMemberStore) WriteMember(ctx context.Context, member sto
 }
 
 func (s *appliedConflictMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+	return s.backend.ListMembers(ctx)
+}
+
+func (s *failingListMemberStore) WriteMember(ctx context.Context, member store.Member) (store.ETag, error) {
+	return s.backend.WriteMember(ctx, member)
+}
+
+func (s *failingListMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+	if s.failNext.CompareAndSwap(true, false) {
+		return nil, errors.New("member list unavailable")
+	}
+	return s.backend.ListMembers(ctx)
+}
+
+func (s *failingDeadWriteMemberStore) WriteMember(ctx context.Context, member store.Member) (store.ETag, error) {
+	if member.Status == store.MemberDead && sameMember(member, s.target) && s.failNext.CompareAndSwap(true, false) {
+		return 0, errors.New("dead-member write unavailable")
+	}
+	return s.backend.WriteMember(ctx, member)
+}
+
+func (s *failingDeadWriteMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
 	return s.backend.ListMembers(ctx)
 }
 
@@ -350,3 +459,5 @@ func findTestMember(t *testing.T, backend store.MemberStore, nodeAddr, generatio
 
 var _ store.MemberStore = (*recordingMemberStore)(nil)
 var _ store.MemberStore = (*appliedConflictMemberStore)(nil)
+var _ store.MemberStore = (*failingListMemberStore)(nil)
+var _ store.MemberStore = (*failingDeadWriteMemberStore)(nil)
