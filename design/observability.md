@@ -1,18 +1,18 @@
-# 可观测性
+# Observability
 
-## 结论
+## Conclusion
 
-`gor` 要负责提供最小的运行时观测事实。
+`gor` is responsible for providing a minimal set of runtime observability facts.
 
-应用侧代理能量调用，却看不见激活目录和 mailbox。它无法可靠回答当前激活数，也无法找出堆积的实体。只有运行时拥有这些事实。
+Application-side proxies can count calls but cannot see the activation directory or mailboxes. They cannot reliably answer how many activations exist, nor find entities with a backlog. Only the runtime holds these facts.
 
-`gor` 不负责聚合、存储、导出或告警。那些取决于应用已有的监控系统。把它们做进库会引入依赖，也会替用户决定标签、保留期和采样策略。
+`gor` is not responsible for aggregation, storage, export, or alerting. Those depend on the monitoring system the application already has. Building them into the library would pull in dependencies and decide labels, retention, and sampling policy for the user.
 
-## 暴露的事实
+## The exposed facts
 
-只暴露两类事实。
+Only two kinds of facts are exposed.
 
-### 激活快照
+### Activation snapshot
 
 ```go
 type Activation struct {
@@ -23,19 +23,19 @@ type Activation struct {
 func (rt *Runtime) Activations() []Activation
 ```
 
-`Activations` 返回本节点处于 active 状态的激活。正在创建、停用或已经停止的实例不在结果里。
+`Activations` returns the activations on this node in the `active` state. Instances being created, deactivating, or already stopped are not in the result.
 
-返回值按 `(Identity.Type, Identity.Key)` 排序。一次调用得到的是一个时点的副本。它不保持，也不自动刷新。
+The result is sorted by `(Identity.Type, Identity.Key)`. One call returns a copy of one point in time. It is not retained and does not refresh itself.
 
-`len(rt.Activations())` 回答当前有多少激活。`Queued` 回答哪个实体的 mailbox 在堆积。将它与运行时配置的容量比较，就能判断离过载拒绝还有多远。
+`len(rt.Activations())` answers how many activations exist right now. `Queued` answers whose mailbox is backing up. Comparing it with the runtime's configured capacity tells how far from overload rejection you are.
 
-`Queued` 不包括正在执行的方法。它只数已经进入 mailbox、尚未开始执行的调用。
+`Queued` does not include the method currently executing. It only counts calls that entered the mailbox and have not started.
 
-快照只观察本节点。集群模式下，每个节点各自采集；跨节点汇总属于应用的监控系统。
+The snapshot observes only this node. In cluster mode, each node collects on its own; cross-node aggregation belongs to the application's monitoring system.
 
-不暴露激活时间、最后使用时间、正在执行的方法或每个实体的累计计数。这些值不能让运行时做出新的决定，却会扩大状态、锁竞争和标签基数。
+Activation time, last-used time, the executing method, and per-entity cumulative counts are not exposed. These values would let the runtime make no new decision, yet they grow state, lock contention, and label cardinality.
 
-### 调用完成
+### Call completion
 
 ```go
 type CallObservation struct {
@@ -48,57 +48,57 @@ type CallObservation struct {
 func OnCall(func(CallObservation)) Option
 ```
 
-`OnCall` 沿用 `OnError` 的配置形状。它是一个回调，不是导出器接口。这里只有一个动作；为它再造一个单方法接口没有价值。
+`OnCall` follows the configuration shape of `OnError`. It is a callback, not an exporter interface. There is exactly one action here; inventing a single-method interface for it has no value.
 
-一次通过实体代理或 `Runtime.Invoke` 发起的调用，在结果确定后、返回调用方前触发一次回调。`Duration` 从进入运行时到结果确定，包含路由、激活、排队和方法执行，不包括回调本身。`Err` 与这次调用返回给调用方的错误相同。
+A call made through an entity proxy or `Runtime.Invoke` fires the callback once, after the outcome is settled and before returning to the caller. `Duration` spans from entering the runtime to the settled outcome, including routing, activation, queuing, and method execution, not the callback itself. `Err` is the same error this call returns to the caller.
 
-应用用 `EntityType` 和 `Method` 选择指标维度，用 `Duration` 记录延迟分布，用 `Err != nil` 计算错误率。实体 key 不在事件里。把无界 key 当指标标签会让监控系统失控；排查单个实体的堆积应使用激活快照。
+Applications choose metric dimensions with `EntityType` and `Method`, record latency distributions with `Duration`, and compute error rates with `Err != nil`. The entity key is not in the event. Using unbounded keys as metric labels lets the monitoring system run away; investigating a single entity's backlog should use the activation snapshot.
 
-调用方取消后，回调照常发生，`Err` 是取消错误。被取消的方法可能继续执行，但不会再发第二个完成事件。这个事件描述的是调用方看见的结果，不是假装知道最后的业务结局。
+After caller cancellation, the callback still fires, with `Err` being the cancellation error. A canceled method may keep executing, but no second completion event is emitted. The event describes the outcome the caller saw; it does not pretend to know the final business outcome.
 
-定时任务投递的实体方法是普通调用，会产生这个事件。`OnDeactivate` 不是调用，不产生这个事件；它失败时仍只走 `OnError`。
+An entity method delivered by a scheduled task is an ordinary call and produces this event. `OnDeactivate` is not a call and produces none; its failures still go only through `OnError`.
 
-转发完成后，始发节点记录一次端到端调用。接收节点不得为同一逻辑调用再记录一次。入站转发仍走同一条本地执行路径，不建立第二套分发语义。
+When a forwarded call completes, the originating node records one end-to-end call. The receiving node must not record the same logical call again. Inbound forwarded calls still go through the same local execution path; no second dispatch semantics are set up.
 
-回调在调用 goroutine 中、结果已确定后同步执行。运行时不为它建立队列、goroutine 或时钟。回调不得阻塞或做 I/O；否则延迟的是调用方自己。回调 panic 与 `OnError` 的 panic 一样，按普通用户回调处理，运行时不恢复。
+The callback runs synchronously in the call's goroutine, after the outcome is settled. The runtime sets up no queue, goroutine, or clock for it. A callback must not block or do I/O; otherwise it is the caller itself that gets delayed. Callback panics are handled like `OnError` panics: as ordinary user callbacks; the runtime does not recover.
 
-不提供内置计数器、直方图、trace 或 metrics exporter。回调已把计算错误率和延迟分位数所需的事实交给应用；再保留一份聚合状态只会增加热路径工作，并让 reset、标签和导出语义变成库的责任。
+No built-in counters, histograms, traces, or metrics exporters. The callback already hands the application the facts needed to compute error rates and latency quantiles; keeping an aggregate state in addition would only add hot-path work and make reset, label, and export semantics the library's responsibility.
 
-## 时间与确定性
+## Time and determinism
 
-启用 `OnCall` 时，运行时从注入的 `Clock` 读取开始和结束时刻，`Duration` 是两者之差。生产路径不得直接调用 `time.Now()`。
+With `OnCall` enabled, the runtime reads start and end times from the injected `Clock`; `Duration` is their difference. Production paths must not call `time.Now()` directly.
 
-快照不带时间戳，也不读取时钟。
+The snapshot carries no timestamp and reads no clock.
 
-回调没有异步投递。它不增加 goroutine，不引入新的等待，也不创建计时器。`synctest` 中的回调顺序因此就是调用完成顺序；使用假 Clock 时，时长也是假时间的确定结果。
+Callbacks have no async delivery. They add no goroutine, introduce no new waiting, and create no timers. In `synctest`, callback order is therefore the call-completion order; with a fake Clock, durations are also deterministic results of fake time.
 
-快照只在既有目录锁内复制活跃激活，并读取 mailbox 的当前长度。它不等待 channel，不持锁调用用户代码，也不修改运行时状态。
+The snapshot copies active activations only inside the existing directory lock and reads each mailbox's current length. It waits on no channel, calls no user code while holding the lock, and modifies no runtime state.
 
-用户的回调本身仍是用户代码。模拟测试里的回调也必须遵守项目的 channel 和注入 Clock 约束。
+User callbacks are still user code. Callbacks in simulation tests must also obey the project's channel and injected-Clock constraints.
 
-## 热路径成本
+## Hot-path cost
 
-关闭 `OnCall` 时，不读额外的 Clock，不构造观测值，不分配，不加锁，不起 goroutine。调用路径只保留一次 nil 判断。
+With `OnCall` off: no extra Clock read, no observation value constructed, no allocation, no locking, no goroutine. The call path keeps exactly one nil check.
 
-这不是机器指令意义的零成本。运行时可配置的功能无法同时做到零分支。这里的承诺是零测量工作；那一次判断必须留在最外层，不能扩散到激活、mailbox 或分发路径。
+This is not zero cost in the machine-instruction sense. A runtime-configurable feature cannot also be branch-free. The promise here is zero measurement work; that one check must stay at the outermost layer and must not spread into activation, mailbox, or dispatch paths.
 
-启用时，每次调用增加两次 `Clock.Now`、一个栈上 `CallObservation` 值和一次直接回调。回调自身的成本由应用承担。
+Enabled, each call adds two `Clock.Now` reads, one stack-allocated `CallObservation` value, and one direct callback. The callback's own cost is the application's to bear.
 
-调用往返的现有基线是 0.89 us/op。实现必须在同一条件下同时记录关闭和启用空回调的结果：关闭状态保持零分配，且相对基线的持续回退不得超过 5%；启用空回调的库内开销不得超过 20%。这些数字不是 CI 门禁，但任何超出都要重新审视设计，不能默默接受。
+The existing invocation round-trip baseline is 0.89 us/op. The implementation must record both the disabled and enabled-empty-callback results under the same conditions: disabled stays at zero allocations, and sustained regression against the baseline must stay within 5%; the in-library overhead of an enabled empty callback must stay within 20%. These numbers are not CI gates, but any exceedance must prompt a re-examination of the design, not silent acceptance.
 
-`Activations` 是运维查询，不在调用热路径。它的时间和分配量与本节点激活数成正比。
+`Activations` is an operations query, off the call hot path. Its time and allocation scale with the number of activations on this node.
 
-## 测试
+## Testing
 
-单元测试验证以下事实：
+Unit tests verify the following facts:
 
-- 一个阻塞调用后排入的调用出现在对应激活的 `Queued` 中。
-- 快照不包含创建中、停用中或停止的激活，且结果稳定排序。
-- 成功、过载、激活失败、方法错误和调用方取消各产生一次完成事件；取消后方法继续完成时不再产生第二次。
-- 注入的 fake Clock 产生精确的 `Duration`。观测实现不新增墙钟读取。
-- 关闭回调时，不产生事件，也不新增 Clock 读取、分配或 goroutine。
-- 回调同步发生在调用结果确定之后；测试回调用有缓冲 channel 收集，不用 sleep 或轮询。
+- A call queued behind a blocking call appears in the corresponding activation's `Queued`.
+- The snapshot excludes creating, deactivating, and stopped activations, and the result is stably sorted.
+- Success, overload, activation failure, method error, and caller cancellation each produce exactly one completion event; when a canceled method completes later, no second event is produced.
+- An injected fake Clock yields exact `Duration` values. The observation implementation adds no wall-clock reads.
+- With the callback disabled, no events, Clock reads, allocations, or goroutines are added.
+- The callback runs synchronously after the call outcome is settled; tests collect callbacks through a buffered channel, with no sleep or polling.
 
-转发实装后，模拟测试还要验证一条逻辑调用只在始发节点记录一次，并且在固定种子下观测事件不引入新的决定序列。
+Once forwarding is implemented, simulation tests must also verify that one logical call is recorded once, at the originating node, and that observation events introduce no new decision sequence under a fixed seed.
 
-性能测试复用调用往返 benchmark，增加一个空 `OnCall` 回调的变体。两项都报告 `ns/op` 和 `allocs/op`，并按本篇的成本界限与基线比较。
+The performance test reuses the invocation round-trip benchmark with an added variant carrying an empty `OnCall` callback. Both report `ns/op` and `allocs/op` and are compared with the baseline against this document's cost bounds.
