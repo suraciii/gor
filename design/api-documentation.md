@@ -1,102 +1,102 @@
-# 公开 API 文档
+# Public API documentation
 
-## 决定
+## The decision
 
-`v0.1.0` 前，gor 的公开 API 必须有英文的 Go doc comment。它是使用者契约，不是实现注释。
+Before `v0.1.0`, gor's public API must have English Go doc comments. They are a contract for users, not implementation comments.
 
-这不推翻仓库的注释原则。实现注释的读者能读源码；若注释只是在复述源码做了什么，说明代码边界或命名不够好。公开 API 的读者通常只看签名和 pkg.go.dev，看不见激活、持久化、取消或关闭路径。签名表达不了他们能依赖什么、错用后会怎样。这个空缺只能由契约填上。
+This does not overturn the repository's comment principles. Readers of implementation comments can read the source; if a comment merely restates what the code does, the code boundaries or naming are not good enough. Readers of the public API usually see only the signatures and pkg.go.dev; they cannot see activation, persistence, cancellation, or shutdown paths. Signatures cannot express what they may rely on or what happens when misused. Only the contract can fill that gap.
 
-契约也不能变成实现解说。它只写调用者据此作决定的事实。需要解释算法、goroutine、表结构或内部调用顺序时，改设计文档或代码，不把它塞进 doc comment。
+The contract must not become an explanation of the implementation either. It states only facts a caller decides on. When algorithms, goroutines, table structures, or internal call order need explaining, change the design document or the code; do not stuff it into a doc comment.
 
-这项工作属于路线图已有的「文档英文化」发布必办项，不另造一条发布流程。现在先定规则；公开 API 在第 6c 步完成并形成发布候选后，再在同一批次补齐源码中的 comment。候选标签前必须完成。这样不会先写中文再翻英文，也不会给仍会变动的 API 维护两遍说明。
+This work belongs to the ROADMAP's existing "documentation in English" required item; no separate release process is invented. The rules are set now; the public API comments are completed in the same batch once [step 6c](../ROADMAP.md#6c-探测与死亡投票) is done and a release candidate forms. They must be complete before the candidate tag. This way nothing is written in Chinese first and translated later, and no API that is still moving gets maintained twice.
 
-否决了两件事：
+Two things are rejected:
 
-- 把公开 API comment 当成 AGENTS.md 所禁止的实现注释。这样会让 pkg.go.dev 只剩签名，使用者只能猜测持久化和生命周期语义。
-- 现在为所有导出名补一行中文说明，发版时再翻译。第 6c 仍会改变公开使用路径；每次改动都会多一次翻译和两种文本的语义校对，成本高于在候选 API 上直接写英文。
+- Treating public API comments as the implementation comments AGENTS.md forbids. That would leave pkg.go.dev with only signatures, and users would have to guess persistence and lifecycle semantics.
+- Adding a one-line Chinese note to every exported name now and translating at release time. Step 6c will still change public usage paths; every change would mean one more translation and semantic proofreading of two texts, costing more than writing English directly on the candidate API.
 
-代价是发布候选要做一次有边界的人工审阅。它不要求维护两份完整手册：每个 comment 只保留本符号不可缺少的局部契约，完整模型仍只有 `docs/` 一处权威。
+The cost is one bounded manual review at the release candidate. It does not require maintaining two full manuals: each comment keeps only the local contract this symbol cannot do without; the full model still has `docs/` as its single authority.
 
-## 语言
+## Language
 
-公开 API comment 一律先写英文，不写中英双份。
+Public API comments are written in English from the start; no bilingual copies.
 
-pkg.go.dev 的默认读者从第一个公开版本起就是 Go 使用者，不是仓库的当前维护者。英文原文让这个读者直接看到可引用、可搜索的契约；中文后翻会额外制造翻译差异，且 API 每次改动都要回头校对两次。
+pkg.go.dev's default reader is a Go user from the first public release on, not the repository's current maintainers. English originals let that reader see a quotable, searchable contract directly; translating from Chinese later creates extra translation drift, and every API change would need proofreading twice.
 
-这不要求现在把 `docs/` 和 `design/` 提前翻完。它们篇幅大、目标状态仍在变化，路线图把它们放在最后是对的。doc comment 很短，跟着一个确定的公开声明和发布候选评审走；它的读者和变动边界都不同。
+This does not require finishing `docs/` and `design/` early. They are large and their target state is still moving; the ROADMAP is right to put them last. Doc comments are short and follow a settled public declaration and a release-candidate review; their readers and their churn boundaries differ.
 
-## 范围
+## Scope
 
-先区分包，再判断符号，不能拿「所有导出名」当规则。
+Distinguish packages first, then judge symbols; "all exported names" cannot be the rule.
 
-| 分类 | v0.1.0 要求 |
+| Category | v0.1.0 requirement |
 | --- | --- |
-| 使用者直接调用的 `gor` | 包说明和每个独立可用的入口都写契约。包括启动与关闭、注册与引用、状态、定时、生命周期、观测、错误、选项、供生成物调用的接缝。 |
-| 使用者实现或传给 `gor` 的扩展包：`clock`、`store`、`transport` | 包说明、接口及其方法、构造函数、可关闭资源、错误、状态值和会影响实现者正确性的字段都写契约。 |
-| `cmd/gorgen` | 写命令的包说明，说明输入、产物和失败出口；具体参数以命令帮助和 `design/codegen.md` 为准。生成物中供应用启动时调用的 `Install` 也要有英文 comment。 |
-| 架构中的实现包：`runtime`、`mail`、`timer`、`cluster` | 每个包至少写说明，明确职责和「应用不应直接依赖」的边界。包内导出名不因可导入就自动成为受支持 API，不逐个补无用说明。 |
-| `internal/`、测试夹具、示例应用、仅在 `sim` 构建标签下的测试设施 | 不适用本规范。它们不构成 gor 的公开使用面。 |
+| `gor`, called directly by users | The package doc and every independently usable entry point get a contract: startup and shutdown, registration and references, state, scheduling, lifecycle, observability, errors, options, and the seams generated artifacts call. |
+| Extension packages users implement or pass to `gor`: `clock`, `store`, `transport` | Package doc, interfaces and their methods, constructors, closable resources, errors, state values, and fields that affect implementer correctness all get contracts. |
+| `cmd/gorgen` | A package doc for the command stating inputs, artifacts, and failure exits; concrete flags defer to the command help and `design/codegen.md`. The generated `Install` that applications call at startup also gets an English comment. |
+| Implementation packages in the architecture: `runtime`, `mail`, `timer`, `cluster` | Each package gets at least a doc stating its responsibility and the "applications must not depend on this directly" boundary. Exporting a name does not automatically make it a supported API; no useless per-name comments. |
+| `internal/`, test fixtures, example applications, test facilities under the `sim` build tag only | This spec does not apply. They are not part of gor's public surface. |
 
-`gor` 是架构定义的公开 API 与配置组装层。`clock`、`store`、`transport` 出现在它的公开配置或接口中，使用者必须能实现或传入它们，因此是受支持的扩展面。其余生产包虽然 Go 允许导入，但不承诺给应用直接使用；包说明必须把这一点说出来，不能靠空白暗示。
+`gor` is the architecture's public API and configuration assembly layer. `clock`, `store`, and `transport` appear in its public configuration or interfaces; users must be able to implement or pass them, so they are a supported extension surface. The other production packages, though importable in Go, are not promised for direct application use; the package doc must say so, not imply it by blank space.
 
-一个受支持包内的声明必须有独立 comment，当且仅当使用者需要直接以它作决定或实现行为。包括：
+A declaration inside a supported package gets its own comment if and only if users need to decide or act on it directly:
 
-- 构造、配置、启动、关闭、调用、注册、持久化、调度或观测的入口。
-- 使用者实现的接口及每个不能从类型签名得出约束的方法。
-- 使用者需要按它分支、重试、报告或迁移的错误、状态和常量。
-- 改变零值、单位、所有权、可变性、编码边界、并发、阻塞或生命周期的类型、字段和方法。
-- 生成代码或自定义实现必须调用的接缝。
+- Entry points for construction, configuration, startup, shutdown, calls, registration, persistence, scheduling, or observability.
+- Interfaces users implement, and every method whose constraints do not follow from the type signature.
+- Errors, states, and constants users branch on, retry on, report, or migrate.
+- Types, fields, and methods that change zero values, units, ownership, mutability, encoding boundaries, concurrency, blocking, or lifecycle.
+- Seams that generated code or custom implementations must call.
 
-下列情形可以没有**独立** comment：它只是已文档化聚合值中名称和类型已经足够清楚的一部分，且没有单独的默认值、失败、并发或生命周期规则。例如一个完成事件中没有额外语义的字段，或由已说明的枚举类型完整定义的值。它的语义仍必须能从所在类型或接口的 comment 找到。
+The following cases may go without an **independent** comment: the name and type are already clear within a documented aggregate, and there is no separate default, failure, concurrency, or lifecycle rule. For example, a field with no extra semantics in a completion event, or a value fully defined by an already-documented enum type. Its semantics must still be findable from the enclosing type's or interface's comment.
 
-一个独立可用的导出名如果不打算让应用使用，不能留白来回避文档。要么用短 comment 明说它只给生成物或内部组装使用，要么改变可见性或包位置。不能为凑覆盖率写「`WithClock` sets the clock」这类签名复述。
+An independently usable exported name that is not meant for applications must not stay blank to dodge documentation. Either a short comment states it is only for generated artifacts or internal assembly, or the visibility or package location changes. No signature restatements like "`WithClock` sets the clock" to pad coverage.
 
-## 一条契约要说什么
+## What a contract must say
 
-comment 从符号名开始。先说它在调用方的哪一步使用，以及成功后可观察到的结果。只在适用时补足下面的事实：
+The comment starts from the symbol's name. First say at which step of the caller's flow it is used and what result is observable on success. Then add the facts below where applicable:
 
-1. 调用前提、允许的值、零值和默认值。
-2. 失败、取消或关闭后，调用方不能再假定什么；已经发生的副作用是否仍可能存在。
-3. 调用者、实现者或回调各自拥有的资源和重试责任。
-4. 并发、顺序、阻塞和生命周期约束。例如能否并发调用、关闭后怎样、回调能否阻塞。
-5. 会改变调用者选择的边界。例如只在本地成立，或必须经过编码才能跨节点成立。
+1. Call preconditions, allowed values, zero values, and defaults.
+2. After failure, cancellation, or close, what the caller may no longer assume; whether side effects that already happened may still exist.
+3. Resources and retry responsibilities owned by the caller, the implementer, or the callback, respectively.
+4. Concurrency, ordering, blocking, and lifecycle constraints: whether calls can be concurrent, what happens after close, whether a callback may block.
+5. Boundaries that change the caller's choices: true only locally, or true cross-node only after encoding.
 
-纯数据名不必机械回答五项。反过来，只要某项会改变正确用法，就不能因为句子变长而省略。`State.Set` 的持久化失败、`Runtime.Done` 的终止含义、存储的 ETag 冲突、传输的请求完成边界，都属于这类不能从签名猜出的契约。
+Plain data names do not have to answer all five mechanically. Conversely, whenever an item changes correct usage, it must not be omitted just because the sentence gets longer. `State.Set`'s persistence failure, `Runtime.Done`'s termination meaning, the store's ETag conflicts, the transport's request-completion boundary — all are contracts of this kind that cannot be guessed from a signature.
 
-## 不写什么
+## What not to write
 
-doc comment 不是第二份使用手册。下表规定信息唯一的归处。
+A doc comment is not a second user manual. The table below gives each kind of information a single home.
 
-| 内容 | 放置处 |
+| Content | Home |
 | --- | --- |
-| 实体、身份、调用、状态和定时任务组成的完整心智模型；跨实体调用的完整路径 | `docs/programming-model.md` |
-| 可依赖范围、版本升级和破坏性变更 | `docs/compatibility.md` 与发布说明 |
-| 激活缓存、mailbox、CAS 表、轮询、成员表、帧格式和算法取舍 | 对应的 `design/` 篇目 |
-| 多节点限制、协议细节和所有配置的组合矩阵 | `docs/` 或对应 `design/` 篇目 |
-| 完整启动教程、代码生成流程和端到端示例 | `docs/`、`examples/shadow/` 与命令帮助 |
-| issue、任务号、设计文档链接和历史理由 | 不写；历史归 git log |
+| The full mental model of entities, identities, calls, state, and scheduled tasks; the complete path of cross-entity calls | `docs/programming-model.md` |
+| What may be relied on, version upgrades, and breaking changes | `docs/compatibility.md` and release notes |
+| Activation cache, mailbox, CAS tables, polling, membership table, frame format, algorithm trade-offs | The relevant `design/` document |
+| Multi-node limitations, protocol details, the full matrix of configuration combinations | `docs/` or the relevant `design/` document |
+| Full startup tutorial, code-generation flow, end-to-end examples | `docs/`, `examples/shadow/`, and command help |
+| Issues, task numbers, design-document links, historical rationale | Not written; history belongs to git log |
 
-comment 可以写一个局部限制，不能为了让读者少点一次链接而重述整段模型。它也不描述 goroutine 数、锁、数据库 schema、重试循环或未来实现计划。这些内容既不是调用者契约，也会随着实现腐烂。
+A comment may state one local restriction; it must not restate a whole model just to save the reader one click. It also does not describe goroutine counts, locks, database schemas, retry loops, or future implementation plans. These are neither caller contracts nor stable against implementation rot.
 
-## 可运行示例
+## Runnable examples
 
-`v0.1.0` 不新增 Go `Example` 函数，也不把它们设为发布门。
+`v0.1.0` adds no Go `Example` functions and sets none as a release gate.
 
-一个根包的真实调用至少要定义实体接口、生成代理、建运行时、安装生成物、注册工厂，再取得引用并调用。它不是一段只演示一个声明的轻量示例。放进 `Example` 后，它会在每次 `make test` 编译和执行；任何生成物形状、启动顺序或公开签名的 v0 改动都要同时维护第三份调用路径，带 `Output` 时还要维护文本结果。现有 `docs/example.md` 和 `examples/shadow/` 已承担完整路径，重复一份不会提高 v0.1 的契约清晰度。
+A realistic root-package call must at least define an entity interface, generate proxies, build a runtime, install the artifacts, register factories, and then obtain a reference and call. It is not a lightweight example demonstrating one declaration. Inside an `Example`, it would compile and run on every `make test`; any v0 change to artifact shape, startup order, or public signatures would mean maintaining a third call path, plus text results when `Output` is present. `docs/example.md` and `examples/shadow/` already carry the full path; duplicating it would not improve v0.1's contract clarity.
 
-以后只在一个无法用局部 comment 说清、且确实值得在 pkg.go.dev 直接运行的稳定场景加入 `Example`。加入前必须同时满足：不依赖真实时间、网络或进程；不需要隐藏的生成步骤；在默认测试约束内运行；其输出表达稳定的可观察契约。否则保留为文档片段或示例应用，不制造会腐烂的测试入口。
+Later, an `Example` is added only for a stable scenario that a local comment cannot explain and that genuinely deserves to run directly on pkg.go.dev. Before adding, all of the following must hold: no dependence on real time, network, or processes; no hidden generation step; runs within the default test constraints; its output expresses a stable observable contract. Otherwise keep it as a documentation snippet or an example application; do not create a test entry that rots.
 
-## 验收与后续变更
+## Acceptance and later changes
 
-发布候选的 API 文档批次按下列顺序验收：
+The release candidate's API documentation batch is accepted in this order:
 
-1. 第 6c 步完成，候选提交的公开声明与产品文档不再有未决定的 API 形状。
-2. 按本篇的包分类列出受支持入口和有意省略独立 comment 的聚合字段，人工审阅其理由；不设「所有导出名非空」的伪指标。
-3. 用 `go doc .`、`go doc ./store`、`go doc ./clock`、`go doc ./transport` 和 `go doc -cmd ./cmd/gorgen` 审阅只看签名的页面。实现包则确认包说明明确了非直接依赖边界。
-4. 运行 `make ci`。comment 的改动不改变行为，但发布候选仍必须经过完整门禁。
+1. Step 6c is done, and the candidate commit's public declarations leave no undecided API shape versus the product docs.
+2. List the supported entry points and the aggregate fields intentionally omitted from independent comments per this document's package categories, and review the reasons by hand; no fake metric of "every exported name non-empty".
+3. Review the signature-only pages with `go doc .`, `go doc ./store`, `go doc ./clock`, `go doc ./transport`, and `go doc -cmd ./cmd/gorgen`. For implementation packages, confirm the package doc states the no-direct-dependency boundary.
+4. Run `make ci`. Comment changes do not alter behavior, but the release candidate must still pass the full gate.
 
-此后新增或改变受支持声明的同一个改动必须同步修改其 comment。公开行为变了而 comment 没变，按过期契约处理；不能以「实现已经说明」为理由保留。
+From then on, the same change that adds or alters a supported declaration must update its comment in the same change. A comment left unchanged while public behavior changed is a stale contract; "the implementation already explains it" is not a reason to keep it.
 
-## 差距
+## Gap
 
-当前 `go doc .`、`go doc ./store`、`go doc ./cluster` 及其他生产包只显示裸签名；包和导出声明尚无 doc comment。这是现状，不是本篇所规定的发布候选状态。
+Today `go doc .`, `go doc ./store`, `go doc ./cluster`, and the other production packages show only bare signatures; no package or exported declaration has a doc comment. This is the current state, not the release-candidate state this document prescribes.

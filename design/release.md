@@ -1,69 +1,69 @@
-# 发布
+# Release
 
-这篇规定维护者怎样发布 gor。它刻意是一份短清单：现在只有一个维护者，重复但很少发生的判断留给人做，比造一套发布系统更可靠。
+This document specifies how maintainers release gor. It is deliberately a short list: with a single maintainer today, leaving repetitive but rare judgment calls to a person is more reliable than building a release system.
 
-## 结论
+## The conclusion
 
-每个版本只有一份面向用户的发布说明，写在该版本的 GitHub Release 中。仓库不维护第二份 CHANGELOG，也不从 PR 自动拼说明。
+Each version has exactly one user-facing release note, written in that version's GitHub Release. The repository keeps no second CHANGELOG and assembles no notes from PRs automatically.
 
-`.github/PULL_REQUEST_TEMPLATE.md` 中的 `release-note` 代码块是发布说明的原材料。它的唯一消费者是发版时的维护者：手工阅读已合并 PR 列表中的块，再写出这一版的发布说明。作者在改动刚完成时说明用户影响，比隔一段时间后重新翻全部改动更准确。
+The `release-note` code block in `.github/PULL_REQUEST_TEMPLATE.md` is the raw material of release notes. Its only consumer is the maintainer at release time: hand-read the blocks in the list of merged PRs, then write that version's release note. An author stating user impact while the change is fresh is more accurate than re-reading all changes after a delay.
 
-原材料不是第二份发布说明。维护者可以合并、改写或排除其中不属于本版的内容，只有最终的 GitHub Release 对外生效。不要为这些块增加解析器、工作流或生成文件：单人维护下，版本边界和措辞仍需人判断，自动化省不下工作，只会多出要维护的流程。
+The raw material is not a second release note. The maintainer may merge, rewrite, or exclude content that does not belong to this version; only the final GitHub Release is in effect externally. Do not add parsers, workflows, or generated files for these blocks: under single-person maintenance, version boundaries and wording still need human judgment; automation saves no work and only adds process to maintain.
 
-发布说明至少包含：
+The release note must at least include:
 
-- 使用者能看见的新增、修复或限制。
-- 破坏性变更与迁移；没有时写「无」。
-- 已知限制，尤其是与集群可靠性有关的限制。
-- 对 v1 或更高主版本，上一主版本使用者的迁移入口。
+- Additions, fixes, or limitations users can see.
+- Breaking changes and migration; "none" when there are none.
+- Known limitations, especially those related to cluster reliability.
+- For v1 and later major versions, a migration entry for users of the previous major version.
 
-## 版本号
+## Version numbers
 
-版本标签使用 `vMAJOR.MINOR.PATCH`。预览可以使用如 `v0.1.0-rc.1` 的后缀；预览不代替正式发布，也不改变正式版本的兼容规则。
+Version tags use `vMAJOR.MINOR.PATCH`. Previews may use a suffix like `v0.1.0-rc.1`; a preview does not replace a proper release and does not change the compatibility rules of proper versions.
 
-| 范围 | 可以放什么 | 不能做什么 |
+| Scope | May contain | Must not do |
 | --- | --- | --- |
-| v0 补丁 | 错误修正、文档修正和不改变已写明使用方式的小改动。 | 悄悄改变已有使用方式或要求迁移。 |
-| v0 次版本 | 新能力，或已在发布说明中说明的不兼容改动。 | 把破坏性改动伪装成补丁。 |
-| v1 补丁 | 错误修正和文档修正。 | 改变已承诺的公开用法或要求搬迁 gor 管理的数据。 |
-| v1 次版本 | 向后兼容的新能力。 | 删除、重定义已承诺的公开用法，或让原有 gor 管理的数据不能继续使用。 |
-| 新主版本 | 无法兼容的公开变更。 | 沿用旧模块路径来假装没有迁移成本。 |
+| v0 patch | Bug fixes, doc fixes, and small changes that do not alter documented usage. | Silently change documented usage or require migration. |
+| v0 minor | New capabilities, or incompatible changes explained in the release note. | Disguise breaking changes as patches. |
+| v1 patch | Bug fixes and doc fixes. | Change promised public usage or require relocating data gor manages. |
+| v1 minor | Backward-compatible new capabilities. | Delete or redefine promised public usage, or make existing gor-managed data unusable. |
+| New major | Public changes that cannot be compatible. | Keep the old module path to pretend there is no migration cost. |
 
-v0 的次版本是兼容边界，这是 gor 自己额外作出的纪律；Go 对 v0 的要求更宽松。补丁仍可能修正错误而改变原先错误的结果，但要在发布说明中说明。
+v0's minor version is a compatibility boundary, a discipline gor imposes on itself beyond Go's looser v0 requirements. A patch may still fix a bug and change a previously wrong result, but the release note must say so.
 
-从 v0 进入 `v1.0.0` 可以有一次写明的迁移。`v1.0.0` 之后才开始执行 v1 内部不要求迁移的规则。
+The transition from v0 to `v1.0.0` may include one documented migration. Only after `v1.0.0` do the rules that v1 requires no migration take effect.
 
-Go 模块的主版本规则决定了 v1 是一个有价值的稳定承诺：v0 和 v1 使用仓库根路径，使用者升级到 v1 不必因主版本后缀改导入路径。从 v2 起，模块声明和导入路径都必须带 `/v2`、`/v3` 等主版本后缀。那会强迫所有使用者改源码，所以只有真的无法保留 v1 承诺时才进入 v2 及以后。
+Go's module major-version rules make v1 a valuable stability promise: v0 and v1 use the repository root path, so users upgrading to v1 do not change import paths for a major-version suffix. From v2 on, module declarations and import paths must carry `/v2`, `/v3`, and so on. That forces every user to change source code, so v2 and beyond only happen when the v1 promise truly cannot be kept.
 
-## 首个公开版本
+## The first public release
 
-`v0.1.0` 只能在 [ROADMAP.md](../ROADMAP.md) 的「发布前的必办项」全部完成后发布。是否完成以路线图的明确状态为准，不能用「代码看起来差不多」代替。
+`v0.1.0` can only be released after all of [ROADMAP.md](../ROADMAP.md)'s "required before release" items are done. Completion is judged by the roadmap's explicit status, not by "the code looks close enough".
 
-当前尚未完成的是文档英文化。示例用 5.5 新签名的复跑、可观测性、性能基线和跨节点转发基线都已完成；第 6c 已完成，但多节点仍是预览能力，分区可能误判健康节点，不能把首个公开版当成已解决。
+What is not yet done is the documentation in English. Re-running the examples on [5.5](../ROADMAP.md#55-示例反馈回来的-api-修补)'s new signatures, observability, the performance baseline, and the cross-node forwarding baseline are all done; step 6c is done, but multi-node is still a preview capability and partitions can misjudge healthy nodes, so the first public release must not be treated as settled.
 
-## v1.0.0 的门槛
+## The bar for v1.0.0
 
-以下每项都必须为真，才可以发布 `v1.0.0`：
+Each of the following must be true before `v1.0.0` can be released:
 
-1. 路线图第 1 到 6c 步，以及「发布前的必办项」全部标为完成。
-2. 候选提交上的 `make ci` 成功结束。
-3. 用最新公开 v0 写入的状态和生成的调用产物，在干净的使用者项目中升级到候选版本后仍能运行；若不能，发布说明给出已验证的迁移步骤。
-4. 候选版本的公开用法和限制已与 [docs/compatibility.md](../docs/compatibility.md) 对齐，不存在靠「差距」小节掩盖的已知核心缺口。
-5. `v1.0.0` 的发布说明写明从最新 v0 升级的结果，并单列所有需要使用者行动的项目。
+1. Roadmap steps 1 through 6c and every "required before release" item are marked done.
+2. `make ci` succeeds on the candidate commit.
+3. State written by the latest public v0 and generated call artifacts still work in a clean user project upgraded to the candidate version; if not, the release note gives a verified migration path.
+4. The candidate's public usage and limitations are aligned with [docs/compatibility.md](../docs/compatibility.md); no known core gap hidden behind a "Gap" section.
+5. The `v1.0.0` release note states the outcome of upgrading from the latest v0 and lists every item requiring user action.
 
-没有「等成熟」「攒够使用者」或固定时间等额外门槛。上面五项同时成立就可以发；任一项不成立就继续留在 v0。这样 v1 表示可验证的兼容承诺，而不是项目年龄。
+No extra thresholds like "wait until mature", "wait until enough users", or a fixed date. When all five above hold, release; while any one does not, stay in v0. This way v1 means a verifiable compatibility promise, not project age.
 
-## 发版顺序
+## Release sequence
 
-1. 手工阅读已合并 PR 的 `release-note` 块，列出这次要包含的改动，按上一节选择版本号。破坏性变更只能进 v0 次版本或新主版本。
-2. 更新受到影响的产品承诺、设计和路线图；限制没有消失就保留或补上「差距」小节。
-3. 在候选提交运行 `make ci`。首个公开版、主版本、生成物变更或持久化相关变更，还要做一次干净使用者项目的安装与升级检查。
-4. 检查待发布提交、版本标签和工作树。只让已经验证的内容进入版本。
-5. 以这些块为原材料手写 GitHub Release 的发布说明，再创建版本标签和 Release。库不产出独立服务二进制，因此不制作虚假的下载包。
-6. 发布后在干净使用者项目中按精确版本安装并跑一次最小调用。失败时先撤回或标记该 Release，不发布补丁来掩盖无法安装的版本。
+1. Hand-read the merged PRs' `release-note` blocks, list what this release includes, and choose the version number per the previous section. Breaking changes go only into v0 minors or new major versions.
+2. Update the affected product promises, designs, and the roadmap; keep or add a "Gap" section where a limitation has not gone away.
+3. Run `make ci` on the candidate commit. For the first public release, a major version, artifact changes, or persistence-related changes, also run an install-and-upgrade check in a clean user project.
+4. Inspect the to-be-released commit, version tag, and working tree. Only verified content enters the release.
+5. Hand-write the GitHub Release note from these blocks as raw material, then create the version tag and the Release. The library produces no standalone service binary, so no fake download packages.
+6. After the release, install the exact version in a clean user project and run one minimal call. On failure, retract or mark that Release first; do not ship a patch to cover up an uninstallable version.
 
-第 1、2、4、5 步需要维护者判断，保持手工。第 3 步已有 `make ci`，它是唯一值得固定自动执行的发布门。第 6 步是低频的外部可用性确认，写脚本、加工作流或自动创建 Release 的维护成本高于收益。
+Steps 1, 2, 4, and 5 need maintainer judgment and stay manual. Step 3 already has `make ci`, the only release gate worth automating permanently. Step 6 is a low-frequency external availability check; scripts, workflows, or auto-created Releases cost more maintenance than they earn.
 
-## 差距
+## Gap
 
-当前没有版本标签，`v0.1.0` 的路线图门槛尚未满足。PR 模板中的 `release-note` 块保留，发版时仍要按本篇手工读取和整理。
+There are no version tags today, and `v0.1.0`'s roadmap thresholds are not yet met. The `release-note` block in the PR template stays; at release time it is still read and organized by hand per this document.

@@ -1,33 +1,33 @@
-# design —— 设计 spec
+# design — the design spec
 
-这一层描述 **系统该怎么实现**：架构边界、数据模型、接口、技术选型与取舍。
+This layer describes **how the system should be implemented**: architectural boundaries, data models, interfaces, technology choices, and trade-offs.
 
-可以用技术语言。与 [`docs/`](../docs/README.md) 的分工：`docs/` 说该满足什么，`design/` 说怎么做到。
+Technical language is allowed. The division of labor with [`docs/`](../docs/README.md): `docs/` says what must be satisfied; `design/` says how.
 
-## 标注惯例
+## Annotation conventions
 
-正文是 spec，不是现状说明。[ROADMAP.md](../ROADMAP.md) 说到哪一步了，实装就到哪里；后面几步的内容在这里已经写好，读的时候别当成代码里有的东西。
+The body is the spec, not a description of the current state. Implementation follows [ROADMAP.md](../ROADMAP.md) step by step; later steps' content is already written here, so do not read it as existing in the code.
 
-某篇与代码有显著差距时，篇内单列「差距」小节。
+When a document diverges significantly from the code, it lists a "Gap" section inside the document.
 
-## 篇目
+## Contents
 
-- [architecture.md](architecture.md) —— 包边界、依赖方向、什么放哪里。
-- [runtime.md](runtime.md) —— 激活、目录、生命周期。
-- [scheduling.md](scheduling.md) —— 串行执行、重入、mailbox。
-- [persistence.md](persistence.md) —— 状态存储、CAS、后端选型。
-- [timers.md](timers.md) —— 持久化定时任务：表、轮询器、投递语义。
-- [cluster.md](cluster.md) —— membership、放置、目录一致性。
-- [transport.md](transport.md) —— 节点间字节传输：帧、连接、多路复用与关闭语义；是后续转发的底层边界。
-- [errors.md](errors.md) —— 稳定错误码、调用错误信封与跨节点取消边界。
-- [codegen.md](codegen.md) —— 从 Go interface 生成类型化代理。
-- [testing.md](testing.md) —— 单元测试与确定性模拟测试。
-- [simulation.md](simulation.md) —— 模拟测试骨架：种子、故障注入、崩溃、事件日志。
-- [observability.md](observability.md) —— 最小运行时观测事实与性能边界。
-- [benchmarks.md](benchmarks.md) —— 性能基线测什么、不测什么，以及可比较数字必须附带的测量条件。
-- [api-documentation.md](api-documentation.md) —— 公开 API 的英文 doc comment：契约边界、适用范围、示例取舍与 v0.1.0 验收。
-- [release.md](release.md) —— 版本号、发布门槛、手工发布清单与 release-note 块的处置。
+- [architecture.md](architecture.md) — package boundaries, dependency directions, what goes where.
+- [runtime.md](runtime.md) — activation, directory, lifecycle.
+- [scheduling.md](scheduling.md) — serial execution, reentrancy, mailbox.
+- [persistence.md](persistence.md) — state storage, CAS, backend choice.
+- [timers.md](timers.md) — persisted scheduled tasks: the table, the poller, delivery semantics.
+- [cluster.md](cluster.md) — membership, placement, directory consistency.
+- [transport.md](transport.md) — byte transport between nodes: frames, connections, multiplexing, and close semantics; the substrate boundary for forwarding.
+- [errors.md](errors.md) — stable error codes, the call error envelope, and the cross-node cancellation boundary.
+- [codegen.md](codegen.md) — typed proxies generated from Go interfaces.
+- [testing.md](testing.md) — unit tests and deterministic simulation tests.
+- [simulation.md](simulation.md) — the simulation skeleton: seed, fault injection, crashes, event log.
+- [observability.md](observability.md) — minimal runtime observability facts and performance bounds.
+- [benchmarks.md](benchmarks.md) — what the performance baseline measures and does not, and the measurement conditions comparable numbers must carry.
+- [api-documentation.md](api-documentation.md) — English doc comments for the public API: contract boundaries, scope, example trade-offs, and v0.1.0 acceptance.
+- [release.md](release.md) — version numbers, release thresholds, the manual release checklist, and how release-note blocks are handled.
 
-## 决策记录
+## Decision records
 
-重要取舍直接写在对应篇目里，不另建 ADR 目录。每条取舍要写清「否决了什么」和「代价是什么」——只写结论的取舍等于没记录。
+Important trade-offs are written directly in the relevant document; no separate ADR directory. Each trade-off must state what was rejected and what it costs — a trade-off that records only its conclusion is not a record.

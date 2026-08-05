@@ -43,7 +43,7 @@ Two goals:
 
 **Embedded** — the single-node default. Candidates: SQLite (`modernc.org/sqlite`, pure Go, no CGO), bbolt, pebble.
 
-Leaning toward SQLite: it satisfies both state storage and coordination tables (coordination needs transactions plus CAS; bbolt's single-writer model can do it too, but SQL expresses multi-row conditional updates like membership more directly), and it has the best operational observability — when something goes wrong, you can look directly with `sqlite3`. The cost is being slower than bbolt/pebble, and the pure-Go SQLite is slower still. The choice will be settled by measured numbers at implementation step 2; it is not decided in advance now.
+Leaning toward SQLite: it satisfies both state storage and coordination tables (coordination needs transactions plus CAS; bbolt's single-writer model can do it too, but SQL expresses multi-row conditional updates like membership more directly), and it has the best operational observability — when something goes wrong, you can look directly with `sqlite3`. The cost is being slower than bbolt/pebble, and the pure-Go SQLite is slower still. The choice will be settled by measured numbers at implementation [step 2](../ROADMAP.md#2-持久化状态); it is not decided in advance now.
 
 What to measure is how these two `Store` methods behave under real access patterns, not generic read/write throughput:
 
