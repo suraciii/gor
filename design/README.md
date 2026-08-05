@@ -18,10 +18,12 @@
 - [persistence.md](persistence.md) —— 状态存储、CAS、后端选型。
 - [timers.md](timers.md) —— 持久化定时任务：表、轮询器、投递语义。
 - [cluster.md](cluster.md) —— membership、放置、目录一致性。
+- [transport.md](transport.md) —— 节点间字节传输：帧、连接、多路复用与关闭语义；是后续转发的底层边界。
 - [codegen.md](codegen.md) —— 从 Go interface 生成类型化代理。
 - [testing.md](testing.md) —— 单元测试与确定性模拟测试。
 - [simulation.md](simulation.md) —— 模拟测试骨架：种子、故障注入、崩溃、事件日志。
 - [observability.md](observability.md) —— 最小运行时观测事实与性能边界。
+- [benchmarks.md](benchmarks.md) —— 性能基线测什么、不测什么，以及可比较数字必须附带的测量条件。
 
 ## 决策记录
 

@@ -15,6 +15,7 @@
 - [orleans-internals.md](orleans-internals.md) —— Orleans 10.1 源码实测：规模构成、单激活仲裁、membership 无共识、调度器。
 - [landscape.md](landscape.md) —— 同类方案现状：Go 侧的虚拟 actor 实现、durable execution 阵营、已死的先例。
 - [go-capabilities.md](go-capabilities.md) —— Go 平台相对 .NET 的优势与劣势，以及每一条对设计的影响。
+- [embedded-store-bench.md](embedded-store-bench.md) —— 嵌入式存储后端在统一条件下的读写与冷启动实测，是持久化选型可回看的证据。
 
 ## 测量时间
 
