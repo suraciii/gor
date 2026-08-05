@@ -128,6 +128,7 @@
 不属于上述任何一步，但公开发布前必须完成：
 
 - 文档英文化。**放在最后**——文档还在改，早翻一遍等于翻两遍。
+- 公开 API doc comment。第 6c 步完成、公开 API 定型为发布候选后补齐；`v0.1.0` 前必须符合 [design/api-documentation.md](design/api-documentation.md)。
 - ~~一个真实的示例应用，并在第 5.5 步后用新签名复跑~~ **已完成**，见 [examples/shadow/](examples/shadow/)，设计见 [docs/example.md](docs/example.md)。它的产出是 [FINDINGS.md](FINDINGS.md)——六条 API 摩擦，其中四条变成了第 5.5 步，一条（跨实体事务）变成了 README 里明说的非目标，一条（`State[T].Get()` 的共享值语义）变成了文档补充。
 - ~~性能基线数字与跨节点转发基线~~ **已完成**，数字见 [benchmarks.md](benchmarks.md)，跑法是 `make bench`。测什么、不测什么、条件怎么写见 [design/benchmarks.md](design/benchmarks.md)。
 - ~~可观测性~~ **已完成**，见 [design/observability.md](design/observability.md)：运行时提供本节点激活快照和每次调用的完成事件；不做聚合、导出或告警。

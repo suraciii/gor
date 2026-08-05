@@ -1,6 +1,6 @@
 # 编程模型
 
-> 本文描述目标 API。跨节点调用还没有实现，进度见 [../ROADMAP.md](../ROADMAP.md)。
+> 本文描述目标 API。实现进度见 [../ROADMAP.md](../ROADMAP.md)。
 
 ## 核心概念
 
@@ -241,16 +241,16 @@ gor.New(gor.OnError(func(id gor.Identity, method string, err error) {
 
 完成事件的回调与调用方同步执行。回调不能阻塞或做 I/O，否则延迟的就是调用方自己的结果。运行时不做监控数据的聚合、导出或告警，这些由应用接到已有系统。
 
-### 差距
-
-目前尚未提供这两类观测。这里描述的是目标能力；现状见 [../ROADMAP.md](../ROADMAP.md)。
-
 ## 运行时启动
 
 单节点，状态落在本地文件：
 
 ```go
-rt, err := gor.New(gor.WithStore(gor.SQLite("data/gor.db")))
+database, err := store.OpenSQLite("data/gor.db")
+if err != nil { return err }
+defer database.Close()
+
+rt, err := gor.New(gor.WithStore(database))
 if err != nil { return err }
 defer rt.Close()
 
@@ -259,16 +259,27 @@ gorgen.Install(rt)
 
 `Install` 把生成的代理和分发函数交给运行时。少这一行，`Register` 和 `Ref` 会在启动时报错——不会拖到第一次调用。
 
-集群，多加一行：
+集群要明确交给运行时状态存储、共享成员表、本节点地址、这次启动的 generation 和传输：
 
 ```go
+nodeTransport, err := transport.New(":7373")
+if err != nil { return err }
+
 rt, err := gor.New(
-    gor.WithStore(gor.Postgres(dsn)),
-    gor.WithCluster(gor.Membership(dsn), gor.Listen(":7373")),
+    gor.WithStore(stateStore),
+    gor.WithMemberStore(memberStore),
+    gor.WithNodeAddr(nodeTransport.Addr()),
+    gor.WithGeneration(generation),
+    gor.WithTransport(nodeTransport),
 )
+if err != nil {
+    nodeTransport.Close()
+    return err
+}
+defer rt.Close()
 ```
 
-单节点到集群的差别是配置，不是代码。业务代码一行不改。
+`memberStore` 由所有节点共享；`generation` 在同一地址的每次重新加入时都要换新值。`Runtime.Close` 会关闭配置的传输。单节点到集群的差别是配置，不是业务代码。
 
 ## 运行时可能自己停下来
 
