@@ -233,24 +233,6 @@ func (r *Runtime) Activations() []Activation {
 	return activations
 }
 
-// Close begins a graceful stop and blocks until admitted calls have finished,
-// queued calls are rejected, and deactivation hooks have run. It is a no-op
-// once the engine has left running; a Kill after Close escalates to sudden
-// stop.
-func (r *Runtime) Close() {
-	r.BeginClose()
-	<-r.done
-}
-
-// Kill begins a sudden stop and blocks until the engine's infrastructure has
-// exited. It cancels running methods and skips deactivation hooks that have
-// not started; it does not wait for user methods. From closing it is an
-// escalation, not a no-op.
-func (r *Runtime) Kill() {
-	r.BeginKill()
-	<-r.done
-}
-
 // Done returns a channel that closes when the engine has stopped. For a
 // graceful stop that is after deactivation hooks finish; for a sudden stop it
 // is after the engine's own goroutines exit, not after user methods.

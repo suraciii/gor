@@ -200,7 +200,7 @@ running ── Close ──▶ closing ── 完成优雅停止 ──▶ stopp
 
 停止协调已实装为纯 channel 等待：执行运行时暴露 `BeginClose`/`BeginKill` + `Done()` channel，集群节点暴露 `DeclaredDead()` channel，根协调者在 `closeGracefully`/`closeImmediately` 中只接收 `clusterDone`、`engine.Done()`、`drained`、`transportDone` 这些 channel。内部执行运行时支持 `closing → killing` 升级（`BeginKill` 从 `closing` 不是 no-op，而是关闭 `killing` channel、标记跳过未开始的停用钩子、取消执行）；集群节点通过 `DeclaredDead()` 显式报告「外部判死」而非「主动退出」，根层不再从「自己是否发起过停止」推断原因。判死节点不再发布最后的空视图，以免触发优雅迁移与突发停止竞起。
 
-仍待实装的是：传输收尾必须晚于已接纳转发请求与入站回复关闭（当前 `closeTransport` 的相对顺序按本批已调整为在 `engine.Done` 与 `waitDrained` 之后，但根层未对接纳的转发请求单独跟踪其传输往返完成）。
+传输收尾已实装：优雅停止中 `closeTransport` 排在 `<-engine.Done()` 与 `waitDrained()` 之后，所以传输在已接纳的本地调用、入站回复和转发请求（转发请求持根 inflight 直到传输往返返回）都结束后才关闭。根层对转发请求的传输往返靠根 inflight（接纳计数）间接跟踪，未给转发请求单独的往返完成信号；当前两节点假网络已能验证「在途转发请求在其传输往返完成前传输不关闭」，真实传输的连接级打断语义由传输实现承担。
 
 当前 activation 不保存停用原因，`OnDeactivate` 只收到 `context.Background()`，错误出口传 `(Identity, method string, error)`。空闲、根关闭、所有权变化、panic 和丢弃都在停用汇合处丢失原因。上述停用原因、context 均尚未实装。
 

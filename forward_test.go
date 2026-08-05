@@ -1018,6 +1018,8 @@ func (t *testTransport) Send(ctx context.Context, addr string, payload []byte) (
 	select {
 	case result := <-result:
 		return result.payload, result.err
+	case <-peer.closed:
+		return nil, fmt.Errorf("transport %q closed during call", addr)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
