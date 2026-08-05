@@ -24,6 +24,21 @@ type account struct {
 	value State[int64]
 }
 
+type writeIgnoringAccount struct {
+	value     State[int64]
+	methodErr error
+}
+
+func (a *writeIgnoringAccount) Deposit(ctx context.Context, amount int64) (int64, error) {
+	value := a.value.Get() + amount
+	_ = a.value.Set(ctx, value)
+	return value, a.methodErr
+}
+
+func (a *writeIgnoringAccount) Balance(context.Context) (int64, error) {
+	return a.value.Get(), nil
+}
+
 type lifecycleAccount interface {
 	Value(context.Context) (int, error)
 }
@@ -614,6 +629,70 @@ func TestRegister_ConflictDiscardsActivationBeforeReactivation(t *testing.T) {
 		}
 		if string(record.Data) != `{"value":101}` || record.ETag != 3 {
 			t.Fatalf("stored record = %#v, want value 101 and ETag 3", record)
+		}
+	})
+}
+
+func TestRegister_StateWriteFailureReturnsErrorAndDiscardsActivation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		writeErr := errors.New("store unavailable")
+		rt := mustNew(t, WithStore(failingWriteStore{err: writeErr}), WithIdleTimeout(0), WithEvictionInterval(0))
+		defer rt.Close()
+
+		var factoryCalls atomic.Int32
+		installAccount(t, rt)
+		if err := Register[Account](rt, func(b *Binder) Account {
+			factoryCalls.Add(1)
+			return &writeIgnoringAccount{value: NewState[int64](b, "value")}
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		var result int64
+		err := rt.Invoke(context.Background(), id, "Deposit", []any{int64(1)}, &result)
+		if err == nil {
+			t.Fatal("state write failure returned nil error")
+		}
+		if !errors.Is(err, writeErr) {
+			t.Fatalf("state write failure = %v, want %v", err, writeErr)
+		}
+
+		var balance int64
+		if err := rt.Invoke(context.Background(), id, "Balance", nil, &balance); err != nil {
+			t.Fatalf("reactivated Balance invoke error = %v", err)
+		}
+		if factoryCalls.Load() != 2 {
+			t.Fatalf("factory calls = %d, want 2 after discarded activation", factoryCalls.Load())
+		}
+	})
+}
+
+func TestRegister_StateWriteFailureJoinsMethodError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		writeErr := errors.New("store unavailable")
+		methodErr := errors.New("method failed")
+		rt := mustNew(t, WithStore(failingWriteStore{err: writeErr}), WithIdleTimeout(0), WithEvictionInterval(0))
+		defer rt.Close()
+
+		installAccount(t, rt)
+		if err := Register[Account](rt, func(b *Binder) Account {
+			return &writeIgnoringAccount{value: NewState[int64](b, "value"), methodErr: methodErr}
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		var result int64
+		err := rt.Invoke(context.Background(), id, "Deposit", []any{int64(1)}, &result)
+		if err == nil {
+			t.Fatal("method and state write failures returned nil error")
+		}
+		if !errors.Is(err, methodErr) {
+			t.Fatalf("combined error = %v, want method error %v", err, methodErr)
+		}
+		if !errors.Is(err, writeErr) {
+			t.Fatalf("combined error = %v, want state write error %v", err, writeErr)
 		}
 	})
 }
