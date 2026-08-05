@@ -5,18 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/suraciii/gor/clock"
 	"github.com/suraciii/gor/store"
 )
 
 type Binder struct {
-	identity  store.Identity
-	store     store.Store
-	schedules store.ScheduleStore
-	clock     clock.Clock
-	etag      store.ETag
-	states    map[string]stateCell
-	discard   error
+	runtime  *Runtime
+	identity store.Identity
+	etag     store.ETag
+	states   map[string]stateCell
+	discard  error
 }
 
 type stateCell interface {
@@ -24,13 +21,11 @@ type stateCell interface {
 	decode([]byte) error
 }
 
-func newBinder(id Identity, backend store.Store, schedules store.ScheduleStore, sourceClock clock.Clock) *Binder {
+func newBinder(runtime *Runtime, id Identity) *Binder {
 	return &Binder{
-		identity:  store.Identity{Type: id.Type, Key: id.Key},
-		store:     backend,
-		schedules: schedules,
-		clock:     sourceClock,
-		states:    make(map[string]stateCell),
+		runtime:  runtime,
+		identity: store.Identity{Type: id.Type, Key: id.Key},
+		states:   make(map[string]stateCell),
 	}
 }
 
@@ -81,7 +76,7 @@ func (s *stateCellValue[T]) decode(data []byte) error {
 }
 
 func (b *Binder) load(ctx context.Context) error {
-	record, err := b.store.Read(ctx, b.identity)
+	record, err := b.runtime.store.Read(ctx, b.identity)
 	if err != nil {
 		return err
 	}
@@ -127,7 +122,7 @@ func (b *Binder) persist(ctx context.Context, changed stateCell, changedData []b
 	if err != nil {
 		return err
 	}
-	etag, err := b.store.Write(ctx, b.identity, data, b.etag)
+	etag, err := b.runtime.store.Write(ctx, b.identity, data, b.etag)
 	if err != nil {
 		b.discard = err
 		return err

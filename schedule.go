@@ -33,8 +33,8 @@ type Schedule struct {
 func NewSchedule(b *Binder) Schedule {
 	return Schedule{
 		identity: b.identity,
-		store:    b.schedules,
-		clock:    b.clock,
+		store:    b.runtime.scheduleStore,
+		clock:    b.runtime.clock,
 	}
 }
 

@@ -19,6 +19,11 @@ import (
 var ErrTypeNotInstalled = errors.New("entity type is not installed; call InstallType or run the generated Install")
 
 type Identity = runtimepkg.Identity
+
+type Scope interface {
+	scopeRuntime() *Runtime
+}
+
 type Runtime struct {
 	*runtimepkg.Runtime
 	store         store.Store
@@ -61,6 +66,14 @@ type typeRegistration struct {
 }
 
 type Option func(*Config)
+
+func (rt *Runtime) scopeRuntime() *Runtime {
+	return rt
+}
+
+func (b *Binder) scopeRuntime() *Runtime {
+	return b.runtime
+}
 
 func New(options ...Option) (*Runtime, error) {
 	config := Config{
@@ -274,7 +287,7 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 	}
 	return rt.Runtime.Register(name, runtimepkg.Registration{
 		Factory: func(ctx context.Context, id runtimepkg.Identity) (any, error) {
-			binder := newBinder(id, rt.store, rt.scheduleStore, rt.clock)
+			binder := newBinder(rt, id)
 			entity := factory(binder)
 			if err := binder.load(ctx); err != nil {
 				return nil, err
@@ -292,7 +305,12 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 	})
 }
 
-func Ref[T any](rt *Runtime, key string) T {
+func Now(b *Binder) time.Time {
+	return b.runtime.clock.Now()
+}
+
+func Ref[T any](scope Scope, key string) T {
+	rt := scope.scopeRuntime()
 	name := TypeName[T]()
 	registration, ok := rt.typeRegistration(name)
 	if !ok {

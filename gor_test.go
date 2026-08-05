@@ -9,7 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
+	"time"
 
+	"github.com/suraciii/gor/clock"
 	"github.com/suraciii/gor/store"
 )
 
@@ -20,6 +22,41 @@ type Account interface {
 
 type account struct {
 	value State[int64]
+}
+
+type scopeAccount interface {
+	CreatedAt(context.Context) (time.Time, error)
+	ForwardDeposit(context.Context, int64) (int64, error)
+}
+
+type scopeAccountEntity struct {
+	createdAt time.Time
+	target    Account
+}
+
+func (a *scopeAccountEntity) CreatedAt(context.Context) (time.Time, error) {
+	return a.createdAt, nil
+}
+
+func (a *scopeAccountEntity) ForwardDeposit(ctx context.Context, amount int64) (int64, error) {
+	return a.target.Deposit(ctx, amount)
+}
+
+type scopeAccountProxy struct {
+	invoker Invoker
+	id      Identity
+}
+
+func (p *scopeAccountProxy) CreatedAt(ctx context.Context) (time.Time, error) {
+	var value time.Time
+	err := p.invoker.Invoke(ctx, p.id, "CreatedAt", nil, &value)
+	return value, err
+}
+
+func (p *scopeAccountProxy) ForwardDeposit(ctx context.Context, amount int64) (int64, error) {
+	var value int64
+	err := p.invoker.Invoke(ctx, p.id, "ForwardDeposit", []any{amount}, &value)
+	return value, err
 }
 
 func mustNew(t *testing.T, options ...Option) *Runtime {
@@ -41,6 +78,25 @@ func (a *account) Deposit(ctx context.Context, amount int64) (int64, error) {
 
 func (a *account) Balance(context.Context) (int64, error) {
 	return a.value.Get(), nil
+}
+
+func dispatchScopeAccount(ctx context.Context, instance scopeAccount, method string, args []any, reply any) error {
+	switch method {
+	case "CreatedAt":
+		value, err := instance.CreatedAt(ctx)
+		if err == nil {
+			*(reply.(*time.Time)) = value
+		}
+		return err
+	case "ForwardDeposit":
+		value, err := instance.ForwardDeposit(ctx, args[0].(int64))
+		if err == nil {
+			*(reply.(*int64)) = value
+		}
+		return err
+	default:
+		return fmt.Errorf("unknown method %q", method)
+	}
 }
 
 func TestRegister_InvokesInstalledDispatch(t *testing.T) {
@@ -129,6 +185,60 @@ func TestRef_ConstructsTypedProxyFromInstalledType(t *testing.T) {
 	if err != nil || value != 2 {
 		t.Fatalf("Ref proxy Deposit = (%d, %v), want (2, nil)", value, err)
 	}
+}
+
+func TestBinderScope_ProvidesClockAndTypedReferences(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(100, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		rt := mustNew(t, WithClock(fakeClock), WithIdleTimeout(0), WithEvictionInterval(0))
+		defer rt.Close()
+
+		installAccount(t, rt)
+		if err := Register[Account](rt, func(b *Binder) Account {
+			return &account{value: NewState[int64](b, "value")}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := InstallType[scopeAccount](rt, dispatchScopeAccount, func(invoker Invoker, id Identity) scopeAccount {
+			return &scopeAccountProxy{invoker: invoker, id: id}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := Register[scopeAccount](rt, func(b *Binder) scopeAccount {
+			return &scopeAccountEntity{
+				createdAt: Now(b),
+				target:    Ref[Account](b, "target"),
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: TypeName[scopeAccount](), Key: "source"}
+		source := Ref[scopeAccount](rt, "source")
+		createdAt, err := source.CreatedAt(context.Background())
+		if err != nil {
+			t.Fatalf("CreatedAt = %v", err)
+		}
+		if !createdAt.Equal(start) {
+			t.Fatalf("CreatedAt = %s, want %s", createdAt, start)
+		}
+
+		value, err := source.ForwardDeposit(context.Background(), 7)
+		if err != nil || value != 7 {
+			t.Fatalf("ForwardDeposit = (%d, %v), want (7, nil)", value, err)
+		}
+
+		rt.Deactivate(id)
+		fakeClock.Advance(time.Hour)
+		createdAt, err = source.CreatedAt(context.Background())
+		if err != nil {
+			t.Fatalf("CreatedAt after reactivation = %v", err)
+		}
+		if !createdAt.Equal(start.Add(time.Hour)) {
+			t.Fatalf("CreatedAt after reactivation = %s, want %s", createdAt, start.Add(time.Hour))
+		}
+	})
 }
 
 func TestRef_PanicsForUninstalledType(t *testing.T) {

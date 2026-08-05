@@ -106,7 +106,7 @@ func TestSchedule_SetOverwritesAndCancelDeletes(t *testing.T) {
 	start := time.Unix(0, 0).UTC()
 	fakeClock := clock.NewFake(start)
 	backend := store.NewMemory()
-	schedule := NewSchedule(newBinder(Identity{Type: "account", Key: "alice"}, backend, backend, fakeClock))
+	schedule := NewSchedule(newTestBinder(Identity{Type: "account", Key: "alice"}, backend, backend, fakeClock))
 
 	if err := schedule.Set(context.Background(), "wake", After(time.Second), "Wake"); err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestSchedule_SetOverwritesAndCancelDeletes(t *testing.T) {
 }
 
 func TestSchedule_ReturnsUnavailableWithoutScheduleStore(t *testing.T) {
-	schedule := NewSchedule(newBinder(Identity{Type: "account", Key: "alice"}, failingWriteStore{}, nil, clock.Real{}))
+	schedule := NewSchedule(newTestBinder(Identity{Type: "account", Key: "alice"}, failingWriteStore{}, nil, clock.Real{}))
 	if err := schedule.Set(context.Background(), "wake", After(time.Second), "Wake"); !errors.Is(err, ErrScheduleStoreUnavailable) {
 		t.Fatalf("Set error = %v, want ErrScheduleStoreUnavailable", err)
 	}
