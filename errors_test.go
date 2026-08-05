@@ -43,6 +43,21 @@ func TestCodeOfReportsNoCodeWhenTreeHasMultipleCodes(t *testing.T) {
 	}
 }
 
+// An incomparable value-type error (slice/map/func field) would panic if CodeOf
+// keyed a visited set by the error interface: hashing an unhashable dynamic
+// type is a runtime panic on every public call path. CodeOf must not do that.
+type unhashableCoded struct{ fields []string }
+
+func (unhashableCoded) Error() string { return "validation failed" }
+func (unhashableCoded) Code() Code    { return testApplicationCode }
+
+func TestCodeOfHandlesIncomparableErrorType(t *testing.T) {
+	err := unhashableCoded{fields: []string{"name", "email"}}
+	if got, ok := CodeOf(err); !ok || got != testApplicationCode {
+		t.Fatalf("CodeOf(unhashableCoded) = (%q, %v), want (%q, true)", got, ok, testApplicationCode)
+	}
+}
+
 // TestJoinedErrorWithSoleCodeRoundTripsAcrossNodes pins the spec's equivalence
 // promise at the wire boundary: a method result joining a declared code with
 // diagnostic text must match that code after the server projects it and the

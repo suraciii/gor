@@ -35,29 +35,21 @@ type Coded interface {
 	Code() Code
 }
 
-// CodeOf reports the single Code reachable from err. It walks the same nodes
-// errors.Is does: the error itself, the single-value Unwrap chain, and every
-// branch of a multi-value Unwrap. Exactly one reachable Code is the error's
-// determined Code; none, or more than one, means the error has no determined
-// Code and crosses the network as opaque text. The visited set mirrors
-// errors.Is cycle handling so a cyclic Unwrap cannot loop forever.
+// CodeOf reports the single Code reachable from err. It traverses err the way
+// errors.Is does—the error itself, the single-value Unwrap chain, and every
+// branch of a multi-value Unwrap—collecting every reachable Code. Exactly one
+// reachable Code is the error's determined Code; none, or more than one, means
+// the error has no determined Code and crosses the network as opaque text. As
+// with errors.Is, a cyclic Unwrap is not handled.
 func CodeOf(err error) (Code, bool) {
 	var (
-		codes   map[Code]struct{}
-		visited map[error]bool
-		walk    func(error)
+		codes map[Code]struct{}
+		walk  func(error)
 	)
 	walk = func(e error) {
 		if e == nil {
 			return
 		}
-		if visited == nil {
-			visited = map[error]bool{}
-		}
-		if visited[e] {
-			return
-		}
-		visited[e] = true
 		if coded, ok := e.(Coded); ok {
 			if codes == nil {
 				codes = map[Code]struct{}{}
