@@ -4,7 +4,6 @@ package sim
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 
@@ -29,7 +28,7 @@ func counterOperationOutputFor(value int64, err error) counterOperationOutput {
 	switch {
 	case err == nil:
 		return counterOperationOutput{value: value, status: counterOperationSucceeded}
-	case errors.Is(err, errAppliedWriteFailure), errors.Is(err, context.Canceled):
+	case simErrorIs(err, errAppliedWriteFailure), simErrorIs(err, context.Canceled):
 		return counterOperationOutput{value: value, status: counterOperationUnknown}
 	default:
 		return counterOperationOutput{value: value, status: counterOperationFailed}

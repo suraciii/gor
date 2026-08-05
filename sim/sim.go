@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sort"
+	"strings"
 	"testing/synctest"
 	"time"
 
@@ -285,31 +286,35 @@ func classifyOutcome(err error) (string, error) {
 	switch {
 	case err == nil:
 		return "ok", nil
-	case errors.Is(err, errReadFailure):
+	case simErrorIs(err, errReadFailure):
 		return "store-read-error", nil
-	case errors.Is(err, errWriteFailure):
+	case simErrorIs(err, errWriteFailure):
 		return "store-write-error", nil
-	case errors.Is(err, errAppliedWriteFailure):
+	case simErrorIs(err, errAppliedWriteFailure):
 		return "store-write-applied-then-error", nil
-	case errors.Is(err, errMemberListFailure):
+	case simErrorIs(err, errMemberListFailure):
 		return "member-list-error", nil
-	case errors.Is(err, errMemberAppliedFailure):
+	case simErrorIs(err, errMemberAppliedFailure):
 		return "member-write-applied-then-error", nil
-	case errors.Is(err, clusterpkg.ErrNodeDead):
+	case simErrorIs(err, clusterpkg.ErrNodeDead):
 		return "cluster-node-dead", nil
-	case errors.Is(err, store.ErrConflict):
+	case simErrorIs(err, store.ErrConflict):
 		return "store-conflict", nil
 	case errors.As(err, &wrongOwner):
 		return "wrong-owner", nil
-	case errors.Is(err, mail.ErrClosed), errors.Is(err, runtimepkg.ErrRuntimeClosed):
+	case simErrorIs(err, mail.ErrClosed), simErrorIs(err, runtimepkg.ErrRuntimeClosed):
 		return "closed", nil
-	case errors.Is(err, mail.ErrOverloaded):
+	case simErrorIs(err, mail.ErrOverloaded):
 		return "overloaded", nil
-	case errors.Is(err, context.Canceled):
+	case simErrorIs(err, context.Canceled):
 		return "canceled", nil
 	default:
 		return "", fmt.Errorf("unclassified invocation error: %w", err)
 	}
+}
+
+func simErrorIs(err, target error) bool {
+	return errors.Is(err, target) || (err != nil && strings.Contains(err.Error(), target.Error()))
 }
 
 func logEntityStates(log *eventLog, backend *fakeStore, ids []store.Identity) error {

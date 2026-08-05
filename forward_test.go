@@ -313,6 +313,77 @@ func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
 	})
 }
 
+func TestRuntime_ForwardedCallsUseLocalInvokeSerialization(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1225, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		backend := store.NewMemory()
+		network := newTestTransportNetwork()
+		firstTransport := network.add("node-a")
+		secondTransport := network.add("node-b")
+		firstOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a")
+		firstOptions = append(firstOptions, WithTransport(firstTransport))
+		secondOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-b", "generation-b")
+		secondOptions = append(secondOptions, WithTransport(secondTransport))
+		first := mustNew(t, firstOptions...)
+		second := mustNew(t, secondOptions...)
+		defer first.Close()
+		defer second.Close()
+		installRoutedAccount(t, first, "node-a")
+		started := make(chan struct{})
+		release := make(chan struct{})
+		installRoutedAccountWithFactory(t, second, func(*Binder) routedAccount {
+			return &routedAccountEntity{
+				label:        "node-b",
+				blockStarted: started,
+				blockRelease: release,
+			}
+		})
+		synctest.Wait()
+		<-firstTransport.served
+		<-secondTransport.served
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		remote := findForwardTarget(t, first, "node-b")
+		blockDone := make(chan error, 1)
+		go func() {
+			blockDone <- first.Invoke(context.Background(), remote, "Block", &routedAccountBlockRequest{}, &routedAccountBlockReply{})
+		}()
+		<-started
+
+		whoDone := make(chan struct {
+			reply routedAccountWhoReply
+			err   error
+		}, 1)
+		go func() {
+			var reply routedAccountWhoReply
+			err := first.Invoke(context.Background(), remote, "Who", &routedAccountWhoRequest{}, &reply)
+			whoDone <- struct {
+				reply routedAccountWhoReply
+				err   error
+			}{reply: reply, err: err}
+		}()
+		synctest.Wait()
+		select {
+		case result := <-whoDone:
+			t.Fatalf("forwarded call bypassed local serialization: (%q, %v)", result.reply.R0, result.err)
+		default:
+		}
+
+		close(release)
+		synctest.Wait()
+		if err := <-blockDone; err != nil {
+			t.Fatalf("forwarded blocking call error = %v", err)
+		}
+		result := <-whoDone
+		if result.err != nil || result.reply.R0 != "node-b" {
+			t.Fatalf("serialized forwarded call = (%q, %v), want (node-b, nil)", result.reply.R0, result.err)
+		}
+	})
+}
+
 func TestRuntime_HandleDoesNotRouteAgain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(1250, 0).UTC()

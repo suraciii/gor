@@ -49,6 +49,11 @@ type memberFaultSpec struct {
 	started chan struct{}
 }
 
+type readBarrier struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
 type scheduleFaultKind uint8
 
 const (
@@ -117,6 +122,7 @@ type fakeStore struct {
 	mu                  sync.Mutex
 	records             map[store.Identity]store.Record
 	plans               map[store.Identity]faultPlan
+	readBarriers        map[store.Identity]readBarrier
 	members             map[fakeMemberKey]store.Member
 	memberFault         memberFaultSpec
 	schedules           map[scheduleKey]store.Schedule
@@ -142,6 +148,7 @@ func newFakeStore(tracker *timerTracker) *fakeStore {
 	return &fakeStore{
 		records:             make(map[store.Identity]store.Record),
 		plans:               make(map[store.Identity]faultPlan),
+		readBarriers:        make(map[store.Identity]readBarrier),
 		members:             make(map[fakeMemberKey]store.Member),
 		schedules:           make(map[scheduleKey]store.Schedule),
 		scheduleClaimFaults: make(map[store.Identity]scheduleFaultKind),
@@ -184,6 +191,35 @@ func (s *fakeStore) faultPlan(id store.Identity) faultPlan {
 	return s.plans[id]
 }
 
+func (s *fakeStore) setReadBarrier(id store.Identity, barrier readBarrier) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if barrier.release == nil {
+		delete(s.readBarriers, id)
+		return
+	}
+	s.readBarriers[id] = barrier
+}
+
+func (s *fakeStore) refreshActiveMembers(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, member := range s.members {
+		if member.Status != store.MemberActive {
+			continue
+		}
+		member.IamAliveAt = now
+		member.ETag++
+		s.members[key] = member
+	}
+}
+
+func (s *fakeStore) readBarrier(id store.Identity) readBarrier {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readBarriers[id]
+}
+
 func (s *fakeStore) Read(_ context.Context, id store.Identity) (store.Record, error) {
 	defer s.endOperation(s.beginOperation())
 	plan := s.faultPlan(id).read
@@ -196,9 +232,17 @@ func (s *fakeStore) Read(_ context.Context, id store.Identity) (store.Record, er
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	record := s.records[id]
 	record.Data = cloneBytes(record.Data)
+	s.mu.Unlock()
+
+	barrier := s.readBarrier(id)
+	if barrier.started != nil {
+		barrier.started <- struct{}{}
+	}
+	if barrier.release != nil {
+		<-barrier.release
+	}
 	return record, nil
 }
 

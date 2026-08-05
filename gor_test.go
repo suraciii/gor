@@ -705,8 +705,8 @@ func TestRegister_StateWriteFailureReturnsErrorAndDiscardsActivation(t *testing.
 		}
 
 		id := Identity{Type: TypeName[Account](), Key: "alice"}
-		var result int64
-		err := rt.Invoke(context.Background(), id, "Deposit", []any{int64(1)}, &result)
+		var result accountDepositReply
+		err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 1}, &result)
 		if err == nil {
 			t.Fatal("state write failure returned nil error")
 		}
@@ -714,8 +714,8 @@ func TestRegister_StateWriteFailureReturnsErrorAndDiscardsActivation(t *testing.
 			t.Fatalf("state write failure = %v, want %v", err, writeErr)
 		}
 
-		var balance int64
-		if err := rt.Invoke(context.Background(), id, "Balance", nil, &balance); err != nil {
+		var balance accountBalanceReply
+		if err := rt.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &balance); err != nil {
 			t.Fatalf("reactivated Balance invoke error = %v", err)
 		}
 		if factoryCalls.Load() != 2 {
@@ -739,8 +739,8 @@ func TestRegister_StateWriteFailureJoinsMethodError(t *testing.T) {
 		}
 
 		id := Identity{Type: TypeName[Account](), Key: "alice"}
-		var result int64
-		err := rt.Invoke(context.Background(), id, "Deposit", []any{int64(1)}, &result)
+		var result accountDepositReply
+		err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 1}, &result)
 		if err == nil {
 			t.Fatal("method and state write failures returned nil error")
 		}

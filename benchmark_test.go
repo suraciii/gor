@@ -28,6 +28,11 @@ type benchmarkEntityProxy struct {
 	id      Identity
 }
 
+type benchmarkNoopRequest struct{}
+type benchmarkNoopReply struct{}
+type benchmarkSeedRequest struct{}
+type benchmarkSeedReply struct{}
+
 func (e *benchmarkEntityImpl) Noop(context.Context) error {
 	return nil
 }
@@ -44,7 +49,7 @@ func (p *benchmarkEntityProxy) Seed(ctx context.Context) error {
 	return p.invoker.Invoke(ctx, p.id, "Seed", nil, nil)
 }
 
-func dispatchBenchmarkEntity(ctx context.Context, instance benchmarkEntity, method string, _ []any, _ any) error {
+func dispatchBenchmarkEntity(ctx context.Context, instance benchmarkEntity, method string, _ any, _ any) error {
 	switch method {
 	case "Noop":
 		return instance.Noop(ctx)
@@ -52,6 +57,17 @@ func dispatchBenchmarkEntity(ctx context.Context, instance benchmarkEntity, meth
 		return instance.Seed(ctx)
 	default:
 		return fmt.Errorf("unknown method %q", method)
+	}
+}
+
+func newBenchmarkEntityCall(method string) (args any, reply any) {
+	switch method {
+	case "Noop":
+		return &benchmarkNoopRequest{}, &benchmarkNoopReply{}
+	case "Seed":
+		return &benchmarkSeedRequest{}, &benchmarkSeedReply{}
+	default:
+		return nil, nil
 	}
 }
 
@@ -68,7 +84,7 @@ func newBenchmarkRuntime(b *testing.B, backend store.Store, sourceClock clock.Cl
 	}
 	if err := InstallType[benchmarkEntity](rt, dispatchBenchmarkEntity, func(invoker Invoker, id Identity) benchmarkEntity {
 		return &benchmarkEntityProxy{invoker: invoker, id: id}
-	}); err != nil {
+	}, newBenchmarkEntityCall); err != nil {
 		rt.Close()
 		b.Fatal(err)
 	}
