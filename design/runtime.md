@@ -196,7 +196,7 @@ running ── Close ──▶ closing ── 完成优雅停止 ──▶ stopp
 
 ### 差距
 
-当前根运行时只关闭公开停止信号，再分别关闭轮询器、集群节点、内部执行运行时和传输。公开调用没有根层接纳门，入站 handler 另做一次停止信号检查，二者不是同一条规则。内部执行运行时和集群节点也不能从优雅停止升级到 `Kill`；集群节点最终只留下 `dead` 状态和无原因的完成 channel。这一节尚未实装。
+根运行时的停止状态机已实装：`beginClose`、`beginKill`、`becomeDead`、`finishStop` 四个转换函数与原子的 `admit`/release 构成唯一接纳门，公开 `Runtime.Invoke`、入站 `invoke` handler 与定时投递共用同一个入口，在归属判断和转发之前接纳。`closing`/`killing` 与由这两条到达的 `stopped` 返回 `gor.runtime_closed`，`dead` 及由它到达的 `stopped` 返回 `gor.node_dead`。仍待实装的是：内部执行运行时与集群节点从优雅停止升级到 `Kill`、集群节点显式报告结束原因（当前根层用「自己是否发起了 Close/Kill」推断外部判死，不从 channel 关闭猜测），以及传输收尾必须晚于已接纳转发请求与入站回复关闭。
 
 当前 activation 不保存停用原因，`OnDeactivate` 只收到 `context.Background()`，错误出口传 `(Identity, method string, error)`。空闲、根关闭、所有权变化、panic 和丢弃都在停用汇合处丢失原因。当前节点自判 dead 后，根运行时调用普通 `engine.Close()`，所以仍会启动 `OnDeactivate`；这与本篇要求的突发停止不同。上述停用原因、context 和跳过规则均尚未实装。
 

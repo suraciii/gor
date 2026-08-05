@@ -270,11 +270,8 @@ func TestRuntime_HandleRejectsAfterClusterDeath(t *testing.T) {
 		default:
 			t.Fatal("runtime done is still open after cluster death")
 		}
-		if first.shuttingDown.Load() {
-			t.Fatal("cluster death incorrectly marked runtime as shutting down")
-		}
 
-		payload, err := first.handle(context.Background(), []byte(`{"type":"gor.Account","key":"alice","method":"Balance","args":{}}`))
+		payload, err := first.handle(context.Background(), []byte(`{"kind":"invoke","type":"gor.Account","key":"alice","method":"Balance","args":{}}`))
 		if err != nil {
 			t.Fatalf("handle error = %v, want nil", err)
 		}
@@ -282,12 +279,57 @@ func TestRuntime_HandleRejectsAfterClusterDeath(t *testing.T) {
 		if err := json.Unmarshal(payload, &response); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
-		if response.Error == nil || response.Error.Code != string(ErrRuntimeClosed) {
-			t.Fatalf("response error = %#v, want runtime-closed code", response.Error)
+		if response.Error == nil || response.Error.Code != string(ErrNodeDead) {
+			t.Fatalf("response error = %#v, want node-dead code after cluster death", response.Error)
 		}
 
 		first.Close()
 		second.Close()
+	})
+}
+
+func TestRuntime_ClusterDeathSkipsOnDeactivate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1800, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		backend := store.NewMemory()
+		network := newTestTransportNetwork()
+		firstOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a")
+		firstOptions = append(firstOptions,
+			WithHeartbeatInterval(time.Second),
+			WithViewInterval(time.Hour),
+			WithTransport(network.add("node-a")),
+		)
+		first := mustNew(t, firstOptions...)
+		deactivateCalls := new(atomic.Int32)
+		installLifecycleAccount(t, first, new(atomic.Int32), func(entity *lifecycleAccountEntity) {
+			entity.deactivateCalls = deactivateCalls
+		})
+
+		id := Identity{Type: TypeName[lifecycleAccount](), Key: "self-death"}
+		if err := first.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
+			t.Fatalf("initial invocation error = %v", err)
+		}
+
+		self := findClusterMember(t, members, "node-a", "generation-a")
+		self.Status = store.MemberDead
+		if _, err := members.WriteMember(context.Background(), self); err != nil {
+			t.Fatalf("mark self dead: %v", err)
+		}
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		select {
+		case <-first.Done():
+		default:
+			t.Fatal("runtime Done is still open after cluster death")
+		}
+		// External death collapses to sudden stop, so OnDeactivate must not run.
+		if got := deactivateCalls.Load(); got != 0 {
+			t.Fatalf("OnDeactivate calls after cluster death = %d, want 0 (sudden stop)", got)
+		}
+		first.Close()
 	})
 }
 

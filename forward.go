@@ -110,12 +110,6 @@ func (rt *Runtime) forward(ctx context.Context, owner string, id Identity, metho
 }
 
 func (rt *Runtime) handle(ctx context.Context, payload []byte) ([]byte, error) {
-	select {
-	case <-rt.done:
-		return errorResponse(runtimepkg.ErrRuntimeClosed)
-	default:
-	}
-
 	var request callRequest
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return errorResponse(withCode(ErrInvalidRequest, fmt.Errorf("decode invocation request: %w", err)))
@@ -137,6 +131,15 @@ const (
 )
 
 func (rt *Runtime) handleInvoke(ctx context.Context, request callRequest) ([]byte, error) {
+	// Admission is the boundary: a runtime that has left running rejects
+	// before any request-specific work, so a stopped node reports its stop
+	// status rather than a type or method error.
+	release, err := rt.admit()
+	if err != nil {
+		return errorResponse(err)
+	}
+	defer release()
+
 	registration, ok := rt.typeRegistration(request.Type)
 	if !ok {
 		return errorResponse(fmt.Errorf("%w: %s", ErrTypeNotInstalled, request.Type))
@@ -151,15 +154,17 @@ func (rt *Runtime) handleInvoke(ctx context.Context, request callRequest) ([]byt
 		}
 	}
 
-	// Forwarded requests already crossed the ownership decision; execute them locally.
+	// Forwarded requests already crossed the ownership decision; execute them
+	// locally without re-routing.
 	invokeErr := publicError(rt.engine.Invoke(ctx, runtimepkg.Identity{Type: request.Type, Key: request.Key}, request.Method, args, reply))
 	if invokeErr != nil {
-		// The handler context belongs to the serving runtime, so cancellation after
-		// shutdown is a runtime outcome rather than caller cancellation.
+		// The handler context belongs to the serving runtime, so cancellation
+		// after a stop transition is a runtime outcome rather than caller
+		// cancellation.
 		select {
 		case <-rt.done:
 			if errors.Is(invokeErr, context.Canceled) {
-				invokeErr = withCode(ErrRuntimeClosed, invokeErr)
+				invokeErr = stopRejection(rt.stopCodeSnapshot())
 			}
 		default:
 		}
@@ -175,6 +180,16 @@ func (rt *Runtime) handleInvoke(ctx context.Context, request callRequest) ([]byt
 func (rt *Runtime) handleProbe() ([]byte, error) {
 	if rt.clusterNode == nil {
 		return errorResponse(withCode(ErrInvalidRequest, errors.New("cluster node is not configured")))
+	}
+	// A probe is not an entity call and does not register against the admission
+	// count, but it reads the same root state and refuses to reply once the
+	// runtime has left running.
+	rt.lifecycleMu.Lock()
+	running := rt.state == rootRunning
+	code := rt.stopCode
+	rt.lifecycleMu.Unlock()
+	if !running {
+		return errorResponse(stopRejection(code))
 	}
 	id, ok := rt.clusterNode.Probe()
 	if !ok {
