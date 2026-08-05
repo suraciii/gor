@@ -26,6 +26,14 @@
 go run ./examples/shadow/cmd/shadow
 ```
 
+注册影子实体时只需要传入运行时：
+
+```go
+if err := shadow.Register(rt); err != nil {
+    return err
+}
+```
+
 服务监听 `:8080`，数据写入 `data/gor.db`。也可以指定地址和数据库文件：
 
 ```bash
@@ -88,4 +96,4 @@ curl http://localhost:8080/workshops/assembly/online-count
 go run ./examples/shadow/cmd/load
 ```
 
-等待闲置超时后，程序会再次读取 `device-000` 的影子，并确认配置仍然读得到。程序退出时会删除临时目录。也可以用 `-devices` 调整这批设备的规模。
+等待期间，设备的 `OnDeactivate` 会记录 `device-000` 被闲置驱逐。随后再次读取影子会从 store 重新激活它，并确认配置仍然读得到；日志会明确写出这次驱逐和重新加载。程序退出时会删除临时目录。也可以用 `-devices` 调整这批设备的规模。

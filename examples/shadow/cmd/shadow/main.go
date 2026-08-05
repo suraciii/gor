@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/suraciii/gor"
-	"github.com/suraciii/gor/clock"
 	shadow "github.com/suraciii/gor/examples/shadow"
 	"github.com/suraciii/gor/store"
 )
@@ -57,7 +56,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 		return fmt.Errorf("create runtime: %w", err)
 	}
 	defer rt.Close()
-	if err := shadow.Register(rt, clock.Real{}); err != nil {
+	if err := shadow.Register(rt); err != nil {
 		return fmt.Errorf("register shadow entities: %w", err)
 	}
 

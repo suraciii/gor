@@ -26,7 +26,7 @@ func TestHTTPReportsConfiguresAndReadsShadow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := shadow.Register(rt, sourceClock); err != nil {
+	if err := shadow.Register(rt); err != nil {
 		rt.Close()
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestHTTPRejectsMalformedJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := shadow.Register(rt, sourceClock); err != nil {
+	if err := shadow.Register(rt); err != nil {
 		rt.Close()
 		t.Fatal(err)
 	}

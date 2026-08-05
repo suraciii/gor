@@ -3,10 +3,10 @@ package domain
 import (
 	"context"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/suraciii/gor"
-	"github.com/suraciii/gor/clock"
 )
 
 const OfflineAfter = 30 * time.Second
@@ -37,18 +37,16 @@ type Workshop interface {
 }
 
 type device struct {
-	runtime  *gor.Runtime
+	binder   *gor.Binder
 	id       gor.Identity
-	clock    clock.Clock
 	shadow   gor.State[Shadow]
 	schedule gor.Schedule
 }
 
-func NewDevice(runtime *gor.Runtime, b *gor.Binder, sourceClock clock.Clock) Device {
+func NewDevice(b *gor.Binder) Device {
 	return &device{
-		runtime:  runtime,
+		binder:   b,
 		id:       gor.Self(b),
-		clock:    sourceClock,
 		shadow:   gor.NewState[Shadow](b, "shadow"),
 		schedule: gor.NewSchedule(b),
 	}
@@ -61,7 +59,7 @@ func (d *device) Report(ctx context.Context, workshopID string, state string) er
 	previous := d.shadow.Get()
 	next := previous
 	next.ReportedState = state
-	next.ReportedAt = d.clock.Now()
+	next.ReportedAt = gor.Now(d.binder)
 	next.Online = true
 	next.WorkshopID = workshopID
 	if err := d.shadow.Set(ctx, next); err != nil {
@@ -72,12 +70,12 @@ func (d *device) Report(ctx context.Context, workshopID string, state string) er
 	}
 
 	if previous.Online && previous.WorkshopID != workshopID {
-		if err := gor.Ref[Workshop](d.runtime, previous.WorkshopID).DeviceOffline(ctx, d.id.Key); err != nil {
+		if err := gor.Ref[Workshop](d.binder, previous.WorkshopID).DeviceOffline(ctx, d.id.Key); err != nil {
 			return err
 		}
 	}
 	if !previous.Online || previous.WorkshopID != workshopID {
-		if err := gor.Ref[Workshop](d.runtime, workshopID).DeviceOnline(ctx, d.id.Key); err != nil {
+		if err := gor.Ref[Workshop](d.binder, workshopID).DeviceOnline(ctx, d.id.Key); err != nil {
 			return err
 		}
 	}
@@ -94,13 +92,18 @@ func (d *device) Shadow(context.Context) (Shadow, error) {
 	return d.shadow.Get(), nil
 }
 
+func (d *device) OnDeactivate(context.Context) error {
+	log.Printf("%s deactivated", d.id.Key)
+	return nil
+}
+
 func (d *device) MarkOffline(ctx context.Context) error {
 	shadow := d.shadow.Get()
 	shadow.Online = false
 	if err := d.shadow.Set(ctx, shadow); err != nil {
 		return err
 	}
-	return gor.Ref[Workshop](d.runtime, shadow.WorkshopID).DeviceOffline(ctx, d.id.Key)
+	return gor.Ref[Workshop](d.binder, shadow.WorkshopID).DeviceOffline(ctx, d.id.Key)
 }
 
 type workshop struct {

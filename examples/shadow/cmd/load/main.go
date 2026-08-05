@@ -74,7 +74,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 		return fmt.Errorf("create runtime: %w", err)
 	}
 	defer rt.Close()
-	if err := shadow.Register(rt, sourceClock); err != nil {
+	if err := shadow.Register(rt); err != nil {
 		return fmt.Errorf("register shadow entities: %w", err)
 	}
 
@@ -95,7 +95,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 	if value.Configuration != "sample-rate=10s" {
 		return fmt.Errorf("device-000 configuration after eviction = %q, want %q", value.Configuration, "sample-rate=10s")
 	}
-	log.Printf("device-000 configuration after idle timeout: %s", value.Configuration)
+	log.Printf("device-000 was evicted and reloaded from store; configuration: %s", value.Configuration)
 	return nil
 }
 
