@@ -434,12 +434,23 @@ func testNodeConfig(table store.MemberStore, sourceClock clock.Clock, nodeAddr, 
 	return Config{
 		Table:             table,
 		Clock:             sourceClock,
+		Prober:            testProber{},
 		NodeAddr:          nodeAddr,
 		Generation:        generation,
 		HeartbeatInterval: testHeartbeat,
 		ViewInterval:      testView,
 		DeadAfter:         testDeadAfter,
+		ProbeInterval:     time.Hour,
+		ProbeTimeout:      time.Second,
 	}
+}
+
+type testProber struct{}
+
+func (testProber) Probe(_ context.Context, target MemberID) <-chan ProbeResult {
+	replies := make(chan ProbeResult, 1)
+	replies <- ProbeResult{ID: target}
+	return replies
 }
 
 func findTestMember(t *testing.T, backend store.MemberStore, nodeAddr, generation string) store.Member {

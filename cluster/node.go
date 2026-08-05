@@ -10,7 +10,10 @@ import (
 	"github.com/suraciii/gor/store"
 )
 
-var ErrNodeDead = errors.New("cluster node is dead")
+var (
+	ErrNodeDead       = errors.New("cluster node is dead")
+	ErrProberRequired = errors.New("cluster prober is required")
+)
 
 type State uint8
 
@@ -28,43 +31,57 @@ type MemberID struct {
 type Config struct {
 	Table             store.MemberStore
 	Clock             clock.Clock
+	Prober            Prober
 	NodeAddr          string
 	Generation        string
 	HeartbeatInterval time.Duration
 	ViewInterval      time.Duration
 	DeadAfter         time.Duration
+	ProbeInterval     time.Duration
+	ProbeTimeout      time.Duration
 }
 
 type Node struct {
 	table             store.MemberStore
 	clock             clock.Clock
+	prober            Prober
 	nodeAddr          string
 	generation        string
 	heartbeatInterval time.Duration
 	viewInterval      time.Duration
 	deadAfter         time.Duration
+	probeInterval     time.Duration
+	probeTimeout      time.Duration
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
-	views  chan View
-	state  atomic.Uint32
+	ctx           context.Context
+	cancel        context.CancelFunc
+	done          chan struct{}
+	views         chan View
+	state         atomic.Uint32
+	probeFailures map[MemberID]int
 }
 
 func New(config Config) (*Node, error) {
+	if config.Prober == nil {
+		return nil, ErrProberRequired
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	node := &Node{
 		table:             config.Table,
 		clock:             config.Clock,
+		prober:            config.Prober,
 		nodeAddr:          config.NodeAddr,
 		generation:        config.Generation,
 		heartbeatInterval: config.HeartbeatInterval,
 		viewInterval:      config.ViewInterval,
 		deadAfter:         config.DeadAfter,
+		probeInterval:     config.ProbeInterval,
+		probeTimeout:      config.ProbeTimeout,
 		ctx:               ctx,
 		cancel:            cancel,
 		done:              make(chan struct{}),
 		views:             make(chan View, 1),
+		probeFailures:     make(map[MemberID]int),
 	}
 	node.state.Store(uint32(StateJoining))
 
@@ -76,7 +93,8 @@ func New(config Config) (*Node, error) {
 	node.state.Store(uint32(StateActive))
 	view := NewView(members)
 	node.notify(view)
-	go node.run(self, view, node.clock.NewTicker(node.heartbeatInterval), node.clock.NewTicker(node.viewInterval))
+	probeTicker := node.clock.NewTicker(node.probeInterval)
+	go node.run(self, view, node.clock.NewTicker(node.heartbeatInterval), node.clock.NewTicker(node.viewInterval), probeTicker)
 	return node, nil
 }
 
@@ -150,11 +168,23 @@ func (n *Node) join() (store.Member, []store.Member, error) {
 	return self, members, nil
 }
 
-func (n *Node) run(self store.Member, view View, heartbeat, viewTicker clock.Ticker) {
+func (n *Node) run(self store.Member, view View, heartbeat, viewTicker, probeTicker clock.Ticker) {
 	defer heartbeat.Stop()
 	defer viewTicker.Stop()
+	defer probeTicker.Stop()
 	defer close(n.views)
 	defer close(n.done)
+
+	probeEvents := make(chan probeEvent, 2)
+	probeTasks := make(map[MemberID]probeTask)
+	probeTick := probeTicker.C()
+	var nextProbeToken uint64
+	selfID := MemberID{NodeAddr: self.NodeAddr, Generation: self.Generation}
+	defer func() {
+		for _, task := range probeTasks {
+			task.cancel()
+		}
+	}()
 
 	for {
 		select {
@@ -167,18 +197,49 @@ func (n *Node) run(self store.Member, view View, heartbeat, viewTicker clock.Tic
 			self = updated
 		case <-viewTicker.C():
 			updated, alive := n.pollView(self, view)
-			if !sameView(view, updated) {
-				view = updated
+			reconcileProbeState(probeTargets(updated.members, selfID), probeTasks, n.probeFailures)
+			changed := !sameView(view, updated)
+			view = updated
+			if changed {
 				n.notify(view)
 			}
 			if !alive {
 				return
 			}
+		case <-probeTick:
+			targets := probeTargets(view.members, selfID)
+			reconcileProbeState(targets, probeTasks, n.probeFailures)
+			for _, target := range targets {
+				if _, ok := probeTasks[target]; ok {
+					continue
+				}
+				nextProbeToken++
+				token := nextProbeToken
+				probeTasks[target] = probeTask{
+					cancel: n.startProbe(target, token, probeEvents),
+					token:  token,
+				}
+			}
+		case event := <-probeEvents:
+			recordProbeEvent(event, probeTasks, n.probeFailures)
 		case <-n.ctx.Done():
 			n.leave(self)
 			return
 		}
 	}
+}
+
+func (n *Node) startProbe(target MemberID, token uint64, events chan<- probeEvent) context.CancelFunc {
+	ctx, cancel := context.WithCancel(n.ctx)
+	go func() {
+		defer cancel()
+		result := waitForProbe(ctx, n.clock, n.prober, target, n.probeTimeout)
+		select {
+		case events <- probeEvent{target: target, token: token, result: result}:
+		case <-n.ctx.Done():
+		}
+	}()
+	return cancel
 }
 
 func (n *Node) heartbeat(self store.Member) (store.Member, View, bool) {
