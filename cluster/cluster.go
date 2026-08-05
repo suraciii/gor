@@ -1,3 +1,9 @@
+// Package cluster implements gor's membership, failure detection, and
+// ownership view for clustered runtimes.
+//
+// It is an implementation package, not an application dependency. Configure
+// clustering through gor.New and its cluster options, and use the root gor
+// package for entity access.
 package cluster
 
 import (

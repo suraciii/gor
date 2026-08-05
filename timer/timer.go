@@ -1,3 +1,9 @@
+// Package timer polls persisted schedules and delivers due entity calls for
+// gor.
+//
+// It is an implementation package, not an application dependency. Create and
+// manage schedules through the root gor package's Schedule APIs instead of
+// importing timer directly.
 package timer
 
 import (
