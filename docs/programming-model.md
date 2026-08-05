@@ -82,8 +82,23 @@ gor.Register[Account](rt, func(b *gor.Binder) Account {
 
 ## 实体读时间
 
+`Binder` 只在激活时交给工厂一次。方法体里要用到它，就在工厂里把它留下来：
+
 ```go
-next.ReportedAt = gor.Now(b)
+type device struct {
+    b       *gor.Binder
+    reading gor.State[reading]
+}
+
+gor.Register[Device](rt, func(b *gor.Binder) Device {
+    return &device{b: b, reading: gor.NewState[reading](b, "reading")}
+})
+
+func (d *device) Report(ctx context.Context, value float64) error {
+    next := d.reading.Get()
+    next.ReportedAt = gor.Now(d.b)
+    ...
+}
 ```
 
 不要用 `time.Now()`。实体读到的时间必须来自运行时——测试要控制它，模拟测试里每个节点的时钟还可以带不同的偏移。这跟库自己的规矩是同一条。
@@ -93,7 +108,7 @@ next.ReportedAt = gor.Now(b)
 跟从外面调是同一个函数，换一个第一参数：
 
 ```go
-gor.Ref[Workshop](b, workshopID).DeviceOnline(ctx, deviceID)
+gor.Ref[Workshop](d.b, workshopID).DeviceOnline(ctx, deviceID)
 ```
 
 外面拿运行时，里面拿 `Binder`。**实体不需要为了调别人去捕获运行时对象**——工厂的签名就是 `func(b *gor.Binder) T`，那一个参数够用。
