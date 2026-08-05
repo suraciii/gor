@@ -132,8 +132,9 @@
 不属于上述任何一步，但公开发布前必须完成：
 
 - 文档英文化。**放在最后**——文档还在改，早翻一遍等于翻两遍。
-- 公开 API doc comment。第 6c 步完成、公开 API 定型为发布候选后补齐；`v0.1.0` 前必须符合 [design/api-documentation.md](design/api-documentation.md)。
-- 错误与取消契约。`v0.1.0` 前必须实现 [docs/errors.md](docs/errors.md) 的稳定错误码和跨节点取消边界；否则调用者无法按位置写出可靠的错误处理。
+- ~~公开 API doc comment。第 6c 步完成、公开 API 定型为发布候选后补齐；`v0.1.0` 前必须符合 [design/api-documentation.md](design/api-documentation.md)。~~ **已完成**。
+- 错误与取消契约。规格已完成，见 [docs/errors.md](docs/errors.md) 和 [design/errors.md](design/errors.md)；实装尚未合并，仍在另一条分支进行中。`v0.1.0` 前必须实现稳定错误码和跨节点取消边界。
+- 根运行时关闭契约。规格已完成，见 [design/runtime.md](design/runtime.md)、[design/cluster.md](design/cluster.md) 和 [docs/programming-model.md](docs/programming-model.md)；实装尚未开始。`v0.1.0` 前必须停止关闭窗口内对新调用的接纳。
 - ~~一个真实的示例应用，并在第 5.5 步后用新签名复跑~~ **已完成**，见 [examples/shadow/](examples/shadow/)，设计见 [docs/example.md](docs/example.md)。它的产出是 [FINDINGS.md](FINDINGS.md)——九条 API 摩擦；前六条分别进入第 5.5 步、README 的非目标或文档补充，后三条记录了当前仍存在的使用摩擦。
 - ~~性能基线数字与跨节点转发基线~~ **已完成**，数字见 [benchmarks.md](benchmarks.md)，跑法是 `make bench`。测什么、不测什么、条件怎么写见 [design/benchmarks.md](design/benchmarks.md)。
 - ~~可观测性~~ **已完成**，见 [design/observability.md](design/observability.md)：运行时提供本节点激活快照和每次调用的完成事件；不做聚合、导出或告警。
