@@ -662,7 +662,7 @@ func (rt *Runtime) Kill() {
 
 // Activations returns a sorted snapshot of this runtime's active entities.
 func (rt *Runtime) Activations() []Activation {
-    return rt.engine.Activations()
+	return rt.engine.Activations()
 }
 
 // Done returns a channel that is closed when shutdown begins and the runtime
