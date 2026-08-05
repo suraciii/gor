@@ -21,6 +21,7 @@
 - [codegen.md](codegen.md) —— 从 Go interface 生成类型化代理。
 - [testing.md](testing.md) —— 单元测试与确定性模拟测试。
 - [simulation.md](simulation.md) —— 模拟测试骨架：种子、故障注入、崩溃、事件日志。
+- [observability.md](observability.md) —— 最小运行时观测事实与性能边界。
 
 ## 决策记录
 
