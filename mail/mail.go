@@ -1,3 +1,7 @@
+// Package mail provides the per-entity mailboxes gor uses to serialize calls.
+//
+// It is an implementation package, not an application dependency. Invoke
+// entities through the root gor package instead of importing mail directly.
 package mail
 
 import (

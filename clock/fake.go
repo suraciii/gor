@@ -5,12 +5,19 @@ import (
 	"time"
 )
 
+// Fake is a deterministic Clock for tests.
+//
+// Create it with NewFake; its zero value is not ready for use. Advance moves
+// the clock and notifies each active ticker. A ticker retains at most one
+// unread notification, so advancing across several intervals does not queue
+// one notification for every missed interval.
 type Fake struct {
 	mu      sync.Mutex
 	now     time.Time
 	tickers map[*fakeTicker]struct{}
 }
 
+// NewFake returns a Fake whose current time is now.
 func NewFake(now time.Time) *Fake {
 	return &Fake{
 		now:     now,
@@ -20,12 +27,15 @@ func NewFake(now time.Time) *Fake {
 
 var _ Clock = (*Fake)(nil)
 
+// Now returns the fake clock's current time.
 func (f *Fake) Now() time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.now
 }
 
+// NewTicker returns a ticker driven by Advance. It panics when interval is
+// not positive.
 func (f *Fake) NewTicker(interval time.Duration) Ticker {
 	if interval <= 0 {
 		panic("clock: non-positive fake ticker interval")
@@ -43,6 +53,11 @@ func (f *Fake) NewTicker(interval time.Duration) Ticker {
 	return ticker
 }
 
+// Advance moves the fake clock by d. A negative d moves the clock backward and
+// produces no new tick. When a positive advance crosses multiple deadlines for
+// a ticker, Advance attempts to deliver only the latest crossed deadline; the
+// earlier deadlines are discarded. If the ticker already has an unread tick,
+// the new tick is discarded as well.
 func (f *Fake) Advance(d time.Duration) {
 	f.mu.Lock()
 	f.now = f.now.Add(d)

@@ -7,12 +7,37 @@ import (
 	"sync"
 )
 
+// Handler processes one incoming request payload.
+//
+// The context is canceled when the serving transport or the request's
+// connection is closed. How a returned error crosses the transport is defined
+// by the transport implementation: TCP sends it as text, so the peer receives
+// a new error with the same message and errors.Is and errors.As do not preserve
+// the handler's original error. Handlers should stop promptly after ctx is
+// canceled because Close waits for active handlers to return.
 type Handler func(context.Context, []byte) ([]byte, error)
 
+// Transport moves opaque request payloads to an address and serves incoming
+// requests.
+//
+// Implementations must honor Send contexts, support concurrent calls, invoke
+// handlers with cancelable contexts, and ensure Close stops serving and waits
+// for active handlers and transport resources to finish. Handlers may be
+// invoked concurrently for different requests and must be safe for that use.
+// A canceled Send does not prove that the peer did not execute the request.
+// Send error representation is transport-specific. MaxPayloadSize limits
+// Frame-based wire protocols; a custom Transport implementation is not
+// required to enforce it.
 type Transport interface {
+	// Send sends payload to addr and returns the peer's response payload.
 	Send(context.Context, string, []byte) ([]byte, error)
+	// Serve accepts requests until ctx is canceled, Close is called, or the
+	// serving transport encounters an unrecoverable error. It may invoke handler
+	// concurrently for different requests.
 	Serve(context.Context, Handler) error
+	// Addr returns the address on which the transport is bound.
 	Addr() string
+	// Close stops the transport and waits for its active work to finish.
 	Close() error
 }
 
@@ -21,6 +46,11 @@ var (
 	errServeAlreadyRunning = errors.New("transport serve already running")
 )
 
+// TCP is a TCP implementation of Transport.
+//
+// It binds its listening address when created, dials destinations lazily on
+// the first Send, and reuses one outgoing connection per destination until
+// that connection fails.
 type TCP struct {
 	listener net.Listener
 	addr     string
@@ -34,6 +64,10 @@ type TCP struct {
 	connections  map[*connection]struct{}
 }
 
+// New binds a TCP transport to addr and returns it ready for Serve or Send.
+// Use a port of zero to let the operating system choose one, then obtain the
+// selected address from Addr. New returns an error if binding or initialization
+// fails.
 func New(addr string) (*TCP, error) {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -51,10 +85,17 @@ func New(addr string) (*TCP, error) {
 	}, nil
 }
 
+// Addr returns the address selected when the TCP transport was created.
 func (t *TCP) Addr() string {
 	return t.addr
 }
 
+// Send sends payload to addr, dialing lazily and reusing an existing
+// connection to that address. It honors ctx while dialing and waiting for the
+// response. If ctx is canceled, the peer may still have processed the request.
+// A handler error received from the peer is reconstructed from its text, so
+// errors.Is and errors.As do not match the original remote error.
+// Payloads larger than MaxPayloadSize fail before a request frame is written.
 func (t *TCP) Send(ctx context.Context, addr string, payload []byte) ([]byte, error) {
 	conn, err := t.connectionFor(ctx, addr)
 	if err != nil {
@@ -63,6 +104,10 @@ func (t *TCP) Send(ctx context.Context, addr string, payload []byte) ([]byte, er
 	return conn.Send(ctx, payload)
 }
 
+// Serve accepts incoming TCP requests and invokes handler for each request.
+// Handlers may run concurrently. Serve returns ctx.Err when ctx is canceled,
+// returns nil when Close stops the listener, and returns an error for another
+// serving failure. Only one Serve call may be active at a time.
 func (t *TCP) Serve(ctx context.Context, handler Handler) error {
 	t.mu.Lock()
 	if t.closed {
@@ -109,6 +154,8 @@ func (t *TCP) Serve(ctx context.Context, handler Handler) error {
 	}
 }
 
+// Close stops accepting connections, cancels active handlers, and waits for
+// handlers and connection loops to finish. It is safe to call more than once.
 func (t *TCP) Close() error {
 	t.mu.Lock()
 	if t.closed {

@@ -8,6 +8,8 @@ import (
 
 var _ ScheduleStore = (*SQLite)(nil)
 
+// ListDue returns due schedules in deterministic DueAt, identity, and name
+// order.
 func (s *SQLite) ListDue(ctx context.Context, now time.Time) ([]Schedule, error) {
 	rows, err := s.readDB.QueryContext(ctx, `
 SELECT entity_type, entity_key, name, method, due_at, interval, etag
@@ -48,6 +50,9 @@ ORDER BY due_at, entity_type, entity_key, name`, timeValue(now))
 	return result, nil
 }
 
+// Claim atomically checks schedule's identity, name, and ETag. It returns true
+// and advances the row when nextDueAt is non-zero, or deletes the row when
+// nextDueAt is zero. It returns false and nil when the row is absent or stale.
 func (s *SQLite) Claim(ctx context.Context, schedule Schedule, nextDueAt time.Time) (bool, error) {
 	var (
 		result sql.Result
@@ -84,6 +89,7 @@ WHERE entity_type = ? AND entity_key = ? AND name = ? AND etag = ?`,
 	return rows == 1, nil
 }
 
+// Put unconditionally inserts or replaces a schedule and assigns a new ETag.
 func (s *SQLite) Put(ctx context.Context, schedule Schedule) error {
 	_, err := s.writeDB.ExecContext(ctx, `
 INSERT INTO schedule (entity_type, entity_key, name, method, due_at, interval, etag)
@@ -103,6 +109,7 @@ ON CONFLICT (entity_type, entity_key, name) DO UPDATE SET
 	return err
 }
 
+// Delete unconditionally removes the schedule identified by id and name.
 func (s *SQLite) Delete(ctx context.Context, id Identity, name string) error {
 	_, err := s.writeDB.ExecContext(ctx, `
 DELETE FROM schedule

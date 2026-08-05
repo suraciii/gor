@@ -1,3 +1,16 @@
+// Command gorgen generates Go support code for gor entity interfaces.
+//
+// It loads the package named by -pkg, reads interfaces marked with
+// //gor:entity, and writes generated proxies, dispatch functions, and an
+// Install function to generated.go. Run it with, for example:
+//
+//	go run github.com/suraciii/gor/cmd/gorgen -pkg ./domain
+//
+// Without -out, gorgen writes to the package's internal/gorgen directory. Use
+// -out to select another output directory. Import the generated package,
+// call its Install function after creating a gor.Runtime and before using the
+// generated entity references, then register and invoke those entities through
+// the root gor package.
 package main
 
 import (

@@ -7,23 +7,34 @@ import (
 	"time"
 )
 
+// MemberStatus is the lifecycle state of a cluster member.
 type MemberStatus string
 
+// MemberJoining, MemberActive, and MemberDead are the supported membership
+// states.
 const (
 	MemberJoining MemberStatus = "joining"
 	MemberActive  MemberStatus = "active"
 	MemberDead    MemberStatus = "dead"
 )
 
+// MemberID identifies one member incarnation. A new Generation distinguishes
+// a later incarnation that reuses the same NodeAddr.
 type MemberID struct {
 	NodeAddr   string `json:"node_addr"`
 	Generation string `json:"generation"`
 }
 
+// SuspectVote records when a member's suspicion of another member expires.
 type SuspectVote struct {
 	ExpiresAt time.Time
 }
 
+// Member is one row in the cluster membership table.
+//
+// NodeAddr and Generation form the row identity. ETag must be the version
+// returned by the latest successful write or list operation when updating an
+// existing row; zero requests creation of a row that does not exist.
 type Member struct {
 	NodeAddr     string
 	Generation   string
@@ -33,13 +44,24 @@ type Member struct {
 	ETag         ETag
 }
 
+// MemberSnapshot is a complete membership-table view and the table's current
+// time from the configured member clock.
 type MemberSnapshot struct {
 	Members  []Member
 	TableNow time.Time
 }
 
+// MemberStore persists cluster membership rows.
+//
+// Implementations must support concurrent calls and the same atomic ETag
+// compare-and-swap rule as Store. WriteMember must return an error matching
+// ErrConflict when the supplied row ETag is stale, and ListMembers must return
+// independent snapshot data rather than mutable storage-owned maps.
 type MemberStore interface {
+	// WriteMember creates or replaces one member row using member.ETag as the
+	// expected version and returns the new ETag.
 	WriteMember(context.Context, Member) (ETag, error)
+	// ListMembers returns all member rows and the backend's current table time.
 	ListMembers(context.Context) (MemberSnapshot, error)
 }
 
@@ -116,6 +138,9 @@ func sortMembers(members []Member) {
 	})
 }
 
+// WriteMember atomically creates or replaces a member row using its ETag.
+// It returns the new ETag, or an error matching ErrConflict when the expected
+// version does not match.
 func (m *Memory) WriteMember(ctx context.Context, member Member) (ETag, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -134,6 +159,8 @@ func (m *Memory) WriteMember(ctx context.Context, member Member) (ETag, error) {
 	return member.ETag, nil
 }
 
+// ListMembers returns a copy of every member, sorted by address and
+// generation, together with the current time from the configured clock.
 func (m *Memory) ListMembers(ctx context.Context) (MemberSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return MemberSnapshot{}, err

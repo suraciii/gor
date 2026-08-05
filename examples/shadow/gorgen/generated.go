@@ -173,6 +173,10 @@ func newWorkshopProxy(rt gor.Invoker, id gor.Identity) domain.Workshop {
 	return &workshopProxy{id: id, rt: rt}
 }
 
+// Install installs the generated entity bindings in rt.
+// Call it once after creating rt and before registering or referencing any of
+// the generated entity types. After it returns nil, gor.Register and gor.Ref
+// can use those types with rt.
 func Install(rt *gor.Runtime) error {
 	if err := gor.InstallType[domain.Device](rt, dispatchDevice, newDeviceProxy, newDeviceCall); err != nil {
 		return err

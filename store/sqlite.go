@@ -12,6 +12,11 @@ import (
 
 const sqliteBusyTimeout = 5000
 
+// SQLite is a SQLite-backed implementation of Store, MemberStore, and
+// ScheduleStore.
+//
+// Call Close when the backend is no longer needed; it releases the database
+// handles opened during construction.
 type SQLite struct {
 	readDB      *sql.DB
 	writeDB     *sql.DB
@@ -21,10 +26,16 @@ type SQLite struct {
 var _ Store = (*SQLite)(nil)
 var _ MemberStore = (*SQLite)(nil)
 
+// OpenSQLite opens or creates the SQLite database at path using a real clock
+// for membership snapshots. It returns an error if the database cannot be
+// opened or initialized.
 func OpenSQLite(path string) (*SQLite, error) {
 	return openSQLite(path, clock.Real{})
 }
 
+// OpenSQLiteWithClock opens or creates the SQLite database at path and uses
+// memberClock for MemberSnapshot.TableNow. The clock must be safe for
+// concurrent calls.
 func OpenSQLiteWithClock(path string, memberClock clock.Clock) (*SQLite, error) {
 	return openSQLite(path, memberClock)
 }
@@ -61,6 +72,8 @@ func openSQLite(path string, memberClock clock.Clock) (*SQLite, error) {
 	return &SQLite{readDB: readDB, writeDB: writeDB, memberClock: memberClock}, nil
 }
 
+// Read returns a copy of the stored record for id, or a zero Record and nil
+// when id has not been written.
 func (s *SQLite) Read(ctx context.Context, id Identity) (Record, error) {
 	var record Record
 	var etag int64
@@ -80,6 +93,9 @@ func (s *SQLite) Read(ctx context.Context, id Identity) (Record, error) {
 	return record, nil
 }
 
+// Write atomically replaces id's data when expect matches its current ETag.
+// It returns the incremented ETag, or an error matching ErrConflict when the
+// comparison fails.
 func (s *SQLite) Write(ctx context.Context, id Identity, data []byte, expect ETag) (ETag, error) {
 	var (
 		result sql.Result
@@ -114,6 +130,8 @@ func (s *SQLite) Write(ctx context.Context, id Identity, data []byte, expect ETa
 	return expect + 1, nil
 }
 
+// Close releases the SQLite database handles. It waits for database operations
+// already accepted by the handles and returns any close error.
 func (s *SQLite) Close() error {
 	return errors.Join(s.readDB.Close(), s.writeDB.Close())
 }

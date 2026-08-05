@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+// Schedule describes one persisted invocation deadline.
+//
+// Identity and Name identify the row. DueAt is inclusive when queried by
+// ListDue. Interval is retained for the scheduler, and ETag is the version
+// used by Claim.
 type Schedule struct {
 	Identity Identity
 	Name     string
@@ -15,10 +20,26 @@ type Schedule struct {
 	ETag     ETag
 }
 
+// ScheduleStore persists schedules and atomically claims due rows.
+//
+// Implementations must support concurrent calls. Claim must compare the row's
+// identity, name, and ETag atomically so concurrent claimers using one
+// snapshot produce at most one winner. Put and Delete are unconditional
+// changes by design.
 type ScheduleStore interface {
+	// ListDue returns every schedule whose DueAt is no later than now.
 	ListDue(context.Context, time.Time) ([]Schedule, error)
+	// Claim compares the schedule's identity, name, and ETag atomically. When
+	// they match, a non-zero nextDueAt replaces DueAt and increments the stored
+	// ETag; a zero nextDueAt deletes the schedule. It returns true only when the
+	// update or deletion succeeds, and returns false with a nil error when the
+	// row is absent or its ETag is stale.
 	Claim(context.Context, Schedule, time.Time) (bool, error)
+	// Put inserts or replaces a schedule without an ETag precondition. A new
+	// row receives ETag 1; replacing an existing row increments its current
+	// ETag. The input ETag is ignored.
 	Put(context.Context, Schedule) error
+	// Delete unconditionally removes the named schedule, if it exists.
 	Delete(context.Context, Identity, string) error
 }
 
@@ -46,6 +67,8 @@ func sortSchedules(schedules []Schedule) {
 	})
 }
 
+// ListDue returns due schedules in deterministic DueAt, identity, and name
+// order.
 func (m *Memory) ListDue(ctx context.Context, now time.Time) ([]Schedule, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -63,6 +86,9 @@ func (m *Memory) ListDue(ctx context.Context, now time.Time) ([]Schedule, error)
 	return result, nil
 }
 
+// Claim atomically checks schedule's identity, name, and ETag. It returns true
+// and advances the row when nextDueAt is non-zero, or deletes the row when
+// nextDueAt is zero. It returns false and nil when the row is absent or stale.
 func (m *Memory) Claim(ctx context.Context, schedule Schedule, nextDueAt time.Time) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -85,6 +111,7 @@ func (m *Memory) Claim(ctx context.Context, schedule Schedule, nextDueAt time.Ti
 	return true, nil
 }
 
+// Put unconditionally inserts or replaces a schedule and assigns a new ETag.
 func (m *Memory) Put(ctx context.Context, schedule Schedule) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -102,6 +129,7 @@ func (m *Memory) Put(ctx context.Context, schedule Schedule) error {
 	return nil
 }
 
+// Delete unconditionally removes the schedule identified by id and name.
 func (m *Memory) Delete(ctx context.Context, id Identity, name string) error {
 	if err := ctx.Err(); err != nil {
 		return err

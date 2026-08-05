@@ -1,3 +1,8 @@
+// Package runtime is gor's local actor engine: it manages entity activation,
+// lifecycle, mailboxes, and dispatch within one process.
+//
+// Application code should use the root package's gor.New, gor.Register,
+// gor.Ref, and *gor.Runtime APIs instead of importing runtime directly.
 package runtime
 
 import (
