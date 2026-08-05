@@ -24,6 +24,7 @@
 - [simulation.md](simulation.md) —— 模拟测试骨架：种子、故障注入、崩溃、事件日志。
 - [observability.md](observability.md) —— 最小运行时观测事实与性能边界。
 - [benchmarks.md](benchmarks.md) —— 性能基线测什么、不测什么，以及可比较数字必须附带的测量条件。
+- [release.md](release.md) —— 版本号、发布门槛、手工发布清单与 release-note 块的处置。
 
 ## 决策记录
 
