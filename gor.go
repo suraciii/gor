@@ -123,6 +123,9 @@ func New(options ...Option) (*Runtime, error) {
 	for _, option := range options {
 		option(&config)
 	}
+	if config.MemberStore != nil && config.Transport == nil {
+		return nil, errors.New("member store requires transport")
+	}
 	if config.ScheduleStore == nil {
 		if schedules, ok := config.Store.(store.ScheduleStore); ok {
 			config.ScheduleStore = schedules
@@ -323,9 +326,6 @@ func (rt *Runtime) invoke(ctx context.Context, id Identity, method string, args 
 		return WrongOwnerError{Owner: owner}
 	}
 	if owner != rt.nodeAddr {
-		if rt.transport == nil {
-			return WrongOwnerError{Owner: owner}
-		}
 		return rt.forward(ctx, owner, id, method, args, reply)
 	}
 	return rt.Runtime.Invoke(ctx, id, method, args, reply)

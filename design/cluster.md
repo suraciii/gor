@@ -20,6 +20,8 @@ member(node_addr, generation, status, iam_alive_at, suspect_votes, etag)
 
 这是第 6c 步之后的形态。`suspect_votes` 只在探测与投票启用后写。
 
+集群节点必须同时配置成员表和传输；只配置其中一个是无效配置。成员表提供共享成员视图，传输提供对其他成员的调用与直接探测，缺少任一项的节点不加入集群。
+
 主键是 (node_addr, generation)。**generation 是节点每次启动新取的一个值**，同一个地址重启后是新的一行。没有它，重启的节点会认领自己上一条命的那一行，而别人可能还在给那一行投死亡票。
 
 ### 表的接口

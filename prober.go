@@ -3,14 +3,11 @@ package gor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/suraciii/gor/cluster"
 	"github.com/suraciii/gor/transport"
 )
-
-var ErrTransportNotConfigured = errors.New("gor transport is not configured")
 
 type probeResponseError struct {
 	message string
@@ -34,11 +31,6 @@ func (p transportProber) Probe(ctx context.Context, target cluster.MemberID) <-c
 	results := make(chan cluster.ProbeResult, 1)
 	go func() {
 		defer close(results)
-
-		if p.transport == nil {
-			results <- cluster.ProbeResult{Err: ErrTransportNotConfigured}
-			return
-		}
 
 		payload, err := json.Marshal(probeRequest{Kind: requestKindProbe})
 		if err != nil {

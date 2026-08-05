@@ -77,6 +77,21 @@ func TestTransportProberReturnsMismatchedMemberIDAsProbeResult(t *testing.T) {
 	}
 }
 
+func TestTransportProberRejectsMalformedMemberIDReply(t *testing.T) {
+	result := <-(&transportProber{transport: &probeTransport{
+		response: []byte(`{"reply":"not-a-member-id","error":""}`),
+	}}).Probe(context.Background(), cluster.MemberID{NodeAddr: "node-b", Generation: "generation-b"})
+	if result.Err == nil {
+		t.Fatal("malformed probe reply returned nil error")
+	}
+	if !strings.Contains(result.Err.Error(), "decode probe reply") {
+		t.Fatalf("malformed probe reply error = %v, want decode probe reply error", result.Err)
+	}
+	if result.ID != (cluster.MemberID{}) {
+		t.Fatalf("malformed probe reply ID = %#v, want zero ID with an error", result.ID)
+	}
+}
+
 func mustJSON(t *testing.T, value any) json.RawMessage {
 	t.Helper()
 	encoded, err := json.Marshal(value)
@@ -111,7 +126,8 @@ func TestRuntime_HandleProbeReturnsCurrentMemberIDWithoutTableAccess(t *testing.
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(1500, 0).UTC()
 		table := &probeMemberStore{backend: store.NewMemory()}
-		rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), table, clock.NewFake(start), "node-a", "generation-new")...)
+		network := newTestTransportNetwork()
+		rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), table, clock.NewFake(start), "node-a", "generation-new", network.add("node-a"))...)
 		defer rt.Close()
 		operations := table.operations
 
@@ -175,7 +191,8 @@ func TestRuntime_HandleProbeRejectsStoppedNode(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(1600, 0).UTC()
 		members := store.NewMemory()
-		rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, clock.NewFake(start), "node-a", "generation-a")...)
+		network := newTestTransportNetwork()
+		rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, clock.NewFake(start), "node-a", "generation-a", network.add("node-a"))...)
 		rt.Close()
 
 		payload, err := rt.handle(context.Background(), []byte(`{"kind":"probe"}`))

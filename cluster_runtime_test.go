@@ -14,6 +14,7 @@ import (
 	"github.com/suraciii/gor/cluster"
 	runtimepkg "github.com/suraciii/gor/runtime"
 	"github.com/suraciii/gor/store"
+	"github.com/suraciii/gor/transport"
 )
 
 func TestNew_ClusterJoinErrorIsReturned(t *testing.T) {
@@ -23,14 +24,22 @@ func TestNew_ClusterJoinErrorIsReturned(t *testing.T) {
 	}
 }
 
-func TestRuntime_ClusterRejectsInvocationForAnotherOwner(t *testing.T) {
+func TestNew_ClusterRequiresTransport(t *testing.T) {
+	_, err := New(WithMemberStore(store.NewMemory()))
+	if err == nil {
+		t.Fatal("New returned nil error for a cluster without transport")
+	}
+}
+
+func TestRuntime_ClusterForwardsInvocationToAnotherOwner(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(600, 0).UTC()
 		fakeClock := clock.NewFake(start)
 		members := store.NewMemory()
 		backend := store.NewMemory()
-		first := mustNew(t, clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a")...)
-		second := mustNew(t, clusterRuntimeOptions(backend, members, fakeClock, "node-b", "generation-b")...)
+		network := newTestTransportNetwork()
+		first := mustNew(t, clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a", network.add("node-a"))...)
+		second := mustNew(t, clusterRuntimeOptions(backend, members, fakeClock, "node-b", "generation-b", network.add("node-b"))...)
 		registerAccount(t, first)
 		registerAccount(t, second)
 		synctest.Wait()
@@ -39,30 +48,21 @@ func TestRuntime_ClusterRejectsInvocationForAnotherOwner(t *testing.T) {
 		synctest.Wait()
 
 		var target Identity
-		var owner string
 		for index := 0; index < 4096; index++ {
 			candidate := Identity{Type: TypeName[Account](), Key: strconv.Itoa(index)}
-			err := first.Invoke(context.Background(), candidate, "Balance", &accountBalanceRequest{}, &accountBalanceReply{})
-			var wrongOwner WrongOwnerError
-			if errors.As(err, &wrongOwner) {
+			owner, ok := cluster.Owner(*first.clusterView.Load(), store.Identity(candidate))
+			if ok && owner == "node-b" {
 				target = candidate
-				owner = wrongOwner.Owner
 				break
-			}
-			if err != nil {
-				t.Fatalf("local candidate %v error = %v", candidate, err)
 			}
 		}
 		if target == (Identity{}) {
 			t.Fatal("no identity was routed to the other owner")
 		}
-		if owner != "node-b" {
-			t.Fatalf("wrong owner = %q, want node-b", owner)
-		}
 
 		var balance accountBalanceReply
-		if err := second.Invoke(context.Background(), target, "Balance", &accountBalanceRequest{}, &balance); err != nil {
-			t.Fatalf("owner invocation error = %v", err)
+		if err := first.Invoke(context.Background(), target, "Balance", &accountBalanceRequest{}, &balance); err != nil {
+			t.Fatalf("forwarded invocation error = %v", err)
 		}
 		first.Close()
 		second.Close()
@@ -75,7 +75,8 @@ func TestRuntime_ClusterDeactivatesMovedActivation(t *testing.T) {
 		fakeClock := clock.NewFake(start)
 		members := store.NewMemory()
 		backend := store.NewMemory()
-		first := mustNew(t, clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a")...)
+		network := newTestTransportNetwork()
+		first := mustNew(t, clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a", network.add("node-a"))...)
 		registerFactoryCalls := atomic.Int32{}
 		installAccount(t, first)
 		if err := Register[Account](first, func(b *Binder) Account {
@@ -123,7 +124,7 @@ func TestRuntime_ClusterDeactivatesMovedActivation(t *testing.T) {
 			t.Fatalf("factory calls after initial invocation = %d, want 1", got)
 		}
 
-		second := mustNew(t, clusterRuntimeOptions(backend, members, fakeClock, "node-b", "generation-b")...)
+		second := mustNew(t, clusterRuntimeOptions(backend, members, fakeClock, "node-b", "generation-b", network.add("node-b"))...)
 		registerAccount(t, second)
 		synctest.Wait()
 		fakeClock.Advance(time.Second)
@@ -146,7 +147,8 @@ func TestRuntime_ClusterKillLeavesMemberForFailureDetection(t *testing.T) {
 		start := time.Unix(800, 0).UTC()
 		fakeClock := clock.NewFake(start)
 		members := store.NewMemory()
-		rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a")...)
+		network := newTestTransportNetwork()
+		rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a", network.add("node-a"))...)
 		rt.Kill()
 
 		member := findClusterMember(t, members, "node-a", "generation-a")
@@ -168,7 +170,8 @@ func TestRuntime_DoneClosesForCloseAndKill(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				fakeClock := clock.NewFake(time.Unix(900, 0).UTC())
 				members := store.NewMemory()
-				rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a")...)
+				network := newTestTransportNetwork()
+				rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a", network.add("node-a"))...)
 				test.stop(rt)
 
 				select {
@@ -187,11 +190,13 @@ func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
 		fakeClock := clock.NewFake(start)
 		members := store.NewMemory()
 		backend := store.NewMemory()
+		network := newTestTransportNetwork()
 		firstOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a")
 		firstOptions = append(firstOptions,
 			WithHeartbeatInterval(time.Second),
 			WithViewInterval(time.Hour),
 			WithDeadAfter(time.Hour),
+			WithTransport(network.add("node-a")),
 		)
 		first := mustNew(t, firstOptions...)
 		registerAccount(t, first)
@@ -200,6 +205,7 @@ func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
 			WithHeartbeatInterval(time.Hour),
 			WithViewInterval(time.Hour),
 			WithDeadAfter(time.Hour),
+			WithTransport(network.add("node-b")),
 		)
 		second := mustNew(t, secondOptions...)
 
@@ -223,9 +229,8 @@ func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
 		if identities := first.Runtime.Identities(); len(identities) != 0 {
 			t.Fatalf("identities after cluster death = %#v, want empty", identities)
 		}
-		var wrongOwner WrongOwnerError
-		if err := first.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); !errors.As(err, &wrongOwner) || wrongOwner.Owner != "node-b" {
-			t.Fatalf("invocation after cluster death error = %v, want owner node-b", err)
+		if err := first.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); err == nil {
+			t.Fatal("invocation after cluster death unexpectedly succeeded")
 		}
 		if err := first.Runtime.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); !errors.Is(err, runtimepkg.ErrRuntimeClosed) {
 			t.Fatalf("direct runtime invocation after cluster death error = %v, want %v", err, runtimepkg.ErrRuntimeClosed)
@@ -241,8 +246,9 @@ func TestRuntime_HandleRejectsAfterClusterDeath(t *testing.T) {
 		start := time.Unix(1100, 0).UTC()
 		fakeClock := clock.NewFake(start)
 		members := store.NewMemory()
-		first := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a")...)
-		second := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-b", "generation-b")...)
+		network := newTestTransportNetwork()
+		first := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a", network.add("node-a"))...)
+		second := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-b", "generation-b", network.add("node-b"))...)
 		registerAccount(t, first)
 
 		self := findClusterMember(t, members, "node-a", "generation-a")
@@ -279,8 +285,8 @@ func TestRuntime_HandleRejectsAfterClusterDeath(t *testing.T) {
 	})
 }
 
-func clusterRuntimeOptions(backend store.Store, members store.MemberStore, sourceClock clock.Clock, nodeAddr, generation string) []Option {
-	return []Option{
+func clusterRuntimeOptions(backend store.Store, members store.MemberStore, sourceClock clock.Clock, nodeAddr, generation string, endpoints ...transport.Transport) []Option {
+	options := []Option{
 		WithStore(backend),
 		WithMemberStore(members),
 		WithNodeAddr(nodeAddr),
@@ -292,6 +298,10 @@ func clusterRuntimeOptions(backend store.Store, members store.MemberStore, sourc
 		WithIdleTimeout(0),
 		WithEvictionInterval(0),
 	}
+	if len(endpoints) > 0 {
+		options = append(options, WithTransport(endpoints[0]))
+	}
+	return options
 }
 
 func findClusterMember(t *testing.T, backend store.MemberStore, nodeAddr, generation string) store.Member {
