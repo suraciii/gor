@@ -20,6 +20,14 @@ import (
 var ErrTypeNotInstalled = errors.New("entity type is not installed; call InstallType or run the generated Install")
 
 type Identity = runtimepkg.Identity
+type Activation = runtimepkg.Activation
+
+type CallObservation struct {
+	EntityType string
+	Method     string
+	Duration   time.Duration
+	Err        error
+}
 
 type Scope interface {
 	scopeRuntime() *Runtime
@@ -39,6 +47,7 @@ type Runtime struct {
 	scheduleStore    store.ScheduleStore
 	clock            clock.Clock
 	onError          func(Identity, string, error)
+	onCall           func(CallObservation)
 	poller           *timer.Poller
 	transport        transport.Transport
 	transportDone    chan struct{}
@@ -62,6 +71,7 @@ type Config struct {
 	ScheduleInterval  time.Duration
 	Transport         transport.Transport
 	OnError           func(Identity, string, error)
+	OnCall            func(CallObservation)
 	MemberStore       store.MemberStore
 	NodeAddr          string
 	Generation        string
@@ -140,6 +150,7 @@ func New(options ...Option) (*Runtime, error) {
 		scheduleStore: config.ScheduleStore,
 		clock:         config.Clock,
 		onError:       config.OnError,
+		onCall:        config.OnCall,
 		transport:     config.Transport,
 		done:          make(chan struct{}),
 		types:         make(map[string]typeRegistration),
@@ -218,6 +229,12 @@ func OnError(f func(id Identity, method string, err error)) Option {
 	}
 }
 
+func OnCall(f func(CallObservation)) Option {
+	return func(config *Config) {
+		config.OnCall = f
+	}
+}
+
 func WithMemberStore(value store.MemberStore) Option {
 	return func(config *Config) {
 		config.MemberStore = value
@@ -263,6 +280,21 @@ func (e WrongOwnerError) Error() string {
 }
 
 func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
+	if rt.onCall == nil {
+		return rt.invoke(ctx, id, method, args, reply)
+	}
+	started := rt.clock.Now()
+	err := rt.invoke(ctx, id, method, args, reply)
+	rt.onCall(CallObservation{
+		EntityType: id.Type,
+		Method:     method,
+		Duration:   rt.clock.Now().Sub(started),
+		Err:        err,
+	})
+	return err
+}
+
+func (rt *Runtime) invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	if rt.clusterNode == nil {
 		return rt.Runtime.Invoke(ctx, id, method, args, reply)
 	}

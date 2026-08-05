@@ -79,6 +79,10 @@ func (b *Box) Done() <-chan struct{} {
 	return b.done
 }
 
+func (b *Box) Len() int {
+	return len(b.in)
+}
+
 func (b *Box) run() {
 	defer close(b.done)
 

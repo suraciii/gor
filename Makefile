@@ -5,7 +5,7 @@ test:
 
 # 性能基线单独运行，不进默认 test；GOR_BENCH_DIR 可指定真盘目录
 bench:
-	go test . -run '^$$' -bench . -count=1
+	go test . -run '^$$' -bench . -benchmem -count=1
 
 # 模拟测试跑得慢，单独一条 target，不进默认 test
 sim:
