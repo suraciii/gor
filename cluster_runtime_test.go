@@ -282,8 +282,8 @@ func TestRuntime_HandleRejectsAfterClusterDeath(t *testing.T) {
 		if err := json.Unmarshal(payload, &response); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
-		if response.Error != runtimepkg.ErrRuntimeClosed.Error() {
-			t.Fatalf("response error = %q, want %q", response.Error, runtimepkg.ErrRuntimeClosed.Error())
+		if response.Error == nil || response.Error.Code != string(ErrRuntimeClosed) {
+			t.Fatalf("response error = %#v, want runtime-closed code", response.Error)
 		}
 
 		first.Close()

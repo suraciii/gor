@@ -19,14 +19,62 @@ type callRequest struct {
 }
 
 type callResponse struct {
-	Reply json.RawMessage `json:"reply"`
-	Error string          `json:"error"`
+	Reply json.RawMessage `json:"reply,omitempty"`
+	Error *errorEnvelope  `json:"error,omitempty"`
+}
+
+type errorEnvelope struct {
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message"`
+}
+
+type remoteCodedError struct {
+	code    Code
+	message string
+}
+
+func (e remoteCodedError) Error() string {
+	return e.message
+}
+
+func (e remoteCodedError) Code() Code {
+	return e.code
+}
+
+func (e remoteCodedError) Is(target error) bool {
+	code, ok := target.(Code)
+	return ok && e.code == code
+}
+
+func errorEnvelopeFor(err error) *errorEnvelope {
+	if err == nil {
+		return nil
+	}
+	envelope := &errorEnvelope{Message: err.Error()}
+	if code, ok := CodeOf(err); ok {
+		envelope.Code = string(code)
+	}
+	return envelope
+}
+
+func errorFromEnvelope(envelope *errorEnvelope) error {
+	if envelope == nil {
+		return nil
+	}
+	if envelope.Code == "" {
+		return errors.New(envelope.Message)
+	}
+	return remoteCodedError{code: Code(envelope.Code), message: envelope.Message}
+}
+
+func errorResponse(err error) ([]byte, error) {
+	return encodeCallResponse(callResponse{Error: errorEnvelopeFor(publicError(err))})
 }
 
 func (rt *Runtime) forward(ctx context.Context, owner string, id Identity, method string, args any, reply any) error {
 	encodedArgs, err := json.Marshal(args)
 	if err != nil {
-		return fmt.Errorf("encode %s arguments: %w", method, err)
+		return withCode(ErrRequestEncodeFailed, fmt.Errorf("encode %s arguments: %w", method, err))
 	}
 	payload, err := json.Marshal(callRequest{
 		Kind:   requestKindInvoke,
@@ -36,24 +84,27 @@ func (rt *Runtime) forward(ctx context.Context, owner string, id Identity, metho
 		Args:   encodedArgs,
 	})
 	if err != nil {
-		return fmt.Errorf("encode invocation request: %w", err)
+		return withCode(ErrRequestEncodeFailed, fmt.Errorf("encode invocation request: %w", err))
 	}
 	encodedResponse, err := rt.transport.Send(ctx, owner, payload)
 	if err != nil {
-		return err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return withCode(ErrTransportFailed, err)
 	}
 	var response callResponse
 	if err := json.Unmarshal(encodedResponse, &response); err != nil {
-		return fmt.Errorf("decode invocation response: %w", err)
+		return withCode(ErrTransportFailed, fmt.Errorf("decode invocation response: %w", err))
 	}
-	if response.Error != "" {
-		return errors.New(response.Error)
+	if response.Error != nil {
+		return errorFromEnvelope(response.Error)
 	}
 	if reply == nil {
 		return nil
 	}
 	if err := json.Unmarshal(response.Reply, reply); err != nil {
-		return fmt.Errorf("decode %s reply: %w", method, err)
+		return withCode(ErrTransportFailed, fmt.Errorf("decode %s reply: %w", method, err))
 	}
 	return nil
 }
@@ -61,13 +112,13 @@ func (rt *Runtime) forward(ctx context.Context, owner string, id Identity, metho
 func (rt *Runtime) handle(ctx context.Context, payload []byte) ([]byte, error) {
 	select {
 	case <-rt.done:
-		return encodeCallResponse(callResponse{Error: runtimepkg.ErrRuntimeClosed.Error()})
+		return errorResponse(runtimepkg.ErrRuntimeClosed)
 	default:
 	}
 
 	var request callRequest
 	if err := json.Unmarshal(payload, &request); err != nil {
-		return encodeCallResponse(callResponse{Error: fmt.Errorf("decode invocation request: %w", err).Error()})
+		return errorResponse(withCode(ErrInvalidRequest, fmt.Errorf("decode invocation request: %w", err)))
 	}
 
 	switch request.Kind {
@@ -76,7 +127,7 @@ func (rt *Runtime) handle(ctx context.Context, payload []byte) ([]byte, error) {
 	case requestKindProbe:
 		return rt.handleProbe()
 	default:
-		return encodeCallResponse(callResponse{Error: fmt.Sprintf("unknown request kind %q", request.Kind)})
+		return errorResponse(withCode(ErrInvalidRequest, fmt.Errorf("unknown request kind %q", request.Kind)))
 	}
 }
 
@@ -88,41 +139,41 @@ const (
 func (rt *Runtime) handleInvoke(ctx context.Context, request callRequest) ([]byte, error) {
 	registration, ok := rt.typeRegistration(request.Type)
 	if !ok {
-		return encodeCallResponse(callResponse{Error: fmt.Errorf("%w: %s", ErrTypeNotInstalled, request.Type).Error()})
+		return errorResponse(fmt.Errorf("%w: %s", ErrTypeNotInstalled, request.Type))
 	}
 	args, reply := registration.newCall(request.Method)
+	if args == nil && reply == nil {
+		return errorResponse(withCode(ErrUnknownMethod, fmt.Errorf("unknown method %q", request.Method)))
+	}
 	if args != nil {
 		if err := json.Unmarshal(request.Args, args); err != nil {
-			return encodeCallResponse(callResponse{Error: fmt.Errorf("decode %s arguments: %w", request.Method, err).Error()})
+			return errorResponse(withCode(ErrInvalidRequest, fmt.Errorf("decode %s arguments: %w", request.Method, err)))
 		}
 	}
 
 	// Forwarded requests already crossed the ownership decision; execute them locally.
-	invokeErr := rt.engine.Invoke(ctx, runtimepkg.Identity{Type: request.Type, Key: request.Key}, request.Method, args, reply)
-	response := callResponse{Error: ""}
+	invokeErr := publicError(rt.engine.Invoke(ctx, runtimepkg.Identity{Type: request.Type, Key: request.Key}, request.Method, args, reply))
 	if invokeErr != nil {
-		response.Error = invokeErr.Error()
+		return errorResponse(invokeErr)
 	}
-	var replyErr error
-	response.Reply, replyErr = json.Marshal(reply)
-	if replyErr != nil {
-		response.Reply = nil
-		response.Error = fmt.Errorf("encode %s reply: %w", request.Method, replyErr).Error()
+	encodedReply, err := json.Marshal(reply)
+	if err != nil {
+		return errorResponse(withCode(ErrReplyEncodeFailed, fmt.Errorf("encode %s reply: %w", request.Method, err)))
 	}
-	return encodeCallResponse(response)
+	return encodeCallResponse(callResponse{Reply: encodedReply})
 }
 
 func (rt *Runtime) handleProbe() ([]byte, error) {
 	if rt.clusterNode == nil {
-		return encodeCallResponse(callResponse{Error: "cluster node is not configured"})
+		return errorResponse(withCode(ErrInvalidRequest, errors.New("cluster node is not configured")))
 	}
 	id, ok := rt.clusterNode.Probe()
 	if !ok {
-		return encodeCallResponse(callResponse{Error: cluster.ErrNodeDead.Error()})
+		return errorResponse(cluster.ErrNodeDead)
 	}
 	reply, err := json.Marshal(id)
 	if err != nil {
-		return encodeCallResponse(callResponse{Error: fmt.Errorf("encode probe reply: %w", err).Error()})
+		return errorResponse(withCode(ErrReplyEncodeFailed, fmt.Errorf("encode probe reply: %w", err)))
 	}
 	return encodeCallResponse(callResponse{Reply: reply})
 }
