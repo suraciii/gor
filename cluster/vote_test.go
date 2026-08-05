@@ -155,7 +155,7 @@ func TestShouldMarkDeadUsesMinNeighborThreshold(t *testing.T) {
 	}
 }
 
-func TestUpdateSuspectVoteRecomputesAfterCASConflict(t *testing.T) {
+func TestUpdateSuspectVoteRetriesVoteCASConflictAndMarksDead(t *testing.T) {
 	start := time.Unix(3200, 0).UTC()
 	clockSource := clock.NewFake(start)
 	backend := store.NewMemory(clockSource)
@@ -194,6 +194,9 @@ func TestUpdateSuspectVoteRecomputesAfterCASConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	row = snapshot.Members[memberIndex(snapshot.Members, store.Member{NodeAddr: target.NodeAddr, Generation: target.Generation})]
+	if row.Status != store.MemberDead {
+		t.Fatalf("target after vote CAS conflict = %#v, want dead after retry", row)
+	}
 	if len(row.SuspectVotes) != 2 {
 		t.Fatalf("votes after conflict merge = %#v, want concurrent vote preserved", row.SuspectVotes)
 	}
@@ -302,6 +305,79 @@ func (s *conflictingVoteStore) ListMembers(ctx context.Context) (store.MemberSna
 }
 
 var _ store.MemberStore = (*conflictingVoteStore)(nil)
+
+func TestUpdateSuspectVoteRejudgesAfterUnchangedVotesDeathCASConflict(t *testing.T) {
+	start := time.Unix(3250, 0).UTC()
+	clockSource := clock.NewFake(start)
+	backend := store.NewMemory(clockSource)
+	members := []store.Member{
+		{NodeAddr: "node-a", Generation: "generation-a", Status: store.MemberActive, IamAliveAt: start},
+		{NodeAddr: "node-b", Generation: "generation-b", Status: store.MemberActive, IamAliveAt: start},
+		{NodeAddr: "node-c", Generation: "generation-c", Status: store.MemberActive, IamAliveAt: start},
+	}
+	for _, member := range members {
+		if _, err := backend.WriteMember(context.Background(), member); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := backend.ListMembers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := MemberID{NodeAddr: "node-a", Generation: "generation-a"}
+	neighbors := targetNeighbors(snapshot.Members, target)
+	row := snapshot.Members[memberIndex(snapshot.Members, store.Member{NodeAddr: target.NodeAddr, Generation: target.Generation})]
+	row.SuspectVotes = map[MemberID]store.SuspectVote{
+		neighbors[0]: {ExpiresAt: start.Add(time.Second)},
+		neighbors[1]: {ExpiresAt: start.Add(time.Second)},
+	}
+	if _, err := backend.WriteMember(context.Background(), row); err != nil {
+		t.Fatal(err)
+	}
+	table := &conflictingDeathStore{backend: backend, target: target}
+	node := &Node{
+		table:   table,
+		ctx:     context.Background(),
+		voteTTL: time.Second,
+	}
+	node.updateSuspectVote(target, neighbors[0], true)
+
+	snapshot, err = backend.ListMembers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	row = snapshot.Members[memberIndex(snapshot.Members, store.Member{NodeAddr: target.NodeAddr, Generation: target.Generation})]
+	if row.Status != store.MemberDead {
+		t.Fatalf("target was not rejudged after unchanged-vote death CAS conflict: %#v", row)
+	}
+	if table.conflicts != 1 || table.deathWrites != 2 {
+		t.Fatalf("death writes after unchanged-vote conflict = conflicts %d, writes %d; want one conflict and one retry", table.conflicts, table.deathWrites)
+	}
+}
+
+type conflictingDeathStore struct {
+	backend     store.MemberStore
+	target      MemberID
+	conflicts   int
+	deathWrites int
+}
+
+func (s *conflictingDeathStore) WriteMember(ctx context.Context, member store.Member) (store.ETag, error) {
+	if member.NodeAddr == s.target.NodeAddr && member.Generation == s.target.Generation && member.Status == store.MemberDead {
+		s.deathWrites++
+		if s.conflicts == 0 {
+			s.conflicts++
+			return 0, store.ErrConflict
+		}
+	}
+	return s.backend.WriteMember(ctx, member)
+}
+
+func (s *conflictingDeathStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
+	return s.backend.ListMembers(ctx)
+}
+
+var _ store.MemberStore = (*conflictingDeathStore)(nil)
 
 func TestNodeStopsAfterSuccessfulProbeWhenSelfIsDead(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
