@@ -98,9 +98,9 @@ joining → active → dead
 
 `cluster` 不导入 `transport`。它只依赖一个异步 `Prober`：给出目标成员 ID，返回一个回复 channel。`gor` 的适配器用 `Transport.Send` 发送 [信封](#信封)定义的 `probe` 请求。传输的服务端 handler 按 `kind` 分派；`probe` 直接交给 `cluster`，不经过实体调用。
 
-探测请求带期望的 `(node_addr, generation)`。服务端当前成员 ID 放进普通响应的 `reply`。只有回复 ID 与快照中的目标完全相同才算成功。地址复用后的新进程不能为旧 generation 洗掉票。
+探测请求只带 `kind`。服务端当前成员 ID 放进普通响应的 `reply`，由发起方与快照中的目标比对；只有完全相同才算成功。地址复用后的新进程不能为旧 generation 洗掉票。
 
-服务端只在本地成员仍是 `active` 且未停止服务时回复。探测本身不读写成员表，不刷新心跳，也不转发第二次。
+服务端在本地成员仍是 `active` 且未停止服务时回复当前成员 ID；否则返回错误响应，不回成员 ID。探测本身不读写成员表，不刷新心跳，也不转发第二次。
 
 探测状态机等待回复 channel、关闭信号和由 `Clock` 创建的超时 channel。超时会取消这次 `Send`。不用 `context.WithTimeout`，也不用墙钟。
 
@@ -278,7 +278,7 @@ Orleans 有目录表，是因为它不按哈希放置——它把激活放在选
 
 ```
 调用  {"kind": "invoke", "type": ..., "key": ..., "method": ..., "args": ...}
-探测  {"kind": "probe", "node_addr": ..., "generation": ...}
+探测  {"kind": "probe"}
 响应  {"reply": ..., "error": ...}
 ```
 

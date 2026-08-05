@@ -20,6 +20,11 @@ const (
 	StateDead
 )
 
+type MemberID struct {
+	NodeAddr   string `json:"node_addr"`
+	Generation string `json:"generation"`
+}
+
 type Config struct {
 	Table             store.MemberStore
 	Clock             clock.Clock
@@ -85,6 +90,18 @@ func (n *Node) ViewChanges() <-chan View {
 
 func (n *Node) Done() <-chan struct{} {
 	return n.done
+}
+
+func (n *Node) Probe() (MemberID, bool) {
+	if n.State() != StateActive {
+		return MemberID{}, false
+	}
+	select {
+	case <-n.done:
+		return MemberID{}, false
+	default:
+		return MemberID{NodeAddr: n.nodeAddr, Generation: n.generation}, true
+	}
 }
 
 func (n *Node) Close() {
