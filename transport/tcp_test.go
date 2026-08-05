@@ -180,9 +180,18 @@ func TestTCPTransportGracefulCloseFlushesInFlightReply(t *testing.T) {
 	release := make(chan struct{})
 	serveDone := make(chan error, 1)
 	go func() {
-		serveDone <- server.Serve(context.Background(), func(_ context.Context, payload []byte) ([]byte, error) {
+		serveDone <- server.Serve(context.Background(), func(ctx context.Context, payload []byte) ([]byte, error) {
 			close(handlerStarted)
-			<-release
+			// The handler distinguishes the two stop paths: a graceful Close
+			// never cancels it, while a misrouted Kill does. Under a Kill the
+			// handler returns an error reply that is dropped, so the caller
+			// gets a connection error instead of the business reply — no
+			// scheduling race involved.
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 			return append([]byte("reply:"), payload...), nil
 		})
 	}()

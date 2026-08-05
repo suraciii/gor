@@ -489,6 +489,85 @@ func TestConnectionGracefulCloseWaitsForQueuedReplies(t *testing.T) {
 	})
 }
 
+func TestConnectionKillInterruptsGracefulCloseStuckOnWriter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client, server := net.Pipe()
+		handlerStarted := make(chan struct{})
+		release := make(chan struct{})
+		released := false
+		srv := newConnectionState(server, context.Background(), func(_ context.Context, payload []byte) ([]byte, error) {
+			close(handlerStarted)
+			<-release
+			return payload, nil
+		}, nil)
+		srv.start()
+		t.Cleanup(func() {
+			if !released {
+				close(release)
+			}
+			// The test never reads the pipe, so the writer may be stuck in
+			// WriteFrame; closing the test end unblocks it before teardown.
+			_ = client.Close()
+			_ = srv.Kill()
+			_ = srv.Close()
+		})
+
+		writeDone := make(chan error, 1)
+		go func() {
+			writeDone <- WriteFrame(client, Frame{ID: 1, Type: FrameRequest, Payload: []byte("request")})
+		}()
+		synctest.Wait()
+		if err := <-writeDone; err != nil {
+			t.Fatalf("request write error = %v", err)
+		}
+		<-handlerStarted
+
+		// The handler returns its reply and the owner hands it to the writer;
+		// the test never reads from the pipe, so the writer is stuck in
+		// WriteFrame and the flush cannot complete.
+		close(release)
+		released = true
+		synctest.Wait()
+
+		closeDone := make(chan error, 1)
+		go func() {
+			closeDone <- srv.Close()
+		}()
+		synctest.Wait()
+		// The graceful close still owes the peer a reply that is stuck in the
+		// writer: it must not complete, and it must not hang forever either.
+		select {
+		case err := <-closeDone:
+			t.Fatalf("Close returned while the reply was stuck in the writer: %v", err)
+		default:
+		}
+
+		// Kill is the escape hatch: it interrupts the flush and both stops
+		// conclude.
+		killDone := make(chan error, 1)
+		go func() {
+			killDone <- srv.Kill()
+		}()
+		synctest.Wait()
+		select {
+		case err := <-killDone:
+			if err != nil {
+				t.Fatalf("Kill error = %v", err)
+			}
+		default:
+			t.Fatal("Kill did not return while the writer was stuck")
+		}
+		select {
+		case err := <-closeDone:
+			if err != nil {
+				t.Fatalf("Close error after escalation = %v", err)
+			}
+		default:
+			t.Fatal("Close did not conclude after Kill escalated it")
+		}
+	})
+}
+
 func TestConnectionKillCancelsHandlersAndDoesNotWait(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		client, server := net.Pipe()
