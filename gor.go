@@ -1,3 +1,5 @@
+// Package gor provides the application-facing API for defining, registering,
+// invoking, and persisting virtual actors.
 package gor
 
 import (
@@ -19,6 +21,7 @@ import (
 
 var ErrTypeNotInstalled = errors.New("entity type is not installed; call InstallType or run the generated Install")
 
+// Identity identifies an entity by its registered type name and key.
 type Identity = runtimepkg.Identity
 type Activation = runtimepkg.Activation
 
@@ -41,6 +44,10 @@ type Deactivatable interface {
 	OnDeactivate(context.Context) error
 }
 
+// Runtime coordinates entity registration, activation, invocation, state, and
+// schedules. Invocations for the same identity are serialized, and a runtime
+// configured for a cluster can route an invocation to its current owner.
+// Create a Runtime with New and stop it with Close or Kill.
 type Runtime struct {
 	engine           *runtimepkg.Runtime
 	store            store.Store
@@ -107,6 +114,16 @@ func (b *Binder) scopeRuntime() *Runtime {
 	return b.runtime
 }
 
+// New creates and starts a Runtime.
+//
+// With no options, New uses a real clock, an in-memory state and schedule
+// store, a mailbox capacity of 16, a one-minute idle timeout, one-second
+// eviction and schedule intervals, and one-second heartbeat and view
+// intervals. A MemberStore and Transport must be configured together;
+// configuring only one returns an error.
+//
+// New returns an error if cluster initialization fails. The returned Runtime
+// is ready for entity installation and registration.
 func New(options ...Option) (*Runtime, error) {
 	config := Config{
 		Config: runtimepkg.Config{
@@ -314,14 +331,32 @@ func WithMaxTableLatency(value time.Duration) Option {
 	}
 }
 
+// WrongOwnerError reports that a clustered Runtime has no current owner for
+// an identity. Invoke returns this error without forwarding a request when the
+// current view has no active owner.
+//
+// Owner identifies the owner associated with the error. It is empty when no
+// owner is available.
 type WrongOwnerError struct {
 	Owner string
 }
 
+// Error returns a description of the unavailable owner.
 func (e WrongOwnerError) Error() string {
 	return fmt.Sprintf("identity belongs to node %q", e.Owner)
 }
 
+// Invoke calls method for id, passing args and reply to the registered entity
+// dispatch. Calls for the same identity are serialized; calls for different
+// identities may run concurrently.
+//
+// ctx limits waiting for activation and delivery and is passed to the entity
+// call. In a clustered runtime, an invocation for a remote owner is forwarded;
+// an identity with no current owner returns WrongOwnerError without being
+// forwarded. Errors from registration, activation, dispatch, context
+// cancellation, or forwarding are returned to the caller.
+//
+// After the runtime has shut down, Invoke does not start a new entity call.
 func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	if rt.onCall == nil {
 		return rt.invoke(ctx, id, method, args, reply)
@@ -385,6 +420,13 @@ func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, a
 	return nil
 }
 
+// Register associates T with factory in rt. T must already be installed by
+// generated code or InstallType; otherwise the returned error wraps
+// ErrTypeNotInstalled. Register rejects a second registration of the same
+// type in one runtime.
+//
+// factory is called to create each activation and receives a Binder for that
+// activation's identity. Register itself does not create an activation.
 func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 	name := TypeName[T]()
 	registration, ok := rt.typeRegistration(name)
@@ -427,10 +469,16 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 	})
 }
 
+// Now returns the current time from the clock configured for the entity bound
+// to b.
 func Now(b *Binder) time.Time {
 	return b.runtime.clock.Now()
 }
 
+// Ref returns a typed reference to T with key as its entity key. The type must
+// already be installed in the runtime represented by scope; otherwise Ref
+// panics with an ErrTypeNotInstalled message. Creating a reference does not
+// activate the entity; activation begins when a method is invoked on it.
 func Ref[T any](scope Scope, key string) T {
 	rt := scope.scopeRuntime()
 	name := TypeName[T]()
@@ -448,6 +496,12 @@ func (rt *Runtime) typeRegistration(name string) (typeRegistration, bool) {
 	return registration, ok
 }
 
+// Close begins an orderly shutdown. It stops scheduling and serving new work,
+// waits for in-flight invocations and normal deactivation callbacks to finish,
+// and closes configured cluster and transport resources.
+//
+// Calls already in progress are allowed to finish. Unlike Kill, Close does
+// not cancel their contexts or skip deactivation callbacks.
 func (rt *Runtime) Close() {
 	rt.shuttingDown.Store(true)
 	rt.stopServing()
@@ -462,6 +516,9 @@ func (rt *Runtime) Close() {
 	rt.closeTransport()
 }
 
+// Kill begins an immediate shutdown. It cancels the contexts of running and
+// queued invocations, rejects queued work, and skips deactivation callbacks.
+// Unlike Close, Kill does not wait for deactivation callbacks to finish.
 func (rt *Runtime) Kill() {
 	rt.shuttingDown.Store(true)
 	rt.stopServing()
@@ -478,9 +535,12 @@ func (rt *Runtime) Kill() {
 
 // Activations returns a sorted snapshot of this runtime's active entities.
 func (rt *Runtime) Activations() []Activation {
-	return rt.engine.Activations()
+    return rt.engine.Activations()
 }
 
+// Done returns a channel that is closed when the runtime stops serving
+// invocations. It closes after Close or Kill and when a clustered runtime's
+// node is declared dead.
 func (rt *Runtime) Done() <-chan struct{} {
 	return rt.done
 }

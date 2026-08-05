@@ -29,10 +29,15 @@ func newBinder(runtime *Runtime, id Identity) *Binder {
 	}
 }
 
+// Self returns the identity of the entity bound to b.
 func Self(b *Binder) Identity {
 	return Identity{Type: b.identity.Type, Key: b.identity.Key}
 }
 
+// NewState registers a named persistent value for the entity bound to b and
+// returns its handle. The name must be unique within that entity; registering
+// the same name twice panics. A newly registered state has its type's zero
+// value until activation data is loaded or Set succeeds.
 func NewState[T any](b *Binder, name string) State[T] {
 	if _, exists := b.states[name]; exists {
 		panic(fmt.Sprintf("state %q is already registered", name))
@@ -42,14 +47,22 @@ func NewState[T any](b *Binder, name string) State[T] {
 	return State[T]{cell: cell}
 }
 
+// State is a handle to one named, JSON-encoded value persisted for an entity
+// identity. Obtain a State with NewState; the zero value is not usable.
 type State[T any] struct {
 	cell *stateCellValue[T]
 }
 
+// Get returns the current in-memory value. It does not read from the store.
 func (s State[T]) Get() T {
 	return s.cell.value
 }
 
+// Set JSON-encodes value and persists it using ctx. On success, subsequent
+// Get calls return value. On failure, the previous value remains in memory and
+// the error is returned; errors from the store remain available to errors.Is.
+// A store write failure also discards the current entity activation after the
+// containing call completes, so the next call creates a fresh activation.
 func (s State[T]) Set(ctx context.Context, value T) error {
 	encoded, err := json.Marshal(value)
 	if err != nil {
