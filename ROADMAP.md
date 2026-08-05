@@ -117,7 +117,7 @@
 
 直接探测环上的邻居 + 带过期的死亡票 + 节点自我健康检查。
 
-替掉 6a 里「只看 `iam_alive_at`」的粗判死。表里的 `suspect_votes` 列到这一步才有人写。
+替掉 6a 里「只看 `iam_alive_at`」的粗判死。表里的 `suspect_votes` 列到这一步才有人写。设计已写完，见 [design/cluster.md](design/cluster.md)：单点探测环、`Prober` 接口、参数表、票的 CAS 合并与过期、`min(2, n-1)` 判死阈值、自体检失败就放弃投票权。信封的 `kind` 字段也在这一步引入。
 
 **验收**：一个被网络隔离但进程健康的节点会被投票判死；抖动留下的旧票过期后不会误杀健康节点。
 
@@ -128,6 +128,7 @@
 - 文档英文化。**放在最后**——文档还在改，早翻一遍等于翻两遍。
 - ~~一个真实的示例应用~~ **已完成**，见 [examples/shadow/](examples/shadow/)，设计见 [docs/example.md](docs/example.md)。它的产出是 [FINDINGS.md](FINDINGS.md)——六条 API 摩擦，其中四条变成了第 5.5 步，一条（跨实体事务）变成了 README 里明说的非目标，一条（`State[T].Get()` 的共享值语义）变成了文档补充。示例还要在第 5.5 步之后再走一轮，用新签名重写。
 - ~~性能基线数字~~ **已完成**，见 [benchmarks.md](benchmarks.md)，跑法是 `make bench`。测什么、不测什么、条件怎么写见 [design/benchmarks.md](design/benchmarks.md)。第 6b 步之后要再加一条跨节点转发，量的是「转发比本地贵多少」。
+- 可观测性。设计已写完，见 [design/observability.md](design/observability.md)：只暴露两个事实——本节点的激活快照和每次调用的完成事件。不做聚合、导出、告警。实装未开始。
 
 ## 风险
 
