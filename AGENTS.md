@@ -2,7 +2,7 @@
 
 ## 项目状态
 
-实现进度以 [ROADMAP.md](ROADMAP.md) 为准。特别是第 6b 步转发和可观测性的设计、实装状态，不要从本文件或代码自行推断。
+实现进度以 [ROADMAP.md](ROADMAP.md) 为准，不要从本文件或代码自行推断。
 
 不要为了「让仓库看起来有东西」写占位代码、半成品或假实现。
 
@@ -66,9 +66,9 @@ make net     # 真 TCP 的传输测试，不进默认 test
 make lint    # vet + staticcheck
 ```
 
-改完代码务必跑 `make ci`。这个 target 由 CI 线路维护，不要创建它，也不要改 Makefile。
+改完代码务必跑 `make ci`。
 
-改动涉及 `runtime` / `cluster` / `store` 时还要跑 `make sim`。
+改动涉及 `runtime` / `cluster` / `store` 时，迭代过程中就单独跑 `make sim`，不要等到最后。
 
 禁止：真实外部依赖、真实时间（`time.Sleep` 做同步、轮询墙钟做断言）、`t.Skip` 掩盖偶发失败、新旧测试并存。
 
