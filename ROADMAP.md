@@ -125,7 +125,7 @@
 
 - 文档英文化。**放在最后**——文档还在改，早翻一遍等于翻两遍。
 - ~~一个真实的示例应用~~ **已完成**，见 [examples/shadow/](examples/shadow/)，设计见 [docs/example.md](docs/example.md)。它的产出是 [FINDINGS.md](FINDINGS.md)——六条 API 摩擦，其中四条变成了第 5.5 步，一条（跨实体事务）变成了 README 里明说的非目标，一条（`State[T].Get()` 的共享值语义）变成了文档补充。示例还要在第 5.5 步之后再走一轮，用新签名重写。
-- 性能基线数字，且要说清测量条件。
+- 性能基线数字，且要说清测量条件。测什么、不测什么、条件怎么写见 [design/benchmarks.md](design/benchmarks.md)。
 
 ## 风险
 
