@@ -60,6 +60,10 @@ type Record struct {
 
 不做云厂商专有存储（DynamoDB / Azure Tables 那类）。Orleans 花在这上面的代码实测约 2.6 万行，是它体积的重要来源，收益对本项目不成立。
 
+## 差距
+
+当前代码只提供内存和 SQLite 两个后端。bbolt、pebble、Postgres 等后端仍是目标或候选，不是当前可用实现。
+
 ## State 怎么跟运行时接上
 
 `gor.State[T]` 要知道自己属于哪个 Identity、写哪个 store、当前 ETag 是多少。用户写的 struct 里它只是一个字段，工厂函数 `func() Account { return &account{} }` 没有地方把这些交给它。
