@@ -557,15 +557,7 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 			bound := instance.(boundInstance)
 			err := registration.dispatch(ctx, bound.entity, method, args, reply)
 			if discard := bound.binder.discardError(); discard != nil {
-				joined := errors.Join(err, discard)
-				code, ok := CodeOf(err)
-				if !ok {
-					code, ok = CodeOf(discard)
-				}
-				if ok {
-					return runtimepkg.Discard{Err: withCode(code, joined)}
-				}
-				return runtimepkg.Discard{Err: joined}
+				return runtimepkg.Discard{Err: errors.Join(err, discard)}
 			}
 			return err
 		},

@@ -11,15 +11,17 @@ import (
 
 const testApplicationCode Code = "test.application_failure"
 
-func TestCodeOfUsesOnlySingleValueUnwrap(t *testing.T) {
+func TestCodeOfReturnsSoleReachableCode(t *testing.T) {
 	wrapped := fmt.Errorf("wrapped: %w", testApplicationCode)
 	if got, ok := CodeOf(wrapped); !ok || got != testApplicationCode {
 		t.Fatalf("CodeOf(wrapped) = (%q, %v), want (%q, true)", got, ok, testApplicationCode)
 	}
 
+	// A code inside a multi-value unwrap is reachable too; with no other code
+	// present it is the sole, determined code.
 	joined := errors.Join(testApplicationCode, errors.New("another error"))
-	if got, ok := CodeOf(joined); ok {
-		t.Fatalf("CodeOf(joined) = (%q, true), want no code", got)
+	if got, ok := CodeOf(joined); !ok || got != testApplicationCode {
+		t.Fatalf("CodeOf(joined) = (%q, %v), want (%q, true)", got, ok, testApplicationCode)
 	}
 
 	if !errors.Is(wrapped, testApplicationCode) {
@@ -27,10 +29,49 @@ func TestCodeOfUsesOnlySingleValueUnwrap(t *testing.T) {
 	}
 }
 
-func TestCodeOfPrefersTheOuterResultAroundJoinedDiagnostics(t *testing.T) {
-	outer := withCode(testApplicationCode, errors.Join(errors.New("method failed"), withCode(ErrPersistenceFailed, errors.New("store unavailable"))))
-	if got, ok := CodeOf(outer); !ok || got != testApplicationCode {
-		t.Fatalf("CodeOf(outer) = (%q, %v), want (%q, true)", got, ok, testApplicationCode)
+func TestCodeOfReportsNoCodeWhenTreeHasMultipleCodes(t *testing.T) {
+	// Two distinct codes in one tree is ambiguous: there is no determined code,
+	// so CodeOf reports none. This holds whether the codes sit at different
+	// depths or are direct siblings of a join.
+	nested := withCode(testApplicationCode, errors.Join(errors.New("method failed"), withCode(ErrPersistenceFailed, errors.New("store unavailable"))))
+	if got, ok := CodeOf(nested); ok {
+		t.Fatalf("CodeOf(nested) = (%q, true), want no code", got)
+	}
+	siblings := errors.Join(testApplicationCode, ErrPersistenceFailed)
+	if got, ok := CodeOf(siblings); ok {
+		t.Fatalf("CodeOf(siblings) = (%q, true), want no code", got)
+	}
+}
+
+// TestJoinedErrorWithSoleCodeRoundTripsAcrossNodes pins the spec's equivalence
+// promise at the wire boundary: a method result joining a declared code with
+// diagnostic text must match that code after the server projects it and the
+// client rebuilds it. Reverting CodeOf to a single-value unwrap walk makes
+// this fail: the envelope would carry no code and the rebuild would be opaque.
+func TestJoinedErrorWithSoleCodeRoundTripsAcrossNodes(t *testing.T) {
+	err := errors.Join(testApplicationCode, errors.New("diagnostic"))
+	rebuilt := errorFromEnvelope(errorEnvelopeFor(publicError(err)))
+	if !errors.Is(rebuilt, testApplicationCode) {
+		t.Fatalf("errors.Is(rebuilt, %q) = false, want true", testApplicationCode)
+	}
+	if got, ok := CodeOf(rebuilt); !ok || got != testApplicationCode {
+		t.Fatalf("CodeOf(rebuilt) = (%q, %v), want (%q, true)", got, ok, testApplicationCode)
+	}
+}
+
+// TestJoinedErrorWithMultipleCodesIsOpaqueAcrossNodes pins the uniqueness
+// rule across the wire: two distinct codes in one tree have no determined
+// code, so only text survives. Changing CodeOf to return the first code found
+// instead of requiring a single one makes this fail: the envelope would carry
+// a code and the rebuild would match it.
+func TestJoinedErrorWithMultipleCodesIsOpaqueAcrossNodes(t *testing.T) {
+	err := errors.Join(testApplicationCode, ErrPersistenceFailed)
+	rebuilt := errorFromEnvelope(errorEnvelopeFor(publicError(err)))
+	if got, ok := CodeOf(rebuilt); ok {
+		t.Fatalf("CodeOf(rebuilt) = (%q, true), want no code", got)
+	}
+	if errors.Is(rebuilt, testApplicationCode) {
+		t.Fatalf("errors.Is(rebuilt, %q) = true, want false", testApplicationCode)
 	}
 }
 

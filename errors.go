@@ -35,16 +35,53 @@ type Coded interface {
 	Code() Code
 }
 
-// CodeOf returns the first Code on err or its single-error unwrap chain. It
-// does not inspect multi-error unwraps such as errors.Join.
+// CodeOf reports the single Code reachable from err. It walks the same nodes
+// errors.Is does: the error itself, the single-value Unwrap chain, and every
+// branch of a multi-value Unwrap. Exactly one reachable Code is the error's
+// determined Code; none, or more than one, means the error has no determined
+// Code and crosses the network as opaque text. The visited set mirrors
+// errors.Is cycle handling so a cyclic Unwrap cannot loop forever.
 func CodeOf(err error) (Code, bool) {
-	for err != nil {
-		if coded, ok := err.(Coded); ok {
-			return coded.Code(), true
+	var (
+		codes   map[Code]struct{}
+		visited map[error]bool
+		walk    func(error)
+	)
+	walk = func(e error) {
+		if e == nil {
+			return
 		}
-		err = errors.Unwrap(err)
+		if visited == nil {
+			visited = map[error]bool{}
+		}
+		if visited[e] {
+			return
+		}
+		visited[e] = true
+		if coded, ok := e.(Coded); ok {
+			if codes == nil {
+				codes = map[Code]struct{}{}
+			}
+			codes[coded.Code()] = struct{}{}
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
+		case interface{ Unwrap() []error }:
+			for _, sub := range u.Unwrap() {
+				walk(sub)
+			}
+		}
 	}
-	return "", false
+	walk(err)
+	if len(codes) != 1 {
+		return "", false
+	}
+	var sole Code
+	for c := range codes {
+		sole = c
+	}
+	return sole, true
 }
 
 // The framework Code values are a closed set. Applications must declare codes
