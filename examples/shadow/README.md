@@ -96,4 +96,4 @@ curl http://localhost:8080/workshops/assembly/online-count
 go run ./examples/shadow/cmd/load
 ```
 
-等待期间，设备的 `OnDeactivate` 会记录 `device-000` 被闲置驱逐。随后再次读取影子会从 store 重新激活它，并确认配置仍然读得到；日志会明确写出这次驱逐和重新加载。程序退出时会删除临时目录。也可以用 `-devices` 调整这批设备的规模。
+等待之后，程序先断言本地活跃目录为空，确认闲置实体已经被驱逐；随后再次读取影子，从 store 重新激活 `device-000`，并确认配置仍然读得到。程序退出时会删除临时目录。也可以用 `-devices` 调整这批设备的规模。

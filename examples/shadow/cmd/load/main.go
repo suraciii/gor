@@ -88,6 +88,9 @@ func run(ctx context.Context, args []string) (runErr error) {
 	log.Println("initial reports and configuration complete; waiting for idle eviction")
 	time.Sleep(idleTimeout + 2*evictionInterval)
 
+	if identities := rt.Identities(); len(identities) != 0 {
+		return fmt.Errorf("active identities after idle eviction = %#v, want none", identities)
+	}
 	value, err := device.Shadow(ctx)
 	if err != nil {
 		return fmt.Errorf("read device-000 shadow after eviction: %w", err)
