@@ -4,6 +4,7 @@
 *.out
 coverage.*
 .DS_Store
+.gor-bench-*
 
 # 模拟测试的失败复现种子与轨迹
 /testdata/sim-failures/
