@@ -24,6 +24,9 @@ func useWallClock() {
 	wall.Tick(0)
 	wall.NewTimer(0)
 	wall.NewTicker(0)
+	wall.Sleep(0)
+	f := wall.Sleep
+	f()
 }
 `,
 		"dot.go": `package example
@@ -32,6 +35,11 @@ import . "time"
 
 func useDotImport() {
 	Now()
+	f := Now
+	f()
+	Sleep(0)
+	g := Sleep
+	g()
 }
 `,
 	})
@@ -40,8 +48,8 @@ func useDotImport() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(violations) != 11 {
-		t.Fatalf("got %d violations, want 11: %v", len(violations), violations)
+	if len(violations) != 16 {
+		t.Fatalf("got %d violations, want 16: %v", len(violations), violations)
 	}
 	for _, want := range []string{
 		"direct time.Now violates the injected Clock rule",
@@ -51,6 +59,7 @@ func useDotImport() {
 		"direct time.Tick violates the injected Clock rule",
 		"direct time.NewTimer violates the injected Clock rule",
 		"direct time.NewTicker violates the injected Clock rule",
+		"direct time.Sleep violates the injected Clock rule",
 		"importing golang.org/x/sync/singleflight violates the channel-wait rule",
 	} {
 		if !hasViolation(violations, want) {
@@ -168,6 +177,65 @@ func useInjectedClock(clock Clock) {
 	}
 	if len(violations) != 0 {
 		t.Fatalf("got %d violations, want none: %v", len(violations), violations)
+	}
+}
+
+func TestCheckClassifiesSimBuildConstraints(t *testing.T) {
+	root := writeSources(t, map[string]string{
+		"sim/store.go": `//go:build sim
+
+package sim
+
+import "time"
+
+func injectedDelay() {
+	time.Sleep(0)
+}
+`,
+		"sim/store_test.go": `//go:build sim
+
+package sim
+
+import "time"
+
+func TestInjectedDelay(t *testing.T) {
+	time.Sleep(0)
+}
+`,
+		"sim/clock.go": `//go:build sim
+
+package sim
+
+import "time"
+
+func wallClock() time.Time {
+	return time.Now()
+}
+`,
+		"sim/legacy.go": `// +build sim
+
+package sim
+
+import "time"
+
+func legacyInjectedDelay() {
+	time.Sleep(0)
+}
+`,
+	})
+
+	violations, err := Check(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 2 {
+		t.Fatalf("got %d violations, want 2: %v", len(violations), violations)
+	}
+	if !hasViolationAt(violations, "sim/store_test.go", "test time.Sleep violates the deterministic-test rule") {
+		t.Fatalf("missing sim test Sleep violation in %v", violations)
+	}
+	if !hasViolationAt(violations, "sim/clock.go", "direct time.Now violates the injected Clock rule") {
+		t.Fatalf("missing sim time.Now violation in %v", violations)
 	}
 }
 
