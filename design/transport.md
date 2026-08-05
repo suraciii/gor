@@ -28,6 +28,8 @@ An address is a string, not a node type from `cluster`. The transport does not i
 
 **Two stop methods, not one.** `Close` is a graceful stop and `Kill` is an abrupt stop. This matches the rest of the system — `Runtime`, `cluster.Node`, and the execution runtime all split `Close` from `Kill`, and a crash is not a `Close` ([simulation.md](simulation.md)). Serving both stops with one `Close` is what let an in-flight forwarded reply be truncated during an owner's graceful close: one method cannot mean two things. The split is named, not parameterized; a `Close(mode)` boolean or enum leaves which stop is in progress implicit at the call site and does not match the vocabulary every other component already uses. The runtime's graceful stop calls `Close`; its abrupt stop and a declared-death collapse call `Kill`. `Serve` returns when its context is canceled, when `Close` completes, or when `Kill` completes. What each stop owes an in-flight reply is defined in the Closing section below.
 
+`Serve` owns only the accept loop. When it returns — context canceled, `Close` completed, `Kill` completed, or a serving failure — established connections are left for `Close` or `Kill` to tear down; a canceled Serve context alone never truncates an in-flight reply.
+
 ## One connection per direction
 
 A request from A to B goes over the connection A dialed to B, and B's reply comes back over the same one. A request from B to A goes over the other connection, dialed by B.
