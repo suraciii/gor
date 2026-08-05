@@ -97,7 +97,6 @@ func New(options ...Option) (*Runtime, error) {
 		Config: runtimepkg.Config{
 			Clock:            clock.Real{},
 			MailboxCapacity:  16,
-			Locator:          runtimepkg.LocalLocator{},
 			IdleTimeout:      time.Minute,
 			EvictionInterval: time.Second,
 		},
@@ -174,12 +173,6 @@ func WithClock(value clock.Clock) Option {
 func WithMailboxCapacity(value int) Option {
 	return func(config *Config) {
 		config.MailboxCapacity = value
-	}
-}
-
-func WithLocator(value runtimepkg.Locator) Option {
-	return func(config *Config) {
-		config.Locator = value
 	}
 }
 

@@ -496,6 +496,13 @@ func TestRuntime_StartsAndClosesConfiguredTransport(t *testing.T) {
 			closeDone <- struct{}{}
 		}()
 		synctest.Wait()
+		for range 2 {
+			select {
+			case <-closeDone:
+				t.Fatal("concurrent Runtime.Close returned while transport Serve was held")
+			default:
+			}
+		}
 		close(fakeTransport.serveHold)
 		synctest.Wait()
 		for range 2 {

@@ -16,7 +16,7 @@ type testEntity struct{}
 
 func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 4, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 4})
 		defer rt.Close()
 
 		factoryStarted := make(chan struct{})
@@ -77,7 +77,7 @@ func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
 
 func TestRuntime_DifferentKeysRunConcurrently(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2})
 		defer rt.Close()
 
 		entered := make(chan struct{}, 2)
@@ -135,7 +135,6 @@ func TestRuntime_EvictsIdleActivationAndReactivates(t *testing.T) {
 		rt := New(Config{
 			Clock:            fakeClock,
 			MailboxCapacity:  2,
-			Locator:          LocalLocator{},
 			IdleTimeout:      10 * time.Second,
 			EvictionInterval: time.Second,
 		})
@@ -181,7 +180,6 @@ func TestRuntime_DeactivateStopsActivationAndReactivates(t *testing.T) {
 		rt := New(Config{
 			Clock:           clock.Real{},
 			MailboxCapacity: 2,
-			Locator:         LocalLocator{},
 		})
 		defer rt.Close()
 
@@ -224,7 +222,7 @@ func TestRuntime_DeactivateStopsActivationAndReactivates(t *testing.T) {
 
 func TestRuntime_CloseWaitsForRunningCall(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 
 		started := make(chan struct{})
 		release := make(chan struct{})
@@ -267,7 +265,7 @@ func TestRuntime_CloseWaitsForRunningCall(t *testing.T) {
 
 func TestRuntime_KillCancelsRunningCallAndRejectsQueuedCalls(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 
 		started := make(chan struct{})
 		cancelObserved := make(chan struct{})
@@ -358,7 +356,6 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 		rt := New(Config{
 			Clock:           fakeClock,
 			MailboxCapacity: 1,
-			Locator:         LocalLocator{},
 			IdleTimeout:     time.Second,
 		})
 		defer rt.Close()
@@ -401,7 +398,7 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 
 func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2})
 		defer rt.Close()
 
 		entered := make(chan struct{})
@@ -457,7 +454,7 @@ func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 
 func TestRuntime_FactoryPanicReleasesActivationWaiters(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 		defer rt.Close()
 
 		started := make(chan struct{})
@@ -497,7 +494,7 @@ func TestRuntime_FactoryPanicReleasesActivationWaiters(t *testing.T) {
 
 func TestRuntime_FactoryErrorIsReturned(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 		defer rt.Close()
 
 		factoryErr := errors.New("factory failed")
@@ -519,7 +516,7 @@ func TestRuntime_FactoryErrorIsReturned(t *testing.T) {
 
 func TestRuntime_DiscardStopsActivationAndReturnsCause(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 		defer rt.Close()
 
 		var factoryCalls atomic.Int32
@@ -556,7 +553,7 @@ func TestRuntime_DiscardStopsActivationAndReturnsCause(t *testing.T) {
 
 func TestRuntime_DiscardWithNilErrorStillStopsActivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 		defer rt.Close()
 
 		var factoryCalls atomic.Int32
@@ -598,7 +595,7 @@ func TestDiscard_ErrorHandlesNil(t *testing.T) {
 
 func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
 		defer rt.Close()
 
 		started := make(chan struct{})
@@ -677,7 +674,7 @@ func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
 
 func TestRuntime_SerializesConcurrentCallsPerKey(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2, Locator: LocalLocator{}})
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2})
 		defer rt.Close()
 
 		firstStarted := make(chan struct{})
