@@ -21,9 +21,6 @@ type callResponse struct {
 }
 
 func (rt *Runtime) handle(ctx context.Context, payload []byte) ([]byte, error) {
-	if rt.shuttingDown.Load() {
-		return encodeCallResponse(callResponse{Error: runtimepkg.ErrRuntimeClosed.Error()})
-	}
 	select {
 	case <-rt.done:
 		return encodeCallResponse(callResponse{Error: runtimepkg.ErrRuntimeClosed.Error()})

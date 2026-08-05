@@ -243,6 +243,7 @@ func TestRuntime_HandleRejectsAfterClusterDeath(t *testing.T) {
 		members := store.NewMemory()
 		first := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a")...)
 		second := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-b", "generation-b")...)
+		registerAccount(t, first)
 
 		self := findClusterMember(t, members, "node-a", "generation-a")
 		self.Status = store.MemberDead

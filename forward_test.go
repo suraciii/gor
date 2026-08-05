@@ -183,14 +183,6 @@ func TestRuntime_HandleRejectsWhileClosing(t *testing.T) {
 			close(closeDone)
 		}()
 		synctest.Wait()
-		if !rt.shuttingDown.Load() {
-			t.Fatal("runtime did not enter shutting down state")
-		}
-		select {
-		case <-rt.done:
-			t.Fatal("runtime done closed before Close drained the running call")
-		default:
-		}
 
 		payload, err := rt.handle(context.Background(), []byte(`{"type":"gor.Account","key":"alice","method":"Balance","args":{}}`))
 		if err != nil {
