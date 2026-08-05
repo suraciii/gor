@@ -267,8 +267,8 @@ func TestLifecycle_OnActivateFailureDoesNotEstablishActivation(t *testing.T) {
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); !errors.Is(err, activateErr) {
 			t.Fatalf("first activation error = %v, want %v", err, activateErr)
 		}
-		if identities := rt.Identities(); len(identities) != 0 {
-			t.Fatalf("Identities after failed activation = %#v, want empty", identities)
+		if activations := rt.Activations(); len(activations) != 0 {
+			t.Fatalf("Activations after failed activation = %#v, want empty", activations)
 		}
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); !errors.Is(err, activateErr) {
 			t.Fatalf("second activation error = %v, want %v", err, activateErr)
@@ -283,9 +283,11 @@ func TestLifecycle_OnDeactivateFailureReportsAndRemovesActivation(t *testing.T) 
 	synctest.Test(t, func(t *testing.T) {
 		deactivateErr := errors.New("deactivate failed")
 		errorsSeen := make(chan reportedError, 1)
+		fakeClock := clock.NewFake(time.Unix(0, 0).UTC())
 		rt := mustNew(t,
-			WithIdleTimeout(0),
-			WithEvictionInterval(0),
+			WithClock(fakeClock),
+			WithIdleTimeout(time.Second),
+			WithEvictionInterval(time.Second),
 			OnError(func(id Identity, method string, err error) {
 				errorsSeen <- reportedError{id: id, method: method, err: err}
 			}),
@@ -301,10 +303,10 @@ func TestLifecycle_OnDeactivateFailureReportsAndRemovesActivation(t *testing.T) 
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial Value: %v", err)
 		}
-		rt.Deactivate(id)
+		fakeClock.Advance(time.Second)
 		synctest.Wait()
-		if identities := rt.Identities(); len(identities) != 0 {
-			t.Fatalf("Identities after failed deactivation = %#v, want empty", identities)
+		if activations := rt.Activations(); len(activations) != 0 {
+			t.Fatalf("Activations after failed deactivation = %#v, want empty", activations)
 		}
 		if got := deactivateCalls.Load(); got != 1 {
 			t.Fatalf("OnDeactivate calls = %d, want 1", got)
@@ -455,7 +457,7 @@ func TestBinderScope_ProvidesClockAndTypedReferences(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(100, 0).UTC()
 		fakeClock := clock.NewFake(start)
-		rt := mustNew(t, WithClock(fakeClock), WithIdleTimeout(0), WithEvictionInterval(0))
+		rt := mustNew(t, WithClock(fakeClock), WithIdleTimeout(time.Minute), WithEvictionInterval(time.Minute))
 		defer rt.Close()
 
 		installAccount(t, rt)
@@ -478,7 +480,6 @@ func TestBinderScope_ProvidesClockAndTypedReferences(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: TypeName[scopeAccount](), Key: "source"}
 		source := Ref[scopeAccount](rt, "source")
 		createdAt, err := source.CreatedAt(context.Background())
 		if err != nil {
@@ -493,8 +494,8 @@ func TestBinderScope_ProvidesClockAndTypedReferences(t *testing.T) {
 			t.Fatalf("ForwardDeposit = (%d, %v), want (7, nil)", value, err)
 		}
 
-		rt.Deactivate(id)
 		fakeClock.Advance(time.Hour)
+		synctest.Wait()
 		createdAt, err = source.CreatedAt(context.Background())
 		if err != nil {
 			t.Fatalf("CreatedAt after reactivation = %v", err)

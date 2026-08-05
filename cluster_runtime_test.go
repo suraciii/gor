@@ -139,7 +139,7 @@ func TestRuntime_ClusterDeactivatesMovedActivation(t *testing.T) {
 		synctest.Wait()
 
 		var balance accountBalanceReply
-		if err := first.Runtime.Invoke(context.Background(), target, "Balance", &accountBalanceRequest{}, &balance); err != nil {
+		if err := first.engine.Invoke(context.Background(), target, "Balance", &accountBalanceRequest{}, &balance); err != nil {
 			t.Fatalf("direct runtime invocation after ownership change = %v", err)
 		}
 		if got := registerFactoryCalls.Load(); got != 2 {
@@ -232,13 +232,13 @@ func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
 		default:
 			t.Fatal("runtime Done channel is still open after cluster death")
 		}
-		if identities := first.Runtime.Identities(); len(identities) != 0 {
-			t.Fatalf("identities after cluster death = %#v, want empty", identities)
+		if activations := first.Activations(); len(activations) != 0 {
+			t.Fatalf("activations after cluster death = %#v, want empty", activations)
 		}
 		if err := first.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); err == nil {
 			t.Fatal("invocation after cluster death unexpectedly succeeded")
 		}
-		if err := first.Runtime.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); !errors.Is(err, runtimepkg.ErrRuntimeClosed) {
+		if err := first.engine.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); !errors.Is(err, runtimepkg.ErrRuntimeClosed) {
 			t.Fatalf("direct runtime invocation after cluster death error = %v, want %v", err, runtimepkg.ErrRuntimeClosed)
 		}
 

@@ -26,13 +26,17 @@ type observedAccountEntity struct {
 	started       chan<- struct{}
 	release       <-chan struct{}
 	finished      chan<- struct{}
+	deactivated   chan<- struct{}
 }
 
 func (e *observedAccountEntity) OnActivate(context.Context) error {
 	return e.activationErr
 }
 
-func (*observedAccountEntity) OnDeactivate(context.Context) error {
+func (e *observedAccountEntity) OnDeactivate(context.Context) error {
+	if e.deactivated != nil {
+		e.deactivated <- struct{}{}
+	}
 	return nil
 }
 
@@ -135,9 +139,11 @@ func TestOnCallReportsSuccessfulInvocationWithInjectedDuration(t *testing.T) {
 func TestOnCallDoesNotReportDeactivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		events := make(chan CallObservation, 1)
-		rt := newObservedRuntime(t, clock.NewFake(time.Unix(0, 0).UTC()), events, func(*Binder) observedAccount {
-			return &observedAccountEntity{}
-		})
+		deactivated := make(chan struct{}, 1)
+		fakeClock := clock.NewFake(time.Unix(0, 0).UTC())
+		rt := newObservedRuntime(t, fakeClock, events, func(*Binder) observedAccount {
+			return &observedAccountEntity{deactivated: deactivated}
+		}, WithIdleTimeout(time.Second), WithEvictionInterval(time.Second))
 		defer rt.Close()
 		id := Identity{Type: TypeName[observedAccount](), Key: "alice"}
 
@@ -145,8 +151,13 @@ func TestOnCallDoesNotReportDeactivation(t *testing.T) {
 			t.Fatalf("Invoke error = %v", err)
 		}
 		assertObservation(t, <-events, "Success", nil)
-		rt.Deactivate(id)
+		fakeClock.Advance(time.Second)
 		synctest.Wait()
+		select {
+		case <-deactivated:
+		default:
+			t.Fatal("idle eviction did not call OnDeactivate")
+		}
 		select {
 		case got := <-events:
 			t.Fatalf("OnDeactivate produced observation: %#v", got)
