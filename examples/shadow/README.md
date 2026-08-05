@@ -1,32 +1,32 @@
-# 设备影子示例
+# Device shadow example
 
-这是一个可以直接运行的设备影子服务：设备上报状态，服务保存最后一次上报；超过 30 秒没有新消息，设备会变成掉线，所属车间的在线数也会更新。
+A directly runnable device-shadow service: devices report state, the service keeps the last report; after more than 30 seconds without a new message, the device goes offline and its workshop's online count updates.
 
-## 为什么这些东西是实体
+## Why these things are entities
 
-示例中的 `Device` 和 `Workshop` 都有稳定身份，也各自负责一组必须串行更新的状态。
-下面四条都对应 `domain/domain.go` 中的领域代码。
+In the example, `Device` and `Workshop` both have stable identities, and each owns a set of state that must be updated serially.
+The four points below all correspond to the domain code in `domain/domain.go`.
 
-- **设备数量大，而且大多数时候闲置。** `Device` 用设备 id 作为身份，状态放在 `gor.State` 中；运行时可以把闲置激活从内存中驱逐，状态仍留在 store 里。
-- **同一台设备的写入必须串行。** 上报和配置都直接改设备自己的影子，没有锁；同一身份的调用由 `gor` 排队执行。读者可以直接从 `Device` 接口看到这两个入口。
-- **掉线是跟着设备走的一次性定时任务。** 每次上报都重置 `offline` 闹钟，任务触发后把设备改成掉线并通知车间。
-- **在线数是跨实体聚合。** 设备在上线、换车间和掉线时主动通知 `Workshop`；车间只保存在线设备的身份集合，不持有设备引用再逐个查询。
+- **Large device count, mostly idle.** `Device` uses the device id as its identity, with state in `gor.State`; the runtime can evict idle activations from memory, while state stays in the store.
+- **Writes to one device must be serialized.** Reports and configuration both change the device's own shadow directly, with no locks; calls on the same identity are queued and executed by `gor`. Readers can see both entry points directly on the `Device` interface.
+- **Offline is a one-shot scheduled task that follows the device.** Every report resets the `offline` alarm; when the task fires, it marks the device offline and notifies the workshop.
+- **Online count is a cross-entity aggregation.** Devices notify `Workshop` proactively on going online, changing workshops, and going offline; the workshop only keeps the identity set of online devices — it does not hold device references and query them one by one.
 
-这些不是为了把代码拆成更多类型，而是因为每个身份都需要独立激活、持有状态并接受串行调用。
+These are not about splitting the code into more types; each identity needs its own activation, state, and serialized calls.
 
-## gor 不提供什么
+## What gor does not provide
 
-设备影子写入、掉线闹钟重置和车间通知是三个独立操作。`gor` 不提供跨实体事务，也不会替用户补偿或回滚：如果影子写入成功、后续闹钟或车间通知失败，设备和车间可能暂时不一致。示例把错误返回给调用方，把这个窗口留给业务自己决定能否接受；实现顺序在 `domain/domain.go` 的 `Report` 方法中。
+Shadow write, offline-alarm reset, and workshop notification are three independent operations. `gor` provides no cross-entity transactions and no compensation or rollback for the user: if the shadow write succeeds and a later alarm or notification fails, the device and workshop can be temporarily inconsistent. The example returns the error to the caller and leaves the window for the business to decide whether it is acceptable; the implementation order is in the `Report` method of `domain/domain.go`.
 
-## 启动
+## Running it
 
-在 gor 仓库根目录运行：
+Run from the gor repository root:
 
 ```bash
 go run ./examples/shadow/cmd/shadow
 ```
 
-注册影子实体时只需要传入运行时：
+Registering the shadow entities only needs the runtime:
 
 ```go
 if err := shadow.Register(rt); err != nil {
@@ -34,7 +34,7 @@ if err := shadow.Register(rt); err != nil {
 }
 ```
 
-定时任务和生命周期钩子没有请求方等待。启动运行时要安装统一的错误出口，否则这两类错误会被丢弃：
+Scheduled tasks and lifecycle hooks have no requester waiting. When starting the runtime, install the unified error sink, or these two kinds of errors are dropped:
 
 ```go
 rt, err := gor.New(
@@ -43,15 +43,15 @@ rt, err := gor.New(
 )
 ```
 
-服务监听 `:8080`，数据写入 `data/gor.db`。也可以指定地址和数据库文件：
+The service listens on `:8080` and writes data to `data/gor.db`. Address and database file are configurable:
 
 ```bash
 go run ./examples/shadow/cmd/shadow -addr :9090 -db ./data/shadow.db
 ```
 
-## 调用
+## Calling it
 
-让设备 `device-1` 上报到 `assembly` 车间：
+Report from device `device-1` to the `assembly` workshop:
 
 ```bash
 curl -i -X POST http://localhost:8080/devices/device-1/reports \
@@ -59,7 +59,7 @@ curl -i -X POST http://localhost:8080/devices/device-1/reports \
   -d '{"workshop_id":"assembly","state":"temperature=20"}'
 ```
 
-成功返回 `204 No Content`。下发配置：
+Succeeds with `204 No Content`. Push configuration:
 
 ```bash
 curl -i -X PUT http://localhost:8080/devices/device-1/configuration \
@@ -67,13 +67,13 @@ curl -i -X PUT http://localhost:8080/devices/device-1/configuration \
   -d '{"configuration":"sample-rate=10s"}'
 ```
 
-读取设备影子：
+Read the device shadow:
 
 ```bash
 curl http://localhost:8080/devices/device-1/shadow
 ```
 
-返回内容包含最后上报的状态、上报时间、在线状态、车间和配置，例如：
+The response contains the last reported state, report time, online status, workshop, and configuration, for example:
 
 ```json
 {
@@ -85,7 +85,7 @@ curl http://localhost:8080/devices/device-1/shadow
 }
 ```
 
-读取车间在线数：
+Read a workshop's online count:
 
 ```bash
 curl http://localhost:8080/workshops/assembly/online-count
@@ -95,14 +95,14 @@ curl http://localhost:8080/workshops/assembly/online-count
 {"online_count":1}
 ```
 
-设备每次上报都会重置一个 30 秒的一次性闹钟。停止上报并等待 30 秒后，再读取影子会看到 `online` 变为 `false`，车间在线数变为 `0`。一次性闹钟触发后会从 schedule 表删除；设备再次上报时会重新上线并创建新的闹钟。
+Every report resets a 30-second one-shot alarm. Stop reporting and wait 30 seconds, then reading the shadow again shows `online` has become `false`, and the workshop online count has become `0`. After a one-shot alarm fires, it is deleted from the schedule table; the next report brings the device back online and creates a new alarm.
 
-## 观察闲置驱逐
+## Watching idle eviction
 
-负载程序不是性能测试，不报告吞吐量或延迟。它使用临时 SQLite，并发让一批设备上报，再给 `device-000` 下配置；等待运行时驱逐闲置激活后重新读取它的影子：
+The load generator is not a performance test; it reports no throughput or latency. It uses a temporary SQLite, has a batch of devices report concurrently, then pushes configuration to `device-000`; it waits for the runtime to evict idle activations, then re-reads its shadow:
 
 ```bash
 go run ./examples/shadow/cmd/load
 ```
 
-程序从 `OnDeactivate` 的 channel 信号等待所有设备和车间被闲置驱逐，再断言本地活跃目录为空；随后读取影子，触发 `OnActivate` 从 store 重新加载，并确认配置仍然读得到。程序退出时会删除临时目录。也可以用 `-devices` 调整这批设备的规模。
+The program waits on `OnDeactivate` channel signals for all devices and workshops to be evicted for idleness, then asserts the local activation directory is empty; it then reads the shadow, triggering `OnActivate` to reload from the store, and confirms the configuration is still readable. The program deletes the temp directory on exit. Use `-devices` to adjust the batch size.
