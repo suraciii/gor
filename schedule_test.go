@@ -34,10 +34,11 @@ type scheduledAccountValueReply struct {
 }
 
 type scheduledAccountEntity struct {
-	value       State[int64]
-	schedule    Schedule
-	wakeErr     error
-	wakeStarted chan struct{}
+	value           State[int64]
+	schedule        Schedule
+	wakeErr         error
+	wakeStarted     chan struct{}
+	cancelShapedErr bool
 }
 
 type scheduledAccountProxy struct {
@@ -54,6 +55,11 @@ func (a *scheduledAccountEntity) Wake(ctx context.Context) error {
 		close(a.wakeStarted)
 		<-ctx.Done()
 		return ctx.Err()
+	}
+	if a.cancelShapedErr {
+		child, cancel := context.WithCancel(ctx)
+		cancel()
+		return child.Err()
 	}
 	if a.wakeErr != nil {
 		return a.wakeErr
@@ -111,8 +117,9 @@ func newScheduledAccountCall(method string) (args any, reply any) {
 }
 
 type scheduledAccountConfig struct {
-	wakeErr     error
-	wakeStarted chan struct{}
+	wakeErr         error
+	wakeStarted     chan struct{}
+	cancelShapedErr bool
 }
 
 func installScheduledAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int32, configs ...scheduledAccountConfig) {
@@ -129,10 +136,11 @@ func installScheduledAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int
 	if err := Register[scheduledAccount](rt, func(b *Binder) scheduledAccount {
 		factoryCalls.Add(1)
 		return &scheduledAccountEntity{
-			value:       NewState[int64](b, "value"),
-			schedule:    NewSchedule(b),
-			wakeErr:     config.wakeErr,
-			wakeStarted: config.wakeStarted,
+			value:           NewState[int64](b, "value"),
+			schedule:        NewSchedule(b),
+			wakeErr:         config.wakeErr,
+			wakeStarted:     config.wakeStarted,
+			cancelShapedErr: config.cancelShapedErr,
 		}
 	}); err != nil {
 		t.Fatal(err)
