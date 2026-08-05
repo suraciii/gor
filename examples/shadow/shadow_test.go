@@ -156,10 +156,16 @@ func TestDeviceIdleEvictionRunsLifecycleAndReloadsState(t *testing.T) {
 
 func expectLifecycleEvent(t *testing.T, events <-chan domain.LifecycleEvent, id gor.Identity, kind string) {
 	t.Helper()
+	pending := make([]domain.LifecycleEvent, 0)
 	for {
-		event := <-events
-		if event.Identity == id && event.Kind == kind {
-			return
+		select {
+		case event := <-events:
+			if event.Identity == id && event.Kind == kind {
+				return
+			}
+			pending = append(pending, event)
+		default:
+			t.Fatalf("missing lifecycle event identity=%v kind=%q; pending=%v", id, kind, pending)
 		}
 	}
 }
