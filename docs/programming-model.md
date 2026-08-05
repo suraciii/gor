@@ -198,7 +198,7 @@ It is not `time.AfterFunc`: do not expect millisecond precision, and do not expe
 
 One object has at most one task per name; setting the same name again reschedules it.
 
-Tasks can be one-shot or periodic; after cancellation they are not kept. A one-shot task is delivered once when due, then disappears.
+Tasks can be one-shot or periodic; after cancellation they are not kept. A one-shot task is delivered at most once when due, then disappears.
 
 Scheduled wake-up promises at-most-once delivery, not exactly-once method execution. The system confirms that the due time was claimed, then delivers the method; a crash between the two can miss this firing. Failed methods are not retried automatically either; the error still goes to the error sink below.
 
