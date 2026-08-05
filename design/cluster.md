@@ -1,6 +1,6 @@
 # Cluster
 
-> This is the only part with genuine distributed risk. It is last in the ROADMAP and must come after the DST skeleton ([step 4](../ROADMAP.md#4-确定性模拟测试骨架)).
+> This is the only part with genuine distributed risk. It is last in the ROADMAP and must come after the DST skeleton ([step 4](../ROADMAP.md#4-deterministic-simulation-test-skeleton)).
 
 ## Conclusion first: no consensus
 
@@ -60,6 +60,8 @@ joining → active → dead
 
 Self-terminating without reading would let one dropped packet kill a healthy node.
 
+A declared-dead node does not crawl back on its own. Coming back means re-joining: a fresh generation, a new row.
+
 ### The view is computed only from rows read from the table
 
 **A table read failure is not evidence that anyone died.** If the table cannot be read this round, keep the previous view and change nothing. Degrading to "only me" would amplify one read fault into a whole-network re-sharding.
@@ -78,13 +80,11 @@ So when a node sees its current generation as `dead` in a successfully read snap
 
 An active `Close()` also writes the node's membership row as `dead`. That is only a normal leave — the root runtime already began a graceful stop — and the cluster node's completion signal must not be mistaken for an external death declaration. The cluster node must hand its end reason to the root runtime; a bare `Done` channel that carries no reason is not enough.
 
+**An embedding application must be able to know this.** The runtime provides a channel whose closing means "no longer serving"; `Close()`, `Kill()`, and being declared dead all close it. Without this signal, the application could only guess from every call erroring — and by then it is already serving a service that does not work.
+
 ### Gap
 
 The cluster node implements an explicit end reason: both an active close and an external death declaration close `Done()`, but only the external death declaration closes `DeclaredDead()`. The root runtime distinguishes the two by this channel, no longer inferring from "did I initiate the close myself". A declared-dead node no longer publishes the final empty view: in the view a dead node computes it owns nothing, but rejecting local calls takes effect immediately at the stop transition through the root admission gate, without waiting for the view to change, so this view must not be published (it would trigger graceful deactivation on view change, conflicting with the abrupt stop). This section is implemented.
-
-**An embedding application must be able to know this.** The runtime provides a channel whose closing means "no longer serving"; `Close()`, `Kill()`, and being declared dead all close it. Without this signal, the application could only guess from every call erroring — and by then it is already serving a service that does not work.
-
-A declared-dead node does not crawl back on its own. Coming back means re-joining: a fresh generation, a new row.
 
 ## Probing and death votes
 

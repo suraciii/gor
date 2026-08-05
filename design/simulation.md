@@ -53,7 +53,7 @@ Go offers nothing stronger ([testing.md](testing.md) cites Resonate's same concl
 
 ## What a "node" is
 
-A node = one `runtime.Runtime`. Several nodes share one `Store`. Before [step 6](../ROADMAP.md#6-多节点), nodes have no other connection.
+A node = one `runtime.Runtime`. Several nodes share one `Store`. Before [step 6](../ROADMAP.md#6-multiple-nodes), nodes have no other connection.
 
 - **Crash** — drop all in-memory state, keep the store.
 - **Restart** — build a new `Runtime` on the same store.

@@ -100,7 +100,7 @@ gor.Register[Account](rt, factory)        // dispatch function taken from the re
 acct := gor.Ref[Account](rt, "alice")     // proxy taken from the registry; return type is Account
 ```
 
-`Register` therefore loses one parameter: the hand-written `dispatch` from [step 1](../ROADMAP.md#1-单进程运行时) is taken over by the generator. This is a planned breaking change.
+`Register` therefore loses one parameter: the hand-written `dispatch` from [step 1](../ROADMAP.md#1-single-process-runtime) is taken over by the generator. This is a planned breaking change.
 
 **Automatic registration via `init()` is rejected.** It saves the `Install(rt)` line, at the cost of users having to remember a blank import — forget it and the failure only shows up at runtime — and the registry becoming a process-wide global, while step 4's simulation tests run several nodes in one process. With the registry on `rt` and `Install` called explicitly, both problems disappear together.
 

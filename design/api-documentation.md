@@ -8,7 +8,7 @@ This does not overturn the repository's comment principles. Readers of implement
 
 The contract must not become an explanation of the implementation either. It states only facts a caller decides on. When algorithms, goroutines, table structures, or internal call order need explaining, change the design document or the code; do not stuff it into a doc comment.
 
-This work belongs to the ROADMAP's existing "documentation in English" required item; no separate release process is invented. The rules are set now; the public API comments are completed in the same batch once [step 6c](../ROADMAP.md#6c-探测与死亡投票) is done and a release candidate forms. They must be complete before the candidate tag. This way nothing is written in Chinese first and translated later, and no API that is still moving gets maintained twice.
+This work belongs to the ROADMAP's existing "documentation in English" required item; no separate release process is invented. The rules are set now; the public API comments are completed in the same batch once [step 6c](../ROADMAP.md#6c-probing-and-death-voting) is done and a release candidate forms. They must be complete before the candidate tag. This way nothing is written in Chinese first and translated later, and no API that is still moving gets maintained twice.
 
 Two things are rejected:
 

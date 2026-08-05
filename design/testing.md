@@ -83,6 +83,6 @@ Dropping ticks imposes a hard requirement: **clock subscription must happen in t
 
 ## Relationship with the ROADMAP
 
-The DST skeleton is [step 4](../ROADMAP.md#4-确定性模拟测试骨架) of the ROADMAP, **before the cluster ([step 6](../ROADMAP.md#6-多节点))**.
+The DST skeleton is [step 4](../ROADMAP.md#4-deterministic-simulation-test-skeleton) of the ROADMAP, **before the cluster ([step 6](../ROADMAP.md#6-multiple-nodes))**.
 
 The order cannot be swapped. Adding any of the four constraints above after the cluster is written means rewriting the cluster. This is the project's only "the order is non-negotiable" spot.

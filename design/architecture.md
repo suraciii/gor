@@ -25,7 +25,7 @@ gor ──────────▶ transport
 
 Dependencies point only downward. `runtime` does not know `cluster` exists, and **does not need to leave any interface for it**.
 
-[Step 6b](../ROADMAP.md#6b-转发)'s routing happens in the `gor` layer: every call first asks the ring who owns this Identity; if it is self, hand to `runtime`; if someone else, forward (see [cluster.md](cluster.md)). `runtime`'s interface does not change one word — it is about "calls on the same key are serialized", unrelated to why this key lands on this node.
+[Step 6b](../ROADMAP.md#6b-forwarding)'s routing happens in the `gor` layer: every call first asks the ring who owns this Identity; if it is self, hand to `runtime`; if someone else, forward (see [cluster.md](cluster.md)). `runtime`'s interface does not change one word — it is about "calls on the same key are serialized", unrelated to why this key lands on this node.
 
 `runtime` also does not import `store`: entity state is read and written by `gor` inside the factory closure; `runtime` only hands out an Identity and gets back an opaque instance (see [persistence.md](persistence.md)).
 

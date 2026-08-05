@@ -24,7 +24,7 @@ Each of the three gets its own benchmark; no composite score. A composite score 
 
 - **No comparison with Orleans.** The runtimes, GCs, and serialization all differ; the resulting numbers explain nothing and become a freely quotable marketing line.
 - **No per-node QPS.** It depends on what the user's method bodies do; it has nothing to do with the library.
-- **Cross-node forwarding is not merged into the three above.** [6b](../ROADMAP.md#6b-转发) is implemented; measure "how much more expensive forwarding is than local" separately, rather than compositing it with single-process absolute numbers.
+- **Cross-node forwarding is not merged into the three above.** [6b](../ROADMAP.md#6b-forwarding) is implemented; measure "how much more expensive forwarding is than local" separately, rather than compositing it with single-process absolute numbers.
 
 ## Every number must carry its measurement conditions
 

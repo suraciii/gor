@@ -39,7 +39,7 @@ Go's module major-version rules make v1 a valuable stability promise: v0 and v1 
 
 `v0.1.0` can only be released after all of [ROADMAP.md](../ROADMAP.md)'s "required before release" items are done. Completion is judged by the roadmap's explicit status, not by "the code looks close enough".
 
-What is not yet done is the documentation in English. Re-running the examples on [5.5](../ROADMAP.md#55-示例反馈回来的-api-修补)'s new signatures, observability, the performance baseline, and the cross-node forwarding baseline are all done; step 6c is done, but multi-node is still a preview capability and partitions can misjudge healthy nodes, so the first public release must not be treated as settled.
+What is not yet done is the documentation in English. Re-running the examples on [5.5](../ROADMAP.md#55-api-fixes-from-the-example)'s new signatures, observability, the performance baseline, and the cross-node forwarding baseline are all done; step 6c is done, but multi-node is still a preview capability and partitions can misjudge healthy nodes, so the first public release must not be treated as settled.
 
 ## The bar for v1.0.0
 

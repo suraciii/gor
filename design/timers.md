@@ -30,7 +30,7 @@ func (a *account) ApplyInterest(ctx context.Context) error { ... }
 
 The called method only takes `ctx` and only returns `error`, and it must be in the entity's interface — the dispatch table is produced by the generator from the interface, and a method not in it cannot be found at delivery time. A name that does not match makes delivery return an error — no registration-time check for this; a mistake is visible on the spot.
 
-"One unified entry point" is rejected. Orleans has entities implement `ReceiveReminder(name)` and switch on the name themselves — that is bringing back the hand-written dispatcher deleted at [step 3](../ROADMAP.md#3-类型化代理代码生成), and in user code of all places. gor's selling point is compile-time typing; it must not open a string-dispatch loophole here.
+"One unified entry point" is rejected. Orleans has entities implement `ReceiveReminder(name)` and switch on the name themselves — that is bringing back the hand-written dispatcher deleted at [step 3](../ROADMAP.md#3-typed-proxy-code-generation), and in user code of all places. gor's selling point is compile-time typing; it must not open a string-dispatch loophole here.
 
 The method name is still a string; that is a gap. Closing it requires the generator to emit typed method handles — the generator's job, not this step.
 
