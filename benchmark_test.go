@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/suraciii/gor/clock"
+	"github.com/suraciii/gor/cluster"
 	"github.com/suraciii/gor/store"
+	"github.com/suraciii/gor/transport"
 )
 
 type benchmarkEntity interface {
@@ -71,17 +73,25 @@ func newBenchmarkEntityCall(method string) (args any, reply any) {
 	}
 }
 
-func newBenchmarkRuntime(b *testing.B, backend store.Store, sourceClock clock.Clock, idleTimeout, evictionInterval time.Duration) *Runtime {
+func newBenchmarkRuntime(b *testing.B, backend store.Store, sourceClock clock.Clock, idleTimeout, evictionInterval time.Duration, options ...Option) *Runtime {
 	b.Helper()
-	rt, err := New(
+	options = append([]Option{
 		WithStore(backend),
 		WithClock(sourceClock),
 		WithIdleTimeout(idleTimeout),
 		WithEvictionInterval(evictionInterval),
-	)
+	}, options...)
+	rt, err := New(options...)
 	if err != nil {
 		b.Fatal(err)
 	}
+	installBenchmarkEntity(b, rt)
+	b.Cleanup(rt.Close)
+	return rt
+}
+
+func installBenchmarkEntity(b *testing.B, rt *Runtime) {
+	b.Helper()
 	if err := InstallType[benchmarkEntity](rt, dispatchBenchmarkEntity, func(invoker Invoker, id Identity) benchmarkEntity {
 		return &benchmarkEntityProxy{invoker: invoker, id: id}
 	}, newBenchmarkEntityCall); err != nil {
@@ -91,11 +101,8 @@ func newBenchmarkRuntime(b *testing.B, backend store.Store, sourceClock clock.Cl
 	if err := Register[benchmarkEntity](rt, func(binder *Binder) benchmarkEntity {
 		return &benchmarkEntityImpl{state: NewState[uint64](binder, "value")}
 	}); err != nil {
-		rt.Close()
 		b.Fatal(err)
 	}
-	b.Cleanup(rt.Close)
-	return rt
 }
 
 func BenchmarkInvocationRoundTrip(b *testing.B) {
@@ -112,6 +119,120 @@ func BenchmarkInvocationRoundTrip(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+func BenchmarkInvocationRoundTripWithOnCall(b *testing.B) {
+	rt := newBenchmarkRuntime(b, store.NewMemory(), clock.Real{}, 0, 0, OnCall(func(CallObservation) {}))
+	entity := Ref[benchmarkEntity](rt, "benchmark")
+	if err := entity.Noop(context.Background()); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := entity.Noop(context.Background()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkForwardingRoundTrip(b *testing.B) {
+	first, _, localID, remoteID := newBenchmarkForwardingRuntimes(b)
+	local := Ref[benchmarkEntity](first, localID.Key)
+	remote := Ref[benchmarkEntity](first, remoteID.Key)
+	if err := local.Noop(context.Background()); err != nil {
+		b.Fatal(err)
+	}
+	if err := remote.Noop(context.Background()); err != nil {
+		b.Fatal(err)
+	}
+
+	benchmarkInvocation := func(b *testing.B, entity benchmarkEntity) {
+		b.Helper()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if err := entity.Noop(context.Background()); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	b.Run("Local", func(b *testing.B) {
+		benchmarkInvocation(b, local)
+	})
+	b.Run("Forwarded", func(b *testing.B) {
+		benchmarkInvocation(b, remote)
+	})
+}
+
+func newBenchmarkForwardingRuntimes(b *testing.B) (*Runtime, *Runtime, Identity, Identity) {
+	b.Helper()
+	backend := store.NewMemory()
+	members := store.NewMemory()
+	sourceClock := clock.NewFake(time.Unix(0, 0).UTC())
+	firstTransport, err := transport.New("127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	secondTransport, err := transport.New("127.0.0.1:0")
+	if err != nil {
+		_ = firstTransport.Close()
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = firstTransport.Close() })
+	b.Cleanup(func() { _ = secondTransport.Close() })
+
+	newNode := func(nodeTransport *transport.TCP, generation string) *Runtime {
+		rt, err := New(
+			WithStore(backend),
+			WithMemberStore(members),
+			WithNodeAddr(nodeTransport.Addr()),
+			WithGeneration(generation),
+			WithClock(sourceClock),
+			WithHeartbeatInterval(time.Hour),
+			WithViewInterval(time.Hour),
+			WithDeadAfter(time.Hour),
+			WithIdleTimeout(0),
+			WithEvictionInterval(0),
+			WithScheduleInterval(0),
+			WithTransport(nodeTransport),
+		)
+		if err != nil {
+			b.Fatal(err)
+		}
+		installBenchmarkEntity(b, rt)
+		b.Cleanup(rt.Close)
+		return rt
+	}
+	first := newNode(firstTransport, "benchmark-first")
+	second := newNode(secondTransport, "benchmark-second")
+	view := cluster.NewView([]store.Member{
+		{NodeAddr: firstTransport.Addr(), Generation: "benchmark-first", Status: store.MemberActive},
+		{NodeAddr: secondTransport.Addr(), Generation: "benchmark-second", Status: store.MemberActive},
+	})
+	first.clusterView.Store(&view)
+	second.clusterView.Store(&view)
+
+	var localID, remoteID Identity
+	for index := 0; index < 4096; index++ {
+		id := Identity{Type: TypeName[benchmarkEntity](), Key: fmt.Sprintf("forward-%04d", index)}
+		owner, ok := cluster.Owner(view, store.Identity(id))
+		if !ok {
+			continue
+		}
+		switch owner {
+		case firstTransport.Addr():
+			localID = id
+		case secondTransport.Addr():
+			remoteID = id
+		}
+		if localID != (Identity{}) && remoteID != (Identity{}) {
+			return first, second, localID, remoteID
+		}
+	}
+	b.Fatal("could not find local and forwarded benchmark identities")
+	return nil, nil, Identity{}, Identity{}
 }
 
 func BenchmarkStateWrite(b *testing.B) {
