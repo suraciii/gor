@@ -35,7 +35,9 @@ type Activation = runtimepkg.Activation
 //
 // For a forwarded call, the initiating Runtime reports one observation whose
 // duration includes forwarding; the owning Runtime does not report a second
-// observation.
+// observation. If the forwarded call returns a remote error, Err contains an
+// error reconstructed from its text, so errors.Is and errors.As do not apply
+// to the original remote error.
 type CallObservation struct {
 	EntityType string
 	Method     string
@@ -319,8 +321,9 @@ func OnError(f func(id Identity, method string, err error)) Option {
 // scheduler. If omitted, no observations are produced.
 //
 // The callback runs synchronously on the invoking goroutine and may be called
-// concurrently for different calls. For forwarded calls it runs only on the
-// initiating Runtime, and the duration includes forwarding.
+// concurrently for different calls. A forwarded call produces one observation
+// on the initiating Runtime; the target Runtime does not produce a second
+// observation, and the duration includes forwarding.
 func OnCall(f func(CallObservation)) Option {
 	return func(config *Config) {
 		config.OnCall = f
@@ -449,7 +452,11 @@ func (e WrongOwnerError) Error() string {
 // call. In a clustered runtime, an invocation for a remote owner is forwarded;
 // an identity with no current owner returns WrongOwnerError without being
 // forwarded. Errors from registration, activation, dispatch, context
-// cancellation, or forwarding are returned to the caller.
+// cancellation, or forwarding are returned to the caller. When a forwarded
+// call returns an error from the remote Runtime, the error crosses the
+// transport as text and does not retain its original type or wrapping; use of
+// errors.Is or errors.As against the original remote error is therefore not
+// applicable.
 //
 // After the runtime has shut down, Invoke does not start a new entity call.
 func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {

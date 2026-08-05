@@ -5,6 +5,9 @@ import (
 	"database/sql"
 )
 
+// WriteMember atomically creates or replaces a member row using its ETag.
+// It returns the new ETag, or an error matching ErrConflict when the expected
+// version does not match.
 func (s *SQLite) WriteMember(ctx context.Context, member Member) (ETag, error) {
 	var (
 		result sql.Result
@@ -52,6 +55,8 @@ WHERE node_addr = ? AND generation = ? AND etag = ?`,
 	return member.ETag + 1, nil
 }
 
+// ListMembers returns every member, sorted by address and generation, together
+// with the current time from the configured clock.
 func (s *SQLite) ListMembers(ctx context.Context) (MemberSnapshot, error) {
 	rows, err := s.readDB.QueryContext(ctx, `
 SELECT node_addr, generation, status, iam_alive_at, suspect_votes, etag

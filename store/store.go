@@ -1,3 +1,9 @@
+// Package store defines the persistence interfaces used by gor and provides
+// in-memory and SQLite implementations.
+//
+// Store implementations are part of the supported extension surface. They
+// persist entity state and coordinate membership and schedules through
+// compare-and-swap operations.
 package store
 
 import (
@@ -9,22 +15,43 @@ import (
 	"github.com/suraciii/gor/clock"
 )
 
+// Identity names one entity record by its registered type and key.
 type Identity struct {
 	Type string
 	Key  string
 }
 
+// ETag identifies the version of a record, member, or schedule row.
+// The zero value means that the row must not exist when it is first written.
 type ETag int64
 
+// ErrConflict reports that a compare-and-swap expected an ETag different from
+// the row's current ETag. It is a sentinel error: callers can use errors.Is,
+// and implementations may wrap it when returning the error.
 var ErrConflict = errors.New("store: etag conflict")
 
+// Record is the data and ETag returned for one entity identity.
+//
+// A missing record is returned as the zero Record with a nil error. Store
+// implementations must not retain or expose the caller's mutable Data slice.
 type Record struct {
 	Data []byte
 	ETag ETag
 }
 
+// Store persists one entity-state record per Identity.
+//
+// Implementations must support concurrent calls. Write must atomically compare
+// the current ETag with expect and commit only on an exact match. A missing
+// record has ETag zero; a successful write stores a new value and returns the
+// incremented ETag. A failed comparison must leave the record unchanged and
+// return an error matching ErrConflict with errors.Is. Methods must honor the
+// context and return its error when it is canceled before the operation can
+// complete.
 type Store interface {
+	// Read returns the record for id, or a zero Record and nil when it is absent.
 	Read(context.Context, Identity) (Record, error)
+	// Write replaces id's data when its current ETag equals expect.
 	Write(context.Context, Identity, []byte, ETag) (ETag, error)
 }
 
@@ -36,6 +63,8 @@ func timeFromValue(value int64) time.Time {
 	return time.Unix(0, value).UTC()
 }
 
+// Memory is an in-memory implementation of Store, MemberStore, and
+// ScheduleStore.
 type Memory struct {
 	mu          sync.RWMutex
 	records     map[Identity]Record
@@ -48,6 +77,10 @@ var _ Store = (*Memory)(nil)
 var _ ScheduleStore = (*Memory)(nil)
 var _ MemberStore = (*Memory)(nil)
 
+// NewMemory returns an empty in-memory store.
+//
+// If a clock is supplied, the first clock is used for MemberSnapshot.TableNow;
+// when omitted, a Real clock is used. Additional clocks are ignored.
 func NewMemory(memberClocks ...clock.Clock) *Memory {
 	memberClock := clock.Clock(clock.Real{})
 	if len(memberClocks) > 0 {
@@ -61,6 +94,8 @@ func NewMemory(memberClocks ...clock.Clock) *Memory {
 	}
 }
 
+// Read returns a copy of the stored record for id, or a zero Record and nil
+// when id has not been written.
 func (m *Memory) Read(ctx context.Context, id Identity) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, err
@@ -76,6 +111,9 @@ func (m *Memory) Read(ctx context.Context, id Identity) (Record, error) {
 	return record, nil
 }
 
+// Write atomically replaces id's data when expect matches its current ETag.
+// It returns the incremented ETag, or an error matching ErrConflict when the
+// comparison fails.
 func (m *Memory) Write(ctx context.Context, id Identity, data []byte, expect ETag) (ETag, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
