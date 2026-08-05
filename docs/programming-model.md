@@ -220,13 +220,13 @@ Each event gives the entity identity, the original error, and a clear source. A 
 
 Errors still follow the [Errors and cancellation](errors.md) section. Across nodes, only declared stable codes are usable for business branching; error text is for display and logging.
 
-The sink does not retry, back off, or alert for the application. Scheduled delivery is at-most-once by design; an application that retries must design idempotency and state itself. Poller scan and preemption failures are not reported here either.
+The sink does not retry, back off, or alert for the application. Scheduled delivery is at-most-once by design; an application that retries must design idempotency and state itself. Poller scan and claim failures are not reported here either.
 
 When migrating an existing application, change the handler that used to receive identity, action name, and error to receive an event, then read the action name or the leave reason from the source. Stop guessing the source from the action name.
 
 ### Gap
 
-The background error sink is implemented: each event gives the entity, the original error, and a closed set of sources; scheduled delivery carries the delivered action's name, teardown failure carries the entity's leave reason, sources branch by type instead of text comparison, and the source set cannot grow outside the runtime. Deactivation reasons are implemented: when an entity leaves, it receives one of four reasons — idle, current node lost ownership, graceful stop, or instance untrusted; the reason is fixed when the leave begins and later events never rewrite it; the work context given at leave has no deadline and is never canceled. A graceful stop waits for teardown that has started; abrupt stops and declared-dead nodes skip teardown that has not started and do not wait for teardown that has. Poller scan and preemption failures are not reported from this sink; the delivery canceled mid-shutdown is not reported either. Everything else in this section is implemented.
+The background error sink is implemented: each event gives the entity, the original error, and a closed set of sources; scheduled delivery carries the delivered action's name, teardown failure carries the entity's leave reason, sources branch by type instead of text comparison, and the source set cannot grow outside the runtime. Deactivation reasons are implemented: when an entity leaves, it receives one of four reasons — idle, current node lost ownership, graceful stop, or instance untrusted; the reason is fixed when the leave begins and later events never rewrite it; the work context given at leave has no deadline and is never canceled. A graceful stop waits for teardown that has started; abrupt stops and declared-dead nodes skip teardown that has not started and do not wait for teardown that has. Poller scan and claim failures are not reported from this sink; the delivery canceled mid-shutdown is not reported either. Everything else in this section is implemented.
 
 ## Runtime observability
 
