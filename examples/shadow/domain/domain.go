@@ -13,6 +13,16 @@ const OfflineAfter = 30 * time.Second
 
 var ErrWorkshopIDRequired = errors.New("workshop id is required")
 
+const (
+	LifecycleActivated   = "activated"
+	LifecycleDeactivated = "deactivated"
+)
+
+type LifecycleEvent struct {
+	Identity gor.Identity
+	Kind     string
+}
+
 type Shadow struct {
 	ReportedState string
 	ReportedAt    time.Time
@@ -37,18 +47,28 @@ type Workshop interface {
 }
 
 type device struct {
-	binder   *gor.Binder
-	id       gor.Identity
-	shadow   gor.State[Shadow]
-	schedule gor.Schedule
+	binder          *gor.Binder
+	id              gor.Identity
+	shadow          gor.State[Shadow]
+	schedule        gor.Schedule
+	lifecycleEvents chan<- LifecycleEvent
 }
 
 func NewDevice(b *gor.Binder) Device {
+	return newDevice(b, nil)
+}
+
+func NewDeviceWithLifecycle(b *gor.Binder, events chan<- LifecycleEvent) Device {
+	return newDevice(b, events)
+}
+
+func newDevice(b *gor.Binder, events chan<- LifecycleEvent) Device {
 	return &device{
-		binder:   b,
-		id:       gor.Self(b),
-		shadow:   gor.NewState[Shadow](b, "shadow"),
-		schedule: gor.NewSchedule(b),
+		binder:          b,
+		id:              gor.Self(b),
+		shadow:          gor.NewState[Shadow](b, "shadow"),
+		schedule:        gor.NewSchedule(b),
+		lifecycleEvents: events,
 	}
 }
 
@@ -94,12 +114,20 @@ func (d *device) Shadow(context.Context) (Shadow, error) {
 
 func (d *device) OnActivate(context.Context) error {
 	log.Printf("%s activated", d.id.Key)
+	d.emitLifecycle(LifecycleActivated)
 	return nil
 }
 
 func (d *device) OnDeactivate(context.Context) error {
 	log.Printf("%s deactivated", d.id.Key)
+	d.emitLifecycle(LifecycleDeactivated)
 	return nil
+}
+
+func (d *device) emitLifecycle(kind string) {
+	if d.lifecycleEvents != nil {
+		d.lifecycleEvents <- LifecycleEvent{Identity: d.id, Kind: kind}
+	}
 }
 
 func (d *device) MarkOffline(ctx context.Context) error {
@@ -112,11 +140,41 @@ func (d *device) MarkOffline(ctx context.Context) error {
 }
 
 type workshop struct {
-	online gor.State[map[string]struct{}]
+	id              gor.Identity
+	online          gor.State[map[string]struct{}]
+	lifecycleEvents chan<- LifecycleEvent
 }
 
 func NewWorkshop(b *gor.Binder) Workshop {
-	return &workshop{online: gor.NewState[map[string]struct{}](b, "online")}
+	return newWorkshop(b, nil)
+}
+
+func NewWorkshopWithLifecycle(b *gor.Binder, events chan<- LifecycleEvent) Workshop {
+	return newWorkshop(b, events)
+}
+
+func newWorkshop(b *gor.Binder, events chan<- LifecycleEvent) Workshop {
+	return &workshop{
+		id:              gor.Self(b),
+		online:          gor.NewState[map[string]struct{}](b, "online"),
+		lifecycleEvents: events,
+	}
+}
+
+func (w *workshop) OnActivate(context.Context) error {
+	w.emitLifecycle(LifecycleActivated)
+	return nil
+}
+
+func (w *workshop) OnDeactivate(context.Context) error {
+	w.emitLifecycle(LifecycleDeactivated)
+	return nil
+}
+
+func (w *workshop) emitLifecycle(kind string) {
+	if w.lifecycleEvents != nil {
+		w.lifecycleEvents <- LifecycleEvent{Identity: w.id, Kind: kind}
+	}
 }
 
 func (w *workshop) DeviceOnline(ctx context.Context, deviceID string) error {

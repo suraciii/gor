@@ -63,6 +63,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 	}()
 
 	sourceClock := clock.Real{}
+	lifecycleEvents := make(chan domain.LifecycleEvent, 2*(*deviceCount)+4)
 	rt, err := gor.New(
 		gor.WithStore(database),
 		gor.WithClock(sourceClock),
@@ -75,7 +76,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 		return fmt.Errorf("create runtime: %w", err)
 	}
 	defer rt.Close()
-	if err := shadow.Register(rt); err != nil {
+	if err := shadow.RegisterWithLifecycle(rt, lifecycleEvents); err != nil {
 		return fmt.Errorf("register shadow entities: %w", err)
 	}
 
@@ -87,7 +88,9 @@ func run(ctx context.Context, args []string) (runErr error) {
 		return fmt.Errorf("configure device-000: %w", err)
 	}
 	log.Println("initial reports and configuration complete; waiting for idle eviction")
-	time.Sleep(idleTimeout + 2*evictionInterval)
+	if err := waitForDeactivations(ctx, lifecycleEvents, *deviceCount+1); err != nil {
+		return err
+	}
 
 	if identities := rt.Identities(); len(identities) != 0 {
 		return fmt.Errorf("active identities after idle eviction = %#v, want none", identities)
@@ -100,6 +103,21 @@ func run(ctx context.Context, args []string) (runErr error) {
 		return fmt.Errorf("device-000 configuration after eviction = %q, want %q", value.Configuration, "sample-rate=10s")
 	}
 	log.Printf("device-000 was evicted and reloaded from store; configuration: %s", value.Configuration)
+	return nil
+}
+
+func waitForDeactivations(ctx context.Context, events <-chan domain.LifecycleEvent, expected int) error {
+	deactivated := make(map[gor.Identity]struct{}, expected)
+	for len(deactivated) < expected {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for idle eviction: %w", ctx.Err())
+		case event := <-events:
+			if event.Kind == domain.LifecycleDeactivated {
+				deactivated[event.Identity] = struct{}{}
+			}
+		}
+	}
 	return nil
 }
 

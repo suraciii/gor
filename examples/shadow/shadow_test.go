@@ -1,11 +1,8 @@
 package shadow_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -113,51 +110,58 @@ func TestDeviceShadowTracksReportsAndWorkshopPresence(t *testing.T) {
 	})
 }
 
-func TestDeviceLifecycleLogsActivationAndDeactivation(t *testing.T) {
+func TestDeviceIdleEvictionRunsLifecycleAndReloadsState(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		logger := log.Default()
-		previousWriter := logger.Writer()
-		var output bytes.Buffer
-		logger.SetOutput(&output)
-
 		sourceClock := clock.NewFake(time.Unix(0, 0).UTC())
+		events := make(chan domain.LifecycleEvent, 8)
 		rt, err := gor.New(
 			gor.WithStore(store.NewMemory()),
 			gor.WithClock(sourceClock),
-			gor.WithIdleTimeout(0),
-			gor.WithEvictionInterval(0),
+			gor.WithIdleTimeout(2*time.Second),
+			gor.WithEvictionInterval(time.Second),
 			gor.WithScheduleInterval(0),
 		)
 		if err != nil {
-			logger.SetOutput(previousWriter)
 			t.Fatal(err)
 		}
-		if err := shadow.Register(rt); err != nil {
+		if err := shadow.RegisterWithLifecycle(rt, events); err != nil {
 			rt.Close()
-			logger.SetOutput(previousWriter)
 			t.Fatal(err)
 		}
-		defer func() {
-			rt.Close()
-			logger.SetOutput(previousWriter)
-		}()
+		defer rt.Close()
 
 		device := gor.Ref[domain.Device](rt, "device-1")
-		if _, err := device.Shadow(context.Background()); err != nil {
+		if err := device.Report(context.Background(), "assembly", "temperature=20"); err != nil {
 			t.Fatal(err)
 		}
-		rt.Deactivate(gor.Identity{Type: gor.TypeName[domain.Device](), Key: "device-1"})
-		synctest.Wait()
-		if _, err := device.Shadow(context.Background()); err != nil {
+		if err := device.Configure(context.Background(), "sample-rate=10s"); err != nil {
 			t.Fatal(err)
 		}
+		expectLifecycleEvent(t, events, gor.Identity{Type: gor.TypeName[domain.Device](), Key: "device-1"}, domain.LifecycleActivated)
 
-		for _, event := range []string{"device-1 activated", "device-1 deactivated"} {
-			if !strings.Contains(output.String(), event) {
-				t.Fatalf("lifecycle log = %q, want %q", output.String(), event)
-			}
+		sourceClock.Advance(3 * time.Second)
+		synctest.Wait()
+		expectLifecycleEvent(t, events, gor.Identity{Type: gor.TypeName[domain.Device](), Key: "device-1"}, domain.LifecycleDeactivated)
+
+		value, err := device.Shadow(context.Background())
+		if err != nil {
+			t.Fatal(err)
 		}
+		if value.Configuration != "sample-rate=10s" {
+			t.Fatalf("shadow after reactivation = %#v, want configuration restored from store", value)
+		}
+		expectLifecycleEvent(t, events, gor.Identity{Type: gor.TypeName[domain.Device](), Key: "device-1"}, domain.LifecycleActivated)
 	})
+}
+
+func expectLifecycleEvent(t *testing.T, events <-chan domain.LifecycleEvent, id gor.Identity, kind string) {
+	t.Helper()
+	for {
+		event := <-events
+		if event.Identity == id && event.Kind == kind {
+			return
+		}
+	}
 }
 
 func TestScheduledFailureReachesOnError(t *testing.T) {
