@@ -20,6 +20,7 @@ import (
 var ErrTypeNotInstalled = errors.New("entity type is not installed; call InstallType or run the generated Install")
 
 type Identity = runtimepkg.Identity
+type Activation = runtimepkg.Activation
 
 type Scope interface {
 	scopeRuntime() *Runtime

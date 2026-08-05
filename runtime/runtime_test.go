@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -720,6 +721,137 @@ func TestRuntime_SerializesConcurrentCallsPerKey(t *testing.T) {
 		}
 		if err := <-secondDone; err != nil {
 			t.Fatalf("second invocation error = %v", err)
+		}
+	})
+}
+
+func TestRuntime_ActivationsReportsQueuedCallsAndSorts(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
+		defer rt.Close()
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var blockCalls atomic.Int32
+		registration := Registration{
+			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Dispatch: func(_ context.Context, _ any, method string, _ any, _ any) error {
+				if method == "Block" && blockCalls.Add(1) == 1 {
+					close(started)
+					<-release
+				}
+				return nil
+			},
+		}
+		for _, name := range []string{"account", "alpha", "zeta"} {
+			if err := rt.Register(name, registration); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		firstDone := make(chan error, 1)
+		queuedDone := make(chan error, 1)
+		go func() {
+			firstDone <- rt.Invoke(context.Background(), Identity{Type: "account", Key: "zulu"}, "Block", nil, nil)
+		}()
+		synctest.Wait()
+		<-started
+		go func() {
+			queuedDone <- rt.Invoke(context.Background(), Identity{Type: "account", Key: "zulu"}, "Block", nil, nil)
+		}()
+		synctest.Wait()
+
+		if got, want := rt.Activations(), []Activation{{Identity: Identity{Type: "account", Key: "zulu"}, Queued: 1}}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("Activations while call is blocked = %#v, want %#v", got, want)
+		}
+
+		close(release)
+		synctest.Wait()
+		if err := <-firstDone; err != nil {
+			t.Fatalf("first call error = %v", err)
+		}
+		if err := <-queuedDone; err != nil {
+			t.Fatalf("queued call error = %v", err)
+		}
+
+		ids := []Identity{
+			{Type: "zeta", Key: "a"},
+			{Type: "alpha", Key: "z"},
+			{Type: "alpha", Key: "a"},
+		}
+		for _, id := range ids {
+			if err := rt.Invoke(context.Background(), id, "Done", nil, nil); err != nil {
+				t.Fatalf("Invoke(%v): %v", id, err)
+			}
+		}
+		want := []Activation{
+			{Identity: Identity{Type: "account", Key: "zulu"}},
+			{Identity: Identity{Type: "alpha", Key: "a"}},
+			{Identity: Identity{Type: "alpha", Key: "z"}},
+			{Identity: Identity{Type: "zeta", Key: "a"}},
+		}
+		if got := rt.Activations(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("Activations = %#v, want %#v", got, want)
+		}
+	})
+}
+
+func TestRuntime_ActivationsExcludesNonActiveStates(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
+		defer rt.Close()
+
+		creating := make(chan struct{})
+		releaseCreate := make(chan struct{})
+		deactivating := make(chan struct{})
+		releaseDeactivate := make(chan struct{})
+		var factoryCalls atomic.Int32
+		if err := rt.Register("account", Registration{
+			Factory: func(context.Context, Identity) (any, error) {
+				if factoryCalls.Add(1) == 1 {
+					close(creating)
+					<-releaseCreate
+				}
+				return &testEntity{}, nil
+			},
+			Dispatch: func(context.Context, any, string, any, any) error { return nil },
+			OnDeactivate: func(context.Context, Identity, any) {
+				close(deactivating)
+				<-releaseDeactivate
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		callDone := make(chan error, 1)
+		go func() { callDone <- rt.Invoke(context.Background(), id, "Value", nil, nil) }()
+		synctest.Wait()
+		<-creating
+		if got := rt.Activations(); len(got) != 0 {
+			t.Fatalf("Activations while creating = %#v, want empty", got)
+		}
+
+		close(releaseCreate)
+		synctest.Wait()
+		if err := <-callDone; err != nil {
+			t.Fatalf("initial invocation error = %v", err)
+		}
+		if got := rt.Activations(); len(got) != 1 {
+			t.Fatalf("Activations after creation = %#v, want one active activation", got)
+		}
+
+		rt.Deactivate(id)
+		synctest.Wait()
+		<-deactivating
+		if got := rt.Activations(); len(got) != 0 {
+			t.Fatalf("Activations while deactivating = %#v, want empty", got)
+		}
+
+		close(releaseDeactivate)
+		synctest.Wait()
+		if got := rt.Activations(); len(got) != 0 {
+			t.Fatalf("Activations after stopping = %#v, want empty", got)
 		}
 	})
 }

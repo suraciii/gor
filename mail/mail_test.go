@@ -176,3 +176,43 @@ func TestMailbox_RejectsQueuedCallsOnClose(t *testing.T) {
 		}
 	})
 }
+
+func TestMailbox_LenReportsQueuedCalls(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		box := New(1)
+		defer box.Close()
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		firstDone := make(chan error, 1)
+		queuedDone := make(chan error, 1)
+		go func() {
+			_, err := box.Call(context.Background(), func(context.Context) (any, error) {
+				close(started)
+				<-release
+				return nil, nil
+			})
+			firstDone <- err
+		}()
+		synctest.Wait()
+		<-started
+
+		go func() {
+			_, err := box.Call(context.Background(), func(context.Context) (any, error) { return nil, nil })
+			queuedDone <- err
+		}()
+		synctest.Wait()
+		if got := box.Len(); got != 1 {
+			t.Fatalf("Len = %d, want 1", got)
+		}
+
+		close(release)
+		synctest.Wait()
+		if err := <-firstDone; err != nil {
+			t.Fatalf("first call error = %v", err)
+		}
+		if err := <-queuedDone; err != nil {
+			t.Fatalf("queued call error = %v", err)
+		}
+	})
+}

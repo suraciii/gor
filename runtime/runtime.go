@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -19,6 +20,11 @@ var (
 type Identity struct {
 	Type string
 	Key  string
+}
+
+type Activation struct {
+	Identity Identity
+	Queued   int
 }
 
 type Dispatch func(context.Context, any, string, any, any) error
@@ -180,6 +186,29 @@ func (r *Runtime) Identities() []Identity {
 		identities = append(identities, id)
 	}
 	return identities
+}
+
+func (r *Runtime) Activations() []Activation {
+	r.mu.Lock()
+	activations := make([]Activation, 0, len(r.activations))
+	for _, act := range r.activations {
+		if act.state != ActivationActive {
+			continue
+		}
+		activations = append(activations, Activation{
+			Identity: act.id,
+			Queued:   act.mailbox.Len(),
+		})
+	}
+	r.mu.Unlock()
+
+	sort.Slice(activations, func(i, j int) bool {
+		if activations[i].Identity.Type != activations[j].Identity.Type {
+			return activations[i].Identity.Type < activations[j].Identity.Type
+		}
+		return activations[i].Identity.Key < activations[j].Identity.Key
+	})
+	return activations
 }
 
 func (r *Runtime) Close() {
