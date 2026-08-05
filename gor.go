@@ -23,6 +23,24 @@ import (
 type Identity = runtimepkg.Identity
 type Activation = runtimepkg.Activation
 
+// DeactivationReason describes why an activation left the active state. The
+// reason is fixed at the first transition out of active and is never rewritten
+// by later events.
+type DeactivationReason = runtimepkg.DeactivationReason
+
+const (
+	// Idle reports that the activation was evicted for idleness.
+	Idle DeactivationReason = runtimepkg.Idle
+	// OwnershipLost reports that this node no longer owns the identity, or
+	// the view has no active owner.
+	OwnershipLost DeactivationReason = runtimepkg.OwnershipLost
+	// RuntimeClosed reports that the root runtime began a normal shutdown.
+	RuntimeClosed DeactivationReason = runtimepkg.RuntimeClosed
+	// Faulted reports that the instance is no longer trusted: a method
+	// panicked, or the entity requested discarding the current instance.
+	Faulted DeactivationReason = runtimepkg.Faulted
+)
+
 // CallObservation describes one invocation observed by an OnCall callback.
 // EntityType and Method identify the call, Duration is measured with the
 // observing Runtime's configured clock, and Err is the error returned to the
@@ -54,10 +72,14 @@ type Activatable interface {
 }
 
 // Deactivatable is implemented by an entity that needs a hook when its
-// activation is normally stopped. Its error is reported through OnError when
+// activation leaves the active state. reason is fixed when the deactivation
+// begins and is never rewritten. The hook receives a fresh context with no
+// deadline that is never canceled, independent of any caller's context; a
+// normal shutdown waits for the hook, so it must finish promptly. The hook
+// cannot prevent deactivation. Its error is reported through OnError when
 // configured; Kill skips this hook.
 type Deactivatable interface {
-	OnDeactivate(context.Context) error
+	OnDeactivate(context.Context, DeactivationReason) error
 }
 
 // Runtime coordinates entity registration, activation, invocation, state, and
@@ -567,13 +589,13 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 			}
 			return err
 		},
-		OnDeactivate: func(ctx context.Context, id runtimepkg.Identity, instance any) {
+		OnDeactivate: func(ctx context.Context, id runtimepkg.Identity, reason runtimepkg.DeactivationReason, instance any) {
 			bound := instance.(boundInstance)
 			deactivatable, ok := bound.entity.(Deactivatable)
 			if !ok {
 				return
 			}
-			err := deactivatable.OnDeactivate(ctx)
+			err := deactivatable.OnDeactivate(ctx, reason)
 			if err != nil && rt.onError != nil {
 				rt.onError(Identity(id), "OnDeactivate", err)
 			}

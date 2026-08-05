@@ -32,7 +32,7 @@ func (e *observedAccountEntity) OnActivate(context.Context) error {
 	return e.activationErr
 }
 
-func (e *observedAccountEntity) OnDeactivate(context.Context) error {
+func (e *observedAccountEntity) OnDeactivate(_ context.Context, _ DeactivationReason) error {
 	if e.deactivated != nil {
 		e.deactivated <- struct{}{}
 	}

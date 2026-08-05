@@ -35,10 +35,22 @@ type Activation struct {
 
 type Dispatch func(context.Context, any, string, any, any) error
 
+// DeactivationReason describes why an activation left the active state. It is
+// fixed at the first transition out of active and is never rewritten by later
+// events.
+type DeactivationReason uint8
+
+const (
+	Idle DeactivationReason = iota + 1
+	OwnershipLost
+	RuntimeClosed
+	Faulted
+)
+
 type Registration struct {
 	Factory      func(context.Context, Identity) (any, error)
 	Dispatch     Dispatch
-	OnDeactivate func(context.Context, Identity, any)
+	OnDeactivate func(context.Context, Identity, DeactivationReason, any)
 }
 
 type Discard struct {
@@ -96,6 +108,10 @@ type Runtime struct {
 	killCancel           context.CancelFunc
 }
 
+// ActivationState is the explicit state machine an activation walks: an
+// activation is created activating, becomes active, then leaves active exactly
+// once (deactivating) before it is stopped. The deactivation reason is written
+// on that single departure.
 type ActivationState uint8
 
 const (
@@ -108,8 +124,9 @@ const (
 type activation struct {
 	id               Identity
 	instance         any
-	onDeactivate     func(context.Context, Identity, any)
+	onDeactivate     func(context.Context, Identity, DeactivationReason, any)
 	skipOnDeactivate bool
+	reason           DeactivationReason
 	mailbox          *mail.Box
 	lastUsed         time.Time
 	calls            int
@@ -186,6 +203,9 @@ func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args a
 	}
 }
 
+// Deactivate stops the activation for id because this node no longer owns it
+// (or the view has no active owner). The deactivation hook runs with
+// OwnershipLost.
 func (r *Runtime) Deactivate(id Identity) {
 	r.mu.Lock()
 	act, ok := r.activations[id]
@@ -193,7 +213,7 @@ func (r *Runtime) Deactivate(id Identity) {
 		r.mu.Unlock()
 		return
 	}
-	started := r.deactivateLocked(act)
+	started := r.deactivateLocked(act, OwnershipLost)
 	r.mu.Unlock()
 	if started {
 		act.mailbox.Close()
@@ -321,7 +341,7 @@ func (r *Runtime) beginStopDeactivationsLocked(skip bool) {
 		if skip {
 			act.skipOnDeactivate = true
 		}
-		if beginDeactivation(act) {
+		if beginDeactivation(act, RuntimeClosed) {
 			r.startDeactivationWaiterLocked(act)
 		}
 	}
@@ -504,7 +524,7 @@ func (r *Runtime) evict(now time.Time) {
 	}
 	victims := make([]*activation, 0)
 	for _, act := range r.activations {
-		if act.state == ActivationActive && act.calls == 0 && !now.Before(act.lastUsed.Add(r.idleTimeout)) && r.deactivateLocked(act) {
+		if act.state == ActivationActive && act.calls == 0 && !now.Before(act.lastUsed.Add(r.idleTimeout)) && r.deactivateLocked(act, Idle) {
 			victims = append(victims, act)
 		}
 	}
@@ -517,7 +537,7 @@ func (r *Runtime) evict(now time.Time) {
 
 func (r *Runtime) stopActivation(act *activation) {
 	r.mu.Lock()
-	started := r.deactivateLocked(act)
+	started := r.deactivateLocked(act, Faulted)
 	r.mu.Unlock()
 	if !started {
 		return
@@ -525,8 +545,8 @@ func (r *Runtime) stopActivation(act *activation) {
 	act.mailbox.Close()
 }
 
-func (r *Runtime) deactivateLocked(act *activation) bool {
-	if !beginDeactivation(act) {
+func (r *Runtime) deactivateLocked(act *activation, reason DeactivationReason) bool {
+	if !beginDeactivation(act, reason) {
 		return false
 	}
 	r.startDeactivationWaiterLocked(act)
@@ -541,13 +561,17 @@ func (r *Runtime) startDeactivationWaiterLocked(act *activation) {
 func (r *Runtime) waitForDeactivation(act *activation) {
 	<-act.mailbox.Done()
 	r.mu.Lock()
-	var onDeactivate func(context.Context, Identity, any)
+	var (
+		onDeactivate func(context.Context, Identity, DeactivationReason, any)
+		reason       DeactivationReason
+	)
 	if !act.skipOnDeactivate {
 		onDeactivate = act.onDeactivate
+		reason = act.reason
 	}
 	r.mu.Unlock()
 	if onDeactivate != nil {
-		onDeactivate(context.Background(), act.id, act.instance)
+		onDeactivate(context.Background(), act.id, reason, act.instance)
 	}
 	r.finishDeactivation(act)
 	r.deactivationFinished()
@@ -577,11 +601,12 @@ func (r *Runtime) finishDeactivation(act *activation) {
 	}
 }
 
-func beginDeactivation(act *activation) bool {
+func beginDeactivation(act *activation, reason DeactivationReason) bool {
 	if act.state != ActivationActive {
 		return false
 	}
 	act.state = ActivationDeactivating
+	act.reason = reason
 	return true
 }
 
