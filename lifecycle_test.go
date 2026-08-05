@@ -2,6 +2,7 @@ package gor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -236,10 +237,44 @@ func TestRootLifecycle_AdmitGatesBeforeEngineClose(t *testing.T) {
 	})
 }
 
-// TestRootLifecycle_KillAfterCloseEscalates covers the closing-to-killing
-// upgrade: Close then Kill both return, and the runtime ends in a stopped
-// state that rejects new calls.
-func TestRootLifecycle_KillAfterCloseEscalates(t *testing.T) {
+// TestRootLifecycle_HandleInvokeGatedBeforeEngineClose proves the inbound invoke
+// handler shares the same root admission gate: after beginClose the engine is
+// still open, so only the gate can reject a forwarded request that would
+// otherwise execute and succeed.
+func TestRootLifecycle_HandleInvokeGatedBeforeEngineClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
+		registerAccount(t, rt)
+
+		// Enter closing without closing the engine.
+		rt.beginClose()
+
+		payload, err := rt.handleInvoke(context.Background(), callRequest{
+			Kind:   requestKindInvoke,
+			Type:   TypeName[Account](),
+			Key:    "alice",
+			Method: "Balance",
+			Args:   json.RawMessage(`{}`),
+		})
+		if err != nil {
+			t.Fatalf("handleInvoke error = %v, want nil", err)
+		}
+		var response callResponse
+		if err := json.Unmarshal(payload, &response); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if response.Error == nil || response.Error.Code != string(ErrRuntimeClosed) {
+			t.Fatalf("inbound invoke after beginClose = %#v, want runtime-closed code", response.Error)
+		}
+		rt.Close()
+	})
+}
+
+// TestRootLifecycle_KillAfterStoppedIsIdempotent covers a Kill that arrives
+// after Close has fully returned: the root is already stopped, so Kill starts
+// no new shutdown, and new calls stay rejected. Escalation of an in-progress
+// Close is covered by TestRootLifecycle_KillDuringCloseEscalatesAndCancels.
+func TestRootLifecycle_KillAfterStoppedIsIdempotent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 		registerAccount(t, rt)

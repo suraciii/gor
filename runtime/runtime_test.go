@@ -407,6 +407,71 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 	})
 }
 
+// TestRuntime_KillEscalationSkipsPendingDeactivationHook covers the closing to
+// killing upgrade: BeginClose starts deactivation with hooks enabled, but a
+// running method keeps the mailbox open, so the hook has not started when
+// BeginKill escalates. The escalation must mark the pending hook to skip, like
+// a direct sudden stop does.
+func TestRuntime_KillEscalationSkipsPendingDeactivationHook(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(0, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		rt := New(Config{
+			Clock:           fakeClock,
+			MailboxCapacity: 1,
+			IdleTimeout:     time.Second,
+		})
+		defer stopEngine(rt)
+		hookCalled := make(chan struct{}, 1)
+		started := make(chan struct{})
+		release := make(chan struct{})
+		if err := rt.Register("account", Registration{
+			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Dispatch: func(ctx context.Context, _ any, method string, _ any, _ any) error {
+				if method != "Block" {
+					return errors.New("unknown method")
+				}
+				close(started)
+				<-ctx.Done()
+				<-release
+				return nil
+			},
+			OnDeactivate: func(context.Context, Identity, any) {
+				hookCalled <- struct{}{}
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		blockDone := make(chan error, 1)
+		go func() {
+			blockDone <- rt.Invoke(context.Background(), id, "Block", nil, nil)
+		}()
+		synctest.Wait()
+		<-started
+
+		// BeginClose starts deactivation with hooks enabled; the running method
+		// keeps the mailbox open, so the hook cannot have started yet.
+		rt.BeginClose()
+		rt.BeginKill()
+		<-rt.Done()
+		synctest.Wait()
+
+		// Let the canceled method exit and the mailbox drain, then check that
+		// the escalation kept the hook from running.
+		close(release)
+		synctest.Wait()
+		<-blockDone
+		synctest.Wait()
+		select {
+		case <-hookCalled:
+			t.Fatal("OnDeactivate ran after escalation marked the pending deactivation")
+		default:
+		}
+	})
+}
+
 func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2})

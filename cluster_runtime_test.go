@@ -290,6 +290,56 @@ func TestRuntime_HandleRejectsAfterClusterDeath(t *testing.T) {
 	})
 }
 
+// TestRuntime_ClusterDeathClosesTransportAndStops pins the death path's
+// teardown: once the cluster declares this node dead, the runtime waits for
+// admitted calls, closes its transport, and only then reaches the terminal
+// stopped state. The transport is root infrastructure, so stopped must not be
+// announced while it is still serving.
+func TestRuntime_ClusterDeathClosesTransportAndStops(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1150, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		network := newTestTransportNetwork()
+		firstOptions := clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a")
+		firstOptions = append(firstOptions,
+			WithHeartbeatInterval(time.Second),
+			WithViewInterval(time.Hour),
+			WithTransport(network.add("node-a")),
+		)
+		first := mustNew(t, firstOptions...)
+		second := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-b", "generation-b", network.add("node-b"))...)
+
+		self := findClusterMember(t, members, "node-a", "generation-a")
+		self.Status = store.MemberDead
+		if _, err := members.WriteMember(context.Background(), self); err != nil {
+			t.Fatalf("mark node dead: %v", err)
+		}
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		select {
+		case <-first.Done():
+		default:
+			t.Fatal("runtime Done is still open after cluster death")
+		}
+		select {
+		case <-first.transportDone:
+		default:
+			t.Fatal("transport is still serving after cluster death")
+		}
+		first.lifecycleMu.Lock()
+		state := first.state
+		first.lifecycleMu.Unlock()
+		if state != rootStopped {
+			t.Fatalf("root state after cluster death = %v, want stopped", state)
+		}
+
+		first.Close()
+		second.Close()
+	})
+}
+
 func TestRuntime_ClusterDeathSkipsOnDeactivate(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(1800, 0).UTC()
@@ -472,8 +522,8 @@ func TestScenario_ClusterDeathStopsNodeAndHandsoff(t *testing.T) {
 		if got := calls.Load(); got != callsBefore {
 			t.Fatalf("method body ran on dead node-a: calls = %d, want %d", got, callsBefore)
 		}
-		if !errors.Is(touchErr, ErrNodeDead) && !errors.Is(touchErr, ErrRuntimeClosed) {
-			t.Fatalf("touch on dead node-a = %v, want a stop error", touchErr)
+		if !errors.Is(touchErr, ErrNodeDead) {
+			t.Fatalf("touch on dead node-a = %v, want ErrNodeDead", touchErr)
 		}
 		select {
 		case <-nodeA.Done():
