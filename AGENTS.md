@@ -37,6 +37,12 @@ research/   实测证据 —— 支撑 design 决策的事实
 
 提交前只检查和提交自己负责的文件。不要 push，不要开 PR。
 
+master 只接受 squash 合并的 PR，直推会被 `pre-push` 钩子拦下。钩子要先启用一次：
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## Spec 先行
 
 先把方案写进 `docs/` 或 `design/`，再实现。实装追赶 spec，不是 spec 跟着实装走。文档里出现尚未实装的能力是正常的。

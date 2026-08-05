@@ -1,0 +1,14 @@
+#!/bin/sh
+# 服务端分支保护要 GitHub Pro 或公开仓库，现在两个都没有。
+# 这个钩子在本地顶上：master 只能通过 PR 落地。
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+	case "$remote_ref" in
+	refs/heads/master)
+		echo "pre-push: 拒绝直推 master。开 PR，squash merge。" >&2
+		exit 1
+		;;
+	esac
+done
+
+exit 0
