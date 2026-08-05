@@ -282,7 +282,6 @@ func chooseScheduleFault(rng *rand.Rand) scheduleFaultKind {
 }
 
 func classifyOutcome(err error) (string, error) {
-	var wrongOwner gor.WrongOwnerError
 	switch {
 	case err == nil:
 		return "ok", nil
@@ -300,7 +299,7 @@ func classifyOutcome(err error) (string, error) {
 		return "cluster-node-dead", nil
 	case simErrorIs(err, store.ErrConflict):
 		return "store-conflict", nil
-	case errors.As(err, &wrongOwner):
+	case simErrorIs(err, gor.ErrNoOwner):
 		return "wrong-owner", nil
 	case simErrorIs(err, mail.ErrClosed), simErrorIs(err, runtimepkg.ErrRuntimeClosed):
 		return "closed", nil

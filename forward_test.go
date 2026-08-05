@@ -102,7 +102,7 @@ func TestRuntime_HandleRejectsUnregisteredType(t *testing.T) {
 	if err := json.Unmarshal(payload, &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !strings.Contains(response.Error, "entity type is not installed") {
+	if !strings.Contains(response.Error, string(ErrTypeNotInstalled)) {
 		t.Fatalf("response error = %q, want an unregistered type error", response.Error)
 	}
 }
@@ -535,9 +535,8 @@ func TestRuntime_InvokeDoesNotSendWithoutOwner(t *testing.T) {
 
 		var reply routedAccountWhoReply
 		err := rt.Invoke(context.Background(), Identity{Type: TypeName[routedAccount](), Key: "alice"}, "Who", &routedAccountWhoRequest{}, &reply)
-		var wrongOwner WrongOwnerError
-		if !errors.As(err, &wrongOwner) || wrongOwner.Owner != "" {
-			t.Fatalf("invocation without owner error = %v, want empty-owner WrongOwnerError", err)
+		if !errors.Is(err, ErrNoOwner) {
+			t.Fatalf("invocation without owner error = %v, want ErrNoOwner", err)
 		}
 		if got := fakeTransport.sends.Load(); got != 0 {
 			t.Fatalf("invocation without owner sent %d transport requests", got)

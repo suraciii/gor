@@ -3,6 +3,7 @@ package gor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/suraciii/gor/store"
@@ -104,7 +105,10 @@ func (s *stateCellValue[T]) decode(data []byte) error {
 func (b *Binder) load(ctx context.Context) error {
 	record, err := b.runtime.store.Read(ctx, b.identity)
 	if err != nil {
-		return err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return withCode(ErrPersistenceFailed, err)
 	}
 	if len(record.Data) == 0 {
 		b.etag = record.ETag
@@ -150,8 +154,15 @@ func (b *Binder) persist(ctx context.Context, changed stateCell, changedData []b
 	}
 	etag, err := b.runtime.store.Write(ctx, b.identity, data, b.etag)
 	if err != nil {
-		b.discard = err
-		return err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if errors.Is(err, store.ErrConflict) {
+			b.discard = withCode(ErrPersistenceConflict, err)
+		} else {
+			b.discard = withCode(ErrPersistenceFailed, err)
+		}
+		return b.discard
 	}
 	b.etag = etag
 	return nil
