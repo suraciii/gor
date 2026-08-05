@@ -241,33 +241,6 @@ func TestRuntime_HandleRejectsWhileClosing(t *testing.T) {
 	})
 }
 
-func TestRuntime_HandleMapsCanceledServingContextAfterShutdown(t *testing.T) {
-	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
-	defer rt.Close()
-	registerAccount(t, rt)
-	rt.stopServing()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	payload, err := rt.handleInvoke(ctx, callRequest{
-		Kind:   requestKindInvoke,
-		Type:   TypeName[Account](),
-		Key:    "alice",
-		Method: "Balance",
-		Args:   json.RawMessage(`{}`),
-	})
-	if err != nil {
-		t.Fatalf("handle error = %v, want nil", err)
-	}
-	var response callResponse
-	if err := json.Unmarshal(payload, &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Error == nil || response.Error.Code != string(ErrRuntimeClosed) {
-		t.Fatalf("response error = %#v, want runtime-closed code", response.Error)
-	}
-}
-
 func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(1200, 0).UTC()
@@ -612,11 +585,11 @@ func TestRuntime_InvokeDoesNotSendWithoutOwner(t *testing.T) {
 
 		var reply routedAccountWhoReply
 		err := rt.Invoke(context.Background(), Identity{Type: TypeName[routedAccount](), Key: "alice"}, "Who", &routedAccountWhoRequest{}, &reply)
-		if !errors.Is(err, ErrNoOwner) {
-			t.Fatalf("invocation without owner error = %v, want ErrNoOwner", err)
+		if !errors.Is(err, ErrNodeDead) {
+			t.Fatalf("invocation on a dead node error = %v, want ErrNodeDead", err)
 		}
 		if got := fakeTransport.sends.Load(); got != 0 {
-			t.Fatalf("invocation without owner sent %d transport requests", got)
+			t.Fatalf("invocation on a dead node sent %d transport requests", got)
 		}
 	})
 }
@@ -1045,6 +1018,8 @@ func (t *testTransport) Send(ctx context.Context, addr string, payload []byte) (
 	select {
 	case result := <-result:
 		return result.payload, result.err
+	case <-peer.closed:
+		return nil, fmt.Errorf("transport %q closed during call", addr)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

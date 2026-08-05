@@ -80,11 +80,16 @@ type Runtime struct {
 	clusterView      atomic.Pointer[cluster.View]
 	clusterDone      chan struct{}
 	done             chan struct{}
-	stopOnce         sync.Once
-	shuttingDown     atomic.Bool
-	nodeAddr         string
-	typesMu          sync.Mutex
-	types            map[string]typeRegistration
+
+	lifecycleMu sync.Mutex
+	state       rootState
+	stopCode    Code
+	inflight    int
+	drained     chan struct{}
+
+	nodeAddr string
+	typesMu  sync.Mutex
+	types    map[string]typeRegistration
 }
 
 // Config contains the settings assembled by New from Option values. Use the
@@ -223,10 +228,6 @@ func New(options ...Option) (*Runtime, error) {
 		rt.clusterDone = make(chan struct{})
 		rt.nodeAddr = config.NodeAddr
 		rt.clusterView.Store(&initialView)
-		go func() {
-			<-clusterNode.Done()
-			rt.stopServing()
-		}()
 		go rt.watchCluster()
 	}
 	if config.ScheduleStore != nil && config.ScheduleInterval > 0 {
@@ -448,10 +449,10 @@ func WithMaxTableLatency(value time.Duration) Option {
 // without being forwarded. A forwarded error with a Code is reconstructed so
 // errors.Is can match that Code; errors from an opaque error retain only text.
 // Caller cancellation and deadline errors are returned unchanged.
-//
-// Once local invocation admission has stopped, new local entity calls are
-// rejected. A direct Invoke may still be admitted during the Runtime's closing
-// window before that point.
+// Once the Runtime has begun stopping, new calls are rejected at the root
+// admission gate with a stable stop error before ownership is decided or a
+// call is forwarded: gor.runtime_closed after Close or Kill, and gor.node_dead
+// once the cluster has declared this node dead.
 func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	if rt.onCall == nil {
 		return publicError(rt.invoke(ctx, id, method, args, reply))
@@ -468,6 +469,11 @@ func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args 
 }
 
 func (rt *Runtime) invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
+	release, err := rt.admit()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if rt.clusterNode == nil {
 		return rt.invokeLocal(ctx, id, method, args, reply)
 	}
@@ -602,25 +608,32 @@ func (rt *Runtime) typeRegistration(name string) (typeRegistration, bool) {
 	return registration, ok
 }
 
-// Close begins an orderly shutdown. It closes Done, stops the scheduler, and
-// then waits for in-flight invocations and normal deactivation callbacks to
-// finish before closing configured cluster and transport resources.
+// Close begins an orderly shutdown. It stops admitting new entity calls,
+// lets calls already admitted finish, rejects queued calls without entering
+// their method bodies, and then waits for in-flight methods, normal
+// deactivation callbacks, and the runtime's own infrastructure goroutines
+// before closing configured cluster and transport resources.
 //
-// For ordinary calls, Close leaves the caller's context unchanged and allows
-// calls already admitted to finish. Scheduled calls use the scheduler's
-// context; Close cancels that context while stopping the scheduler, so an
-// in-progress scheduled method receives cancellation. Close waits for both
-// kinds of calls to return. Direct Invoke calls can still be admitted between
-// Done being closed and local invocation admission stopping, and Close may
-// wait for those calls as well.
-//
-// Repeated Close or Kill calls are safe and do not start another shutdown. If
-// Close and Kill run concurrently, the first shutdown mode accepted by the
-// local engine determines whether running invocation contexts are
-// canceled and whether deactivation callbacks run.
+// Scheduled delivery, direct Invoke, and inbound forwarded invokes all pass
+// through the same admission gate, so all three are rejected once Close has
+// begun. Repeated Close or Kill calls are safe and do not start another
+// shutdown; a Kill during Close escalates to immediate shutdown semantics.
 func (rt *Runtime) Close() {
-	rt.shuttingDown.Store(true)
-	rt.stopServing()
+	rt.beginClose()
+	rt.closeGracefully()
+}
+
+// Kill begins an immediate shutdown. It stops admitting new entity calls,
+// cancels the contexts of calls already running, rejects queued work, and
+// skips deactivation callbacks. Unlike Close, Kill does not wait for user
+// methods to return: Go cannot forcibly stop code that ignores cancellation.
+// It is safe to call repeatedly; a Kill during Close escalates immediately.
+func (rt *Runtime) Kill() {
+	rt.beginKill()
+	rt.closeImmediately()
+}
+
+func (rt *Runtime) closeGracefully() {
 	if rt.poller != nil {
 		rt.poller.Close()
 	}
@@ -628,18 +641,14 @@ func (rt *Runtime) Close() {
 		rt.clusterNode.Close()
 		<-rt.clusterDone
 	}
-	rt.engine.Close()
+	rt.engine.BeginClose()
+	<-rt.engine.Done()
+	rt.waitDrained()
 	rt.closeTransport()
+	rt.finishStop()
 }
 
-// Kill begins an immediate shutdown. It cancels the contexts of running and
-// queued invocations, rejects queued work, and skips deactivation callbacks.
-// Unlike Close, Kill does not wait for deactivation callbacks to finish. It is
-// safe to call repeatedly; if it races with Close, the first shutdown mode
-// accepted by the local engine determines the result.
-func (rt *Runtime) Kill() {
-	rt.shuttingDown.Store(true)
-	rt.stopServing()
+func (rt *Runtime) closeImmediately() {
 	if rt.poller != nil {
 		rt.poller.Close()
 	}
@@ -647,8 +656,10 @@ func (rt *Runtime) Kill() {
 		rt.clusterNode.Kill()
 		<-rt.clusterDone
 	}
-	rt.engine.Kill()
+	rt.engine.BeginKill()
+	<-rt.engine.Done()
 	rt.closeTransport()
+	rt.finishStop()
 }
 
 // Activations returns a sorted snapshot of this runtime's active entities.
@@ -664,10 +675,137 @@ func (rt *Runtime) Done() <-chan struct{} {
 	return rt.done
 }
 
-func (rt *Runtime) stopServing() {
-	rt.stopOnce.Do(func() {
-		close(rt.done)
-	})
+// rootState is the root runtime lifecycle. The root owns call admission and
+// the stop reason; the inner execution runtime owns activations and mailboxes,
+// the cluster node owns membership, and the poller and transport are not stop
+// switches of their own.
+type rootState uint8
+
+const (
+	rootRunning rootState = iota
+	rootClosing
+	rootKilling
+	rootDead
+	rootStopped
+)
+
+// beginClose transitions running to closing. It is the linearization point for
+// call admission: admit starts rejecting with ErrRuntimeClosed and the public
+// stop signal closes. A runtime that already left running is left unchanged.
+func (rt *Runtime) beginClose() bool {
+	rt.lifecycleMu.Lock()
+	defer rt.lifecycleMu.Unlock()
+	if rt.state != rootRunning {
+		return false
+	}
+	rt.leaveRunning(rootClosing, ErrRuntimeClosed)
+	return true
+}
+
+// beginKill transitions running or closing to killing. From running it is the
+// admission linearization point; from closing it is an escalation, not a no-op.
+func (rt *Runtime) beginKill() bool {
+	rt.lifecycleMu.Lock()
+	defer rt.lifecycleMu.Unlock()
+	switch rt.state {
+	case rootRunning:
+		rt.leaveRunning(rootKilling, ErrRuntimeClosed)
+		return true
+	case rootClosing:
+		rt.state = rootKilling
+		return true
+	default:
+		return false
+	}
+}
+
+// becomeDead transitions a still-running root to dead after the cluster
+// declared this node dead. It is the admission linearization point with stop
+// code ErrNodeDead. A root already in closing, killing, or dead is unchanged.
+func (rt *Runtime) becomeDead() bool {
+	rt.lifecycleMu.Lock()
+	defer rt.lifecycleMu.Unlock()
+	if rt.state != rootRunning {
+		return false
+	}
+	rt.leaveRunning(rootDead, ErrNodeDead)
+	return true
+}
+
+// finishStop transitions closing, killing, or dead to the terminal stopped
+// state after the runtime's infrastructure has exited.
+func (rt *Runtime) finishStop() {
+	rt.lifecycleMu.Lock()
+	defer rt.lifecycleMu.Unlock()
+	switch rt.state {
+	case rootClosing, rootKilling, rootDead:
+		rt.state = rootStopped
+	}
+}
+
+// leaveRunning performs the atomic admission transition out of running. It
+// records the stop code, arms the drain channel that release closes once the
+// last admitted call finishes, and closes the public stop signal. The caller
+// must hold lifecycleMu and state must be running.
+func (rt *Runtime) leaveRunning(next rootState, code Code) {
+	rt.state = next
+	rt.stopCode = code
+	rt.drained = make(chan struct{})
+	if rt.inflight == 0 {
+		close(rt.drained)
+	}
+	close(rt.done)
+}
+
+// admit registers one entity call against the root lifecycle. It returns a
+// release function when the call may proceed, or a stop error otherwise. It is
+// the single admission gate shared by public Invoke, the inbound invoke
+// handler, and scheduled delivery; the ownership decision and forwarding happen
+// only after a successful admit.
+func (rt *Runtime) admit() (func(), error) {
+	rt.lifecycleMu.Lock()
+	if rt.state == rootRunning {
+		rt.inflight++
+		rt.lifecycleMu.Unlock()
+		return rt.release, nil
+	}
+	code := rt.stopCode
+	rt.lifecycleMu.Unlock()
+	return nil, stopRejection(code)
+}
+
+func (rt *Runtime) release() {
+	rt.lifecycleMu.Lock()
+	rt.inflight--
+	if rt.inflight == 0 && rt.state != rootRunning && rt.drained != nil {
+		close(rt.drained)
+		rt.drained = nil
+	}
+	rt.lifecycleMu.Unlock()
+}
+
+// waitDrained blocks until every call admitted before the stop transition has
+// released. Calls admitted after the transition are impossible.
+func (rt *Runtime) waitDrained() {
+	rt.lifecycleMu.Lock()
+	drained := rt.drained
+	rt.lifecycleMu.Unlock()
+	if drained != nil {
+		<-drained
+	}
+}
+
+func (rt *Runtime) stopCodeSnapshot() Code {
+	rt.lifecycleMu.Lock()
+	defer rt.lifecycleMu.Unlock()
+	return rt.stopCode
+}
+
+func stopRejection(code Code) error {
+	if code == ErrNodeDead {
+		return withCode(ErrNodeDead, errors.New("node declared dead"))
+	}
+	return withCode(ErrRuntimeClosed, errors.New("runtime is not accepting calls"))
 }
 
 func (rt *Runtime) startTransport() {
@@ -696,21 +834,29 @@ func (rt *Runtime) closeTransport() {
 }
 
 func (rt *Runtime) watchCluster() {
-	defer func() {
-		close(rt.clusterDone)
-	}()
+	defer close(rt.clusterDone)
 	for view := range rt.clusterNode.ViewChanges() {
 		rt.clusterView.Store(&view)
 		rt.deactivateMovedActivations(view)
 	}
-	rt.stopServing()
-	if rt.shuttingDown.Load() {
+	// The cluster node reports why it stopped. Only an external death declaration
+	// collapses a still-running root to dead; becomeDead is atomic, so a root
+	// already in closing or killing stays put and lets its own stop proceed.
+	select {
+	case <-rt.clusterNode.DeclaredDead():
+	default:
+		return
+	}
+	if !rt.becomeDead() {
 		return
 	}
 	if rt.poller != nil {
 		rt.poller.Close()
 	}
-	rt.engine.Close()
+	rt.engine.BeginKill()
+	<-rt.engine.Done()
+	rt.closeTransport()
+	rt.finishStop()
 }
 
 func (rt *Runtime) deactivateMovedActivations(view cluster.View) {

@@ -68,6 +68,7 @@ type Node struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	done          chan struct{}
+	declaredDead  chan struct{}
 	views         chan View
 	state         atomic.Uint32
 	probeFailures map[MemberID]int
@@ -101,6 +102,7 @@ func New(config Config) (*Node, error) {
 		ctx:               ctx,
 		cancel:            cancel,
 		done:              make(chan struct{}),
+		declaredDead:      make(chan struct{}),
 		views:             make(chan View, 1),
 		probeFailures:     make(map[MemberID]int),
 	}
@@ -129,6 +131,14 @@ func (n *Node) ViewChanges() <-chan View {
 
 func (n *Node) Done() <-chan struct{} {
 	return n.done
+}
+
+// DeclaredDead returns a channel that closes only when the node stopped
+// because the cluster declared it dead, not because of a voluntary Close or
+// Kill. The root runtime uses it to distinguish external death from a stop it
+// initiated itself, rather than guessing from Done closing.
+func (n *Node) DeclaredDead() <-chan struct{} {
+	return n.declaredDead
 }
 
 func (n *Node) Probe() (MemberID, bool) {
@@ -196,6 +206,12 @@ func (n *Node) run(self store.Member, view View, heartbeat, viewTicker, probeTic
 	defer probeTicker.Stop()
 	defer close(n.views)
 	defer close(n.done)
+	var externalDeath bool
+	defer func() {
+		if externalDeath {
+			close(n.declaredDead)
+		}
+	}()
 
 	probeEvents := make(chan probeEvent, 2)
 	probeTasks := make(map[MemberID]probeTask)
@@ -211,32 +227,34 @@ func (n *Node) run(self store.Member, view View, heartbeat, viewTicker, probeTic
 	for {
 		select {
 		case <-heartbeat.C():
-			updated, deadView, alive := n.heartbeat(self)
+			updated, _, alive := n.heartbeat(self)
 			if !alive {
-				n.notify(deadView)
+				externalDeath = true
 				return
 			}
 			self = updated
 		case <-viewTicker.C():
 			updated, alive := n.pollView(self, view)
+			if !alive {
+				externalDeath = true
+				return
+			}
 			reconcileProbeState(probeTargets(updated.members, selfID), probeTasks, n.probeFailures)
 			changed := !sameView(view, updated)
 			view = updated
 			if changed {
 				n.notify(view)
 			}
-			if !alive {
-				return
-			}
 		case probeAt := <-probeTick:
 			updated, updatedView, alive, checkOK := n.selfCheck(self, view, probeAt)
 			self = updated
+			if !alive {
+				externalDeath = true
+				return
+			}
 			if !sameView(view, updatedView) {
 				view = updatedView
 				n.notify(view)
-			}
-			if !alive {
-				return
 			}
 			n.updateHealth(checkOK)
 			targets := probeTargets(view.members, selfID)

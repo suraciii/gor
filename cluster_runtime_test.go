@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -270,11 +272,8 @@ func TestRuntime_HandleRejectsAfterClusterDeath(t *testing.T) {
 		default:
 			t.Fatal("runtime done is still open after cluster death")
 		}
-		if first.shuttingDown.Load() {
-			t.Fatal("cluster death incorrectly marked runtime as shutting down")
-		}
 
-		payload, err := first.handle(context.Background(), []byte(`{"type":"gor.Account","key":"alice","method":"Balance","args":{}}`))
+		payload, err := first.handle(context.Background(), []byte(`{"kind":"invoke","type":"gor.Account","key":"alice","method":"Balance","args":{}}`))
 		if err != nil {
 			t.Fatalf("handle error = %v, want nil", err)
 		}
@@ -282,12 +281,267 @@ func TestRuntime_HandleRejectsAfterClusterDeath(t *testing.T) {
 		if err := json.Unmarshal(payload, &response); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
-		if response.Error == nil || response.Error.Code != string(ErrRuntimeClosed) {
-			t.Fatalf("response error = %#v, want runtime-closed code", response.Error)
+		if response.Error == nil || response.Error.Code != string(ErrNodeDead) {
+			t.Fatalf("response error = %#v, want node-dead code after cluster death", response.Error)
 		}
 
 		first.Close()
 		second.Close()
+	})
+}
+
+// TestRuntime_ClusterDeathClosesTransportAndStops pins the death path's
+// teardown: once the cluster declares this node dead, the runtime waits for
+// admitted calls, closes its transport, and only then reaches the terminal
+// stopped state. The transport is root infrastructure, so stopped must not be
+// announced while it is still serving.
+func TestRuntime_ClusterDeathClosesTransportAndStops(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1150, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		network := newTestTransportNetwork()
+		firstOptions := clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a")
+		firstOptions = append(firstOptions,
+			WithHeartbeatInterval(time.Second),
+			WithViewInterval(time.Hour),
+			WithTransport(network.add("node-a")),
+		)
+		first := mustNew(t, firstOptions...)
+		second := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-b", "generation-b", network.add("node-b"))...)
+
+		self := findClusterMember(t, members, "node-a", "generation-a")
+		self.Status = store.MemberDead
+		if _, err := members.WriteMember(context.Background(), self); err != nil {
+			t.Fatalf("mark node dead: %v", err)
+		}
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		select {
+		case <-first.Done():
+		default:
+			t.Fatal("runtime Done is still open after cluster death")
+		}
+		select {
+		case <-first.transportDone:
+		default:
+			t.Fatal("transport is still serving after cluster death")
+		}
+		first.lifecycleMu.Lock()
+		state := first.state
+		first.lifecycleMu.Unlock()
+		if state != rootStopped {
+			t.Fatalf("root state after cluster death = %v, want stopped", state)
+		}
+
+		first.Close()
+		second.Close()
+	})
+}
+
+func TestRuntime_ClusterDeathSkipsOnDeactivate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1800, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		backend := store.NewMemory()
+		network := newTestTransportNetwork()
+		firstOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a")
+		firstOptions = append(firstOptions,
+			WithHeartbeatInterval(time.Second),
+			WithViewInterval(time.Hour),
+			WithTransport(network.add("node-a")),
+		)
+		first := mustNew(t, firstOptions...)
+		deactivateCalls := new(atomic.Int32)
+		installLifecycleAccount(t, first, new(atomic.Int32), func(entity *lifecycleAccountEntity) {
+			entity.deactivateCalls = deactivateCalls
+		})
+
+		id := Identity{Type: TypeName[lifecycleAccount](), Key: "self-death"}
+		if err := first.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
+			t.Fatalf("initial invocation error = %v", err)
+		}
+
+		self := findClusterMember(t, members, "node-a", "generation-a")
+		self.Status = store.MemberDead
+		if _, err := members.WriteMember(context.Background(), self); err != nil {
+			t.Fatalf("mark self dead: %v", err)
+		}
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		select {
+		case <-first.Done():
+		default:
+			t.Fatal("runtime Done is still open after cluster death")
+		}
+		// External death collapses to sudden stop, so OnDeactivate must not run.
+		if got := deactivateCalls.Load(); got != 0 {
+			t.Fatalf("OnDeactivate calls after cluster death = %d, want 0 (sudden stop)", got)
+		}
+		first.Close()
+	})
+}
+
+// sideEffectEntity records every Touch as a side effect and carries no state.
+// It exists so a test can tell whether a method body ran on a particular node.
+type sideEffectEntity interface {
+	Touch(context.Context) error
+}
+
+type sideEffectTouchRequest struct{}
+type sideEffectTouchReply struct{}
+
+type sideEffectEntityProxy struct {
+	invoker Invoker
+	id      Identity
+}
+
+func (p *sideEffectEntityProxy) Touch(ctx context.Context) error {
+	return p.invoker.Invoke(ctx, p.id, "Touch", &sideEffectTouchRequest{}, &sideEffectTouchReply{})
+}
+
+type sideEffectEntityImpl struct {
+	calls *atomic.Int32
+}
+
+func (e *sideEffectEntityImpl) Touch(context.Context) error {
+	e.calls.Add(1)
+	return nil
+}
+
+func dispatchSideEffectEntity(ctx context.Context, instance sideEffectEntity, method string, _ any, _ any) error {
+	if method != "Touch" {
+		return fmt.Errorf("unknown method %q", method)
+	}
+	return instance.Touch(ctx)
+}
+
+func newSideEffectEntityCall(method string) (args any, reply any) {
+	if method != "Touch" {
+		return nil, nil
+	}
+	return &sideEffectTouchRequest{}, &sideEffectTouchReply{}
+}
+
+func installSideEffectEntity(t *testing.T, rt *Runtime, calls *atomic.Int32) {
+	t.Helper()
+	if err := InstallType[sideEffectEntity](rt, dispatchSideEffectEntity, func(invoker Invoker, id Identity) sideEffectEntity {
+		return &sideEffectEntityProxy{invoker: invoker, id: id}
+	}, newSideEffectEntityCall); err != nil {
+		t.Fatal(err)
+	}
+	if err := Register[sideEffectEntity](rt, func(b *Binder) sideEffectEntity {
+		return &sideEffectEntityImpl{calls: calls}
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// barrierMemberStore wraps a member store so a dead-status write is persisted
+// but held open until the test releases it. It lets a death scenario pin the
+// moment the dead row is visible without the WriteMember call returning.
+type barrierMemberStore struct {
+	store.MemberStore
+	deadWritten chan struct{}
+	release     chan struct{}
+	once        sync.Once
+}
+
+func (s *barrierMemberStore) WriteMember(ctx context.Context, m store.Member) (store.ETag, error) {
+	etag, err := s.MemberStore.WriteMember(ctx, m)
+	if err == nil && m.Status == store.MemberDead {
+		s.once.Do(func() { close(s.deadWritten) })
+		<-s.release
+	}
+	return etag, err
+}
+
+// TestScenario_ClusterDeathStopsNodeAndHandsoff is the cluster-death scenario:
+// once the cluster declares this node dead, its Done signal closes, a direct
+// call on it is rejected without running the method, and another node that has
+// converged can execute the same entity. A write barrier on the dead row pins
+// the moment the row is visible.
+func TestScenario_ClusterDeathStopsNodeAndHandsoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(2200, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := &barrierMemberStore{
+			MemberStore: store.NewMemory(),
+			deadWritten: make(chan struct{}),
+			release:     make(chan struct{}),
+		}
+		backend := store.NewMemory()
+		network := newTestTransportNetwork()
+		nodeA := mustNew(t, clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a", network.add("node-a"))...)
+		nodeB := mustNew(t, clusterRuntimeOptions(backend, members, fakeClock, "node-b", "generation-b", network.add("node-b"))...)
+		calls := new(atomic.Int32)
+		installSideEffectEntity(t, nodeA, calls)
+		installSideEffectEntity(t, nodeB, calls)
+		synctest.Wait()
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		var id Identity
+		for index := 0; index < 4096; index++ {
+			candidate := Identity{Type: TypeName[sideEffectEntity](), Key: strconv.Itoa(index)}
+			if owner, ok := cluster.Owner(*nodeA.clusterView.Load(), store.Identity(candidate)); ok && owner == "node-a" {
+				id = candidate
+				break
+			}
+		}
+		if id == (Identity{}) {
+			t.Fatal("no identity owned by node-a")
+		}
+		if err := nodeA.Invoke(context.Background(), id, "Touch", &sideEffectTouchRequest{}, &sideEffectTouchReply{}); err != nil {
+			t.Fatalf("initial touch on owner = %v, want nil", err)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("calls after initial touch = %d, want 1", got)
+		}
+
+		// Declare node-a dead. The write persists and the barrier holds it open.
+		self := findClusterMember(t, members, "node-a", "generation-a")
+		self.Status = store.MemberDead
+		go func() {
+			if _, err := members.WriteMember(context.Background(), self); err != nil {
+				t.Errorf("mark node dead: %v", err)
+			}
+		}()
+		<-members.deadWritten
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		// A direct call on the dead node is rejected and its method body never
+		// runs. The side-effect check comes first so a mutation that keeps the
+		// node serving is caught at the method body, not at a downstream signal.
+		callsBefore := calls.Load()
+		touchErr := nodeA.Invoke(context.Background(), id, "Touch", &sideEffectTouchRequest{}, &sideEffectTouchReply{})
+		if got := calls.Load(); got != callsBefore {
+			t.Fatalf("method body ran on dead node-a: calls = %d, want %d", got, callsBefore)
+		}
+		if !errors.Is(touchErr, ErrNodeDead) {
+			t.Fatalf("touch on dead node-a = %v, want ErrNodeDead", touchErr)
+		}
+		select {
+		case <-nodeA.Done():
+		default:
+			t.Fatal("node-a Done is still open after cluster death")
+		}
+
+		// The node that converged can execute the same entity.
+		if err := nodeB.Invoke(context.Background(), id, "Touch", &sideEffectTouchRequest{}, &sideEffectTouchReply{}); err != nil {
+			t.Fatalf("touch on node-b after handoff = %v, want nil", err)
+		}
+		if got := calls.Load(); got != 2 {
+			t.Fatalf("calls after touch on node-b = %d, want 2", got)
+		}
+
+		close(members.release)
+		nodeA.Close()
+		nodeB.Close()
 	})
 }
 

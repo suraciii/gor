@@ -63,23 +63,37 @@ type Config struct {
 	EvictionInterval time.Duration
 }
 
+// engineState tracks the local engine lifecycle independently of the root
+// runtime: graceful and sudden stops are distinct, and a sudden stop can
+// escalate an in-progress graceful stop.
+type engineState uint8
+
+const (
+	engineRunning engineState = iota
+	engineClosing
+	engineKilling
+)
+
 type Runtime struct {
 	clock           clock.Clock
 	mailboxCapacity int
 	idleTimeout     time.Duration
 
 	mu            sync.Mutex
-	closed        bool
+	state         engineState
 	registrations map[string]Registration
 	activations   map[Identity]*activation
 	pending       map[Identity]*entry
 
-	stop                chan struct{}
-	ticker              clock.Ticker
-	evictionDone        chan struct{}
-	deactivationWaiters sync.WaitGroup
-	killCtx             context.Context
-	killCancel          context.CancelFunc
+	stop                 chan struct{}
+	ticker               clock.Ticker
+	evictionDone         chan struct{}
+	pendingDeactivations int
+	deactivationsDone    chan struct{}
+	killing              chan struct{}
+	done                 chan struct{}
+	killCtx              context.Context
+	killCancel           context.CancelFunc
 }
 
 type ActivationState uint8
@@ -120,6 +134,8 @@ func New(config Config) *Runtime {
 		pending:         make(map[Identity]*entry),
 		stop:            make(chan struct{}),
 		evictionDone:    make(chan struct{}),
+		killing:         make(chan struct{}),
+		done:            make(chan struct{}),
 		killCtx:         killCtx,
 		killCancel:      killCancel,
 	}
@@ -217,78 +233,124 @@ func (r *Runtime) Activations() []Activation {
 	return activations
 }
 
-func (r *Runtime) Close() {
-	down, ok := r.beginShutdown(false)
-	if !ok {
-		return
-	}
-	r.mu.Lock()
-	for _, act := range down.newlyDeactivating {
-		r.startDeactivationWaiterLocked(act)
-	}
-	r.mu.Unlock()
-	for _, act := range down.activations {
-		act.mailbox.Close()
-	}
-	<-r.evictionDone
-	r.deactivationWaiters.Wait()
+// Done returns a channel that closes when the engine has stopped. For a
+// graceful stop that is after deactivation hooks finish; for a sudden stop it
+// is after the engine's own goroutines exit, not after user methods.
+func (r *Runtime) Done() <-chan struct{} {
+	return r.done
 }
 
-func (r *Runtime) Kill() {
-	down, ok := r.beginShutdown(true)
-	if !ok {
-		return
-	}
-	r.killCancel()
+// BeginClose starts a graceful stop and returns immediately. See Close.
+func (r *Runtime) BeginClose() {
 	r.mu.Lock()
-	for _, act := range down.newlyDeactivating {
-		r.startDeactivationWaiterLocked(act)
-	}
-	r.mu.Unlock()
-	for _, act := range down.activations {
-		act.mailbox.Close()
-	}
-	<-r.evictionDone
-}
-
-type shutdown struct {
-	activations       []*activation
-	newlyDeactivating []*activation
-}
-
-func (r *Runtime) beginShutdown(skipOnDeactivate bool) (shutdown, bool) {
-	r.mu.Lock()
-	if r.closed {
+	if r.state != engineRunning {
 		r.mu.Unlock()
-		return shutdown{}, false
+		return
 	}
-	r.closed = true
+	r.state = engineClosing
 	close(r.stop)
-	result := shutdown{
-		activations:       make([]*activation, 0, len(r.activations)),
-		newlyDeactivating: make([]*activation, 0, len(r.activations)),
-	}
-	for _, act := range r.activations {
-		result.activations = append(result.activations, act)
-		if skipOnDeactivate {
-			act.skipOnDeactivate = true
-		}
-		if beginDeactivation(act) {
-			result.newlyDeactivating = append(result.newlyDeactivating, act)
-		}
-	}
+	r.beginStopDeactivationsLocked(false)
+	acts := r.snapshotActivationsLocked()
 	ticker := r.ticker
 	r.mu.Unlock()
 	if ticker != nil {
 		ticker.Stop()
 	}
-	return result, true
+	for _, act := range acts {
+		act.mailbox.Close()
+	}
+	go r.drain()
+}
+
+// BeginKill starts a sudden stop, or escalates an in-progress graceful stop,
+// and returns immediately. See Kill.
+func (r *Runtime) BeginKill() {
+	r.mu.Lock()
+	switch r.state {
+	case engineRunning:
+		r.state = engineKilling
+		close(r.stop)
+		close(r.killing)
+		r.beginStopDeactivationsLocked(true)
+		acts := r.snapshotActivationsLocked()
+		ticker := r.ticker
+		r.mu.Unlock()
+		if ticker != nil {
+			ticker.Stop()
+		}
+		r.killCancel()
+		for _, act := range acts {
+			act.mailbox.Close()
+		}
+		go r.drain()
+	case engineClosing:
+		r.state = engineKilling
+		close(r.killing)
+		r.markSkipOnDeactivateLocked()
+		r.mu.Unlock()
+		r.killCancel()
+	default:
+		r.mu.Unlock()
+	}
+}
+
+// drain waits for the eviction loop to exit, then for either all deactivations
+// to finish (graceful) or a sudden stop to overtake them. It never waits for
+// user methods once the engine is killing.
+func (r *Runtime) drain() {
+	defer close(r.done)
+	<-r.evictionDone
+	r.mu.Lock()
+	deactivationsDone := r.deactivationsDone
+	r.mu.Unlock()
+	if deactivationsDone == nil {
+		return
+	}
+	select {
+	case <-deactivationsDone:
+	case <-r.killing:
+	}
+}
+
+// beginStopDeactivationsLocked marks deactivation hooks to skip when requested,
+// begins deactivation of every active activation, and arms the channel that
+// closes once every in-flight deactivation has finished. The caller must hold
+// r.mu.
+func (r *Runtime) beginStopDeactivationsLocked(skip bool) {
+	for _, act := range r.activations {
+		if skip {
+			act.skipOnDeactivate = true
+		}
+		if beginDeactivation(act) {
+			r.startDeactivationWaiterLocked(act)
+		}
+	}
+	r.deactivationsDone = make(chan struct{})
+	if r.pendingDeactivations == 0 {
+		close(r.deactivationsDone)
+	}
+}
+
+// markSkipOnDeactivateLocked marks every activation's deactivation hook to be
+// skipped if it has not started yet. The caller must hold r.mu.
+func (r *Runtime) markSkipOnDeactivateLocked() {
+	for _, act := range r.activations {
+		act.skipOnDeactivate = true
+	}
+}
+
+func (r *Runtime) snapshotActivationsLocked() []*activation {
+	acts := make([]*activation, 0, len(r.activations))
+	for _, act := range r.activations {
+		acts = append(acts, act)
+	}
+	return acts
 }
 
 func (r *Runtime) registration(name string) (Registration, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed {
+	if r.state != engineRunning {
 		return Registration{}, ErrRuntimeClosed
 	}
 	registration, ok := r.registrations[name]
@@ -301,7 +363,7 @@ func (r *Runtime) registration(name string) (Registration, error) {
 func (r *Runtime) activationFor(ctx context.Context, id Identity, registration Registration) (*activation, error) {
 	for {
 		r.mu.Lock()
-		if r.closed {
+		if r.state != engineRunning {
 			r.mu.Unlock()
 			return nil, ErrRuntimeClosed
 		}
@@ -352,7 +414,7 @@ func (r *Runtime) createActivation(ctx context.Context, id Identity, registratio
 		}
 		r.mu.Lock()
 		delete(r.pending, id)
-		if err == nil && r.closed {
+		if err == nil && r.state != engineRunning {
 			err = ErrRuntimeClosed
 		}
 		pending.act = act
@@ -436,7 +498,7 @@ func (r *Runtime) evictLoop() {
 
 func (r *Runtime) evict(now time.Time) {
 	r.mu.Lock()
-	if r.closed {
+	if r.state != engineRunning {
 		r.mu.Unlock()
 		return
 	}
@@ -472,11 +534,8 @@ func (r *Runtime) deactivateLocked(act *activation) bool {
 }
 
 func (r *Runtime) startDeactivationWaiterLocked(act *activation) {
-	r.deactivationWaiters.Add(1)
-	go func() {
-		defer r.deactivationWaiters.Done()
-		r.waitForDeactivation(act)
-	}()
+	r.pendingDeactivations++
+	go r.waitForDeactivation(act)
 }
 
 func (r *Runtime) waitForDeactivation(act *activation) {
@@ -491,6 +550,20 @@ func (r *Runtime) waitForDeactivation(act *activation) {
 		onDeactivate(context.Background(), act.id, act.instance)
 	}
 	r.finishDeactivation(act)
+	r.deactivationFinished()
+}
+
+// deactivationFinished records one deactivation waiter completing. When the
+// last in-flight deactivation finishes after a stop has begun, it closes the
+// channel the graceful drain waits on.
+func (r *Runtime) deactivationFinished() {
+	r.mu.Lock()
+	r.pendingDeactivations--
+	if r.pendingDeactivations == 0 && r.deactivationsDone != nil {
+		close(r.deactivationsDone)
+		r.deactivationsDone = nil
+	}
+	r.mu.Unlock()
 }
 
 func (r *Runtime) finishDeactivation(act *activation) {

@@ -203,8 +203,84 @@ func TestRuntime_HandleProbeRejectsStoppedNode(t *testing.T) {
 		if err := json.Unmarshal(payload, &response); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
+		if response.Error == nil || response.Error.Code != string(ErrRuntimeClosed) {
+			t.Fatalf("stopped node probe response = %#v, want runtime-closed code after voluntary close", response.Error)
+		}
+	})
+}
+
+// TestRuntime_HandleProbeReadsRootStateDuringClosing pins the probe gate: after
+// beginClose the cluster node is still active, so without reading the root
+// state the probe would reply with a member id. It must instead refuse with
+// the close-path stop code.
+func TestRuntime_HandleProbeReadsRootStateDuringClosing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1650, 0).UTC()
+		members := store.NewMemory()
+		network := newTestTransportNetwork()
+		rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, clock.NewFake(start), "node-a", "generation-a", network.add("node-a"))...)
+		defer rt.Close()
+
+		// While running the probe replies with the current member id.
+		runningPayload, err := rt.handleProbe()
+		if err != nil {
+			t.Fatalf("running probe error = %v", err)
+		}
+		var runningResponse callResponse
+		if err := json.Unmarshal(runningPayload, &runningResponse); err != nil {
+			t.Fatalf("decode running probe response: %v", err)
+		}
+		if runningResponse.Error != nil {
+			t.Fatalf("running probe response = %#v, want member id", runningResponse.Error)
+		}
+
+		// Enter closing without closing the cluster node: the node is still
+		// active, so only the root state check can refuse the probe.
+		rt.beginClose()
+		payload, err := rt.handleProbe()
+		if err != nil {
+			t.Fatalf("closing probe error = %v", err)
+		}
+		var response callResponse
+		if err := json.Unmarshal(payload, &response); err != nil {
+			t.Fatalf("decode closing probe response: %v", err)
+		}
+		if response.Error == nil || response.Error.Code != string(ErrRuntimeClosed) {
+			t.Fatalf("closing probe response = %#v, want runtime-closed code", response.Error)
+		}
+	})
+}
+
+// TestRuntime_HandleProbeRejectsAfterClusterDeath verifies the dead-path stop
+// code: once the cluster has declared this node dead, a probe refuses with
+// gor.node_dead.
+func TestRuntime_HandleProbeRejectsAfterClusterDeath(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1700, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		network := newTestTransportNetwork()
+		rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a", network.add("node-a"))...)
+		defer rt.Close()
+
+		self := findClusterMember(t, members, "node-a", "generation-a")
+		self.Status = store.MemberDead
+		if _, err := members.WriteMember(context.Background(), self); err != nil {
+			t.Fatalf("mark node dead: %v", err)
+		}
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		payload, err := rt.handleProbe()
+		if err != nil {
+			t.Fatalf("handle probe error = %v", err)
+		}
+		var response callResponse
+		if err := json.Unmarshal(payload, &response); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
 		if response.Error == nil || response.Error.Code != string(ErrNodeDead) {
-			t.Fatalf("stopped node probe response = %#v, want node-dead code", response.Error)
+			t.Fatalf("dead node probe response = %#v, want node-dead code", response.Error)
 		}
 	})
 }

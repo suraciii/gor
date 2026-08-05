@@ -196,8 +196,12 @@ running ── Close ──▶ closing ── 完成优雅停止 ──▶ stopp
 
 ### 差距
 
-当前根运行时只关闭公开停止信号，再分别关闭轮询器、集群节点、内部执行运行时和传输。公开调用没有根层接纳门，入站 handler 另做一次停止信号检查，二者不是同一条规则。内部执行运行时和集群节点也不能从优雅停止升级到 `Kill`；集群节点最终只留下 `dead` 状态和无原因的完成 channel。这一节尚未实装。
+根运行时的停止状态机已实装：`beginClose`、`beginKill`、`becomeDead`、`finishStop` 四个转换函数与原子的 `admit`/release 构成唯一接纳门，公开 `Runtime.Invoke`、入站 `invoke` handler 与定时投递共用同一个入口，在归属判断和转发之前接纳。`closing`/`killing` 与由这两条到达的 `stopped` 返回 `gor.runtime_closed`，`dead` 及由它到达的 `stopped` 返回 `gor.node_dead`。
 
-当前 activation 不保存停用原因，`OnDeactivate` 只收到 `context.Background()`，错误出口传 `(Identity, method string, error)`。空闲、根关闭、所有权变化、panic 和丢弃都在停用汇合处丢失原因。当前节点自判 dead 后，根运行时调用普通 `engine.Close()`，所以仍会启动 `OnDeactivate`；这与本篇要求的突发停止不同。上述停用原因、context 和跳过规则均尚未实装。
+停止协调已实装为纯 channel 等待：执行运行时暴露 `BeginClose`/`BeginKill` + `Done()` channel，集群节点暴露 `DeclaredDead()` channel，根协调者在 `closeGracefully`/`closeImmediately` 中只接收 `clusterDone`、`engine.Done()`、`drained`、`transportDone` 这些 channel。内部执行运行时支持 `closing → killing` 升级（`BeginKill` 从 `closing` 不是 no-op，而是关闭 `killing` channel、标记跳过未开始的停用钩子、取消执行）；集群节点通过 `DeclaredDead()` 显式报告「外部判死」而非「主动退出」，根层不再从「自己是否发起过停止」推断原因。判死节点不再发布最后的空视图，以免触发优雅迁移与突发停止竞起。
+
+传输收尾已实装：优雅停止中 `closeTransport` 排在 `<-engine.Done()` 与 `waitDrained()` 之后，所以传输在已接纳的本地调用、入站回复和转发请求（转发请求持根 inflight 直到传输往返返回）都结束后才关闭。根层对转发请求的传输往返靠根 inflight（接纳计数）间接跟踪，未给转发请求单独的往返完成信号；当前两节点假网络已能验证「在途转发请求在其传输往返完成前传输不关闭」，真实传输的连接级打断语义由传输实现承担。
+
+当前 activation 不保存停用原因，`OnDeactivate` 只收到 `context.Background()`，错误出口传 `(Identity, method string, error)`。空闲、根关闭、所有权变化、panic 和丢弃都在停用汇合处丢失原因。上述停用原因、context 均尚未实装。
 
 `Kill()` 的存在理由只有模拟测试——真实进程崩溃不会先礼貌地调一个函数。它不是给用户用的关机接口，用户要停机用 `Close()`。

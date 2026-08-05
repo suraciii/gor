@@ -13,12 +13,19 @@ import (
 	"github.com/suraciii/gor/mail"
 )
 
+// stopEngine is the test-only equivalent of the root coordinator's wait: begin
+// a graceful stop and receive its completion channel.
+func stopEngine(r *Runtime) {
+	r.BeginClose()
+	<-r.Done()
+}
+
 type testEntity struct{}
 
 func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 4})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		factoryStarted := make(chan struct{})
 		releaseFactory := make(chan struct{})
@@ -79,7 +86,7 @@ func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
 func TestRuntime_DifferentKeysRunConcurrently(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		entered := make(chan struct{}, 2)
 		release := make(chan struct{})
@@ -139,7 +146,7 @@ func TestRuntime_EvictsIdleActivationAndReactivates(t *testing.T) {
 			IdleTimeout:      10 * time.Second,
 			EvictionInterval: time.Second,
 		})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		var factoryCalls atomic.Int32
 		if err := rt.Register("account", Registration{
@@ -182,7 +189,7 @@ func TestRuntime_DeactivateStopsActivationAndReactivates(t *testing.T) {
 			Clock:           clock.Real{},
 			MailboxCapacity: 2,
 		})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		var factoryCalls atomic.Int32
 		if err := rt.Register("account", Registration{
@@ -246,7 +253,8 @@ func TestRuntime_CloseWaitsForRunningCall(t *testing.T) {
 		<-started
 		closeDone := make(chan struct{})
 		go func() {
-			rt.Close()
+			rt.BeginClose()
+			<-rt.Done()
 			close(closeDone)
 		}()
 		synctest.Wait()
@@ -309,7 +317,8 @@ func TestRuntime_KillCancelsRunningCallAndRejectsQueuedCalls(t *testing.T) {
 		}()
 		synctest.Wait()
 
-		rt.Kill()
+		rt.BeginKill()
+		<-rt.Done()
 		synctest.Wait()
 
 		select {
@@ -359,7 +368,7 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 			MailboxCapacity: 1,
 			IdleTimeout:     time.Second,
 		})
-		defer rt.Close()
+		defer stopEngine(rt)
 		hookCalled := make(chan struct{}, 1)
 		if err := rt.Register("account", Registration{
 			Factory:  func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
@@ -387,7 +396,8 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 		rt.startDeactivationWaiterLocked(act)
 		rt.mu.Unlock()
 
-		rt.Kill()
+		rt.BeginKill()
+		<-rt.Done()
 		synctest.Wait()
 		select {
 		case <-hookCalled:
@@ -397,10 +407,75 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 	})
 }
 
+// TestRuntime_KillEscalationSkipsPendingDeactivationHook covers the closing to
+// killing upgrade: BeginClose starts deactivation with hooks enabled, but a
+// running method keeps the mailbox open, so the hook has not started when
+// BeginKill escalates. The escalation must mark the pending hook to skip, like
+// a direct sudden stop does.
+func TestRuntime_KillEscalationSkipsPendingDeactivationHook(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(0, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		rt := New(Config{
+			Clock:           fakeClock,
+			MailboxCapacity: 1,
+			IdleTimeout:     time.Second,
+		})
+		defer stopEngine(rt)
+		hookCalled := make(chan struct{}, 1)
+		started := make(chan struct{})
+		release := make(chan struct{})
+		if err := rt.Register("account", Registration{
+			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Dispatch: func(ctx context.Context, _ any, method string, _ any, _ any) error {
+				if method != "Block" {
+					return errors.New("unknown method")
+				}
+				close(started)
+				<-ctx.Done()
+				<-release
+				return nil
+			},
+			OnDeactivate: func(context.Context, Identity, any) {
+				hookCalled <- struct{}{}
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		blockDone := make(chan error, 1)
+		go func() {
+			blockDone <- rt.Invoke(context.Background(), id, "Block", nil, nil)
+		}()
+		synctest.Wait()
+		<-started
+
+		// BeginClose starts deactivation with hooks enabled; the running method
+		// keeps the mailbox open, so the hook cannot have started yet.
+		rt.BeginClose()
+		rt.BeginKill()
+		<-rt.Done()
+		synctest.Wait()
+
+		// Let the canceled method exit and the mailbox drain, then check that
+		// the escalation kept the hook from running.
+		close(release)
+		synctest.Wait()
+		<-blockDone
+		synctest.Wait()
+		select {
+		case <-hookCalled:
+			t.Fatal("OnDeactivate ran after escalation marked the pending deactivation")
+		default:
+		}
+	})
+}
+
 func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		entered := make(chan struct{})
 		release := make(chan struct{})
@@ -456,7 +531,7 @@ func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 func TestRuntime_FactoryPanicReleasesActivationWaiters(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		started := make(chan struct{})
 		release := make(chan struct{})
@@ -496,7 +571,7 @@ func TestRuntime_FactoryPanicReleasesActivationWaiters(t *testing.T) {
 func TestRuntime_FactoryErrorIsReturned(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		factoryErr := errors.New("factory failed")
 		if err := rt.Register("account", Registration{
@@ -518,7 +593,7 @@ func TestRuntime_FactoryErrorIsReturned(t *testing.T) {
 func TestRuntime_DiscardStopsActivationAndReturnsCause(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		var factoryCalls atomic.Int32
 		discardErr := errors.New("discard activation")
@@ -555,7 +630,7 @@ func TestRuntime_DiscardStopsActivationAndReturnsCause(t *testing.T) {
 func TestRuntime_DiscardWithNilErrorStillStopsActivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		var factoryCalls atomic.Int32
 		if err := rt.Register("account", Registration{
@@ -597,7 +672,7 @@ func TestDiscard_ErrorHandlesNil(t *testing.T) {
 func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		started := make(chan struct{})
 		release := make(chan struct{})
@@ -676,7 +751,7 @@ func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
 func TestRuntime_SerializesConcurrentCallsPerKey(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 2})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		firstStarted := make(chan struct{})
 		secondStarted := make(chan struct{})
@@ -728,7 +803,7 @@ func TestRuntime_SerializesConcurrentCallsPerKey(t *testing.T) {
 func TestRuntime_ActivationsReportsQueuedCallsAndSorts(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		started := make(chan struct{})
 		release := make(chan struct{})
@@ -799,7 +874,7 @@ func TestRuntime_ActivationsReportsQueuedCallsAndSorts(t *testing.T) {
 func TestRuntime_ActivationsExcludesNonActiveStates(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := New(Config{Clock: clock.Real{}, MailboxCapacity: 1})
-		defer rt.Close()
+		defer stopEngine(rt)
 
 		creating := make(chan struct{})
 		releaseCreate := make(chan struct{})
