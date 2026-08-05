@@ -20,8 +20,10 @@ type scheduledAccount interface {
 }
 
 type scheduledAccountEntity struct {
-	value    State[int64]
-	schedule Schedule
+	value       State[int64]
+	schedule    Schedule
+	wakeErr     error
+	wakeStarted chan struct{}
 }
 
 type scheduledAccountProxy struct {
@@ -34,6 +36,14 @@ func (a *scheduledAccountEntity) Arm(ctx context.Context) error {
 }
 
 func (a *scheduledAccountEntity) Wake(ctx context.Context) error {
+	if a.wakeStarted != nil {
+		close(a.wakeStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if a.wakeErr != nil {
+		return a.wakeErr
+	}
 	return a.value.Set(ctx, a.value.Get()+1)
 }
 
@@ -72,8 +82,17 @@ func dispatchScheduledAccount(ctx context.Context, instance scheduledAccount, me
 	}
 }
 
-func installScheduledAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int32) {
+type scheduledAccountConfig struct {
+	wakeErr     error
+	wakeStarted chan struct{}
+}
+
+func installScheduledAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int32, configs ...scheduledAccountConfig) {
 	t.Helper()
+	var config scheduledAccountConfig
+	if len(configs) > 0 {
+		config = configs[0]
+	}
 	if err := InstallType[scheduledAccount](rt, dispatchScheduledAccount, func(invoker Invoker, id Identity) scheduledAccount {
 		return &scheduledAccountProxy{invoker: invoker, id: id}
 	}); err != nil {
@@ -82,12 +101,122 @@ func installScheduledAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int
 	if err := Register[scheduledAccount](rt, func(b *Binder) scheduledAccount {
 		factoryCalls.Add(1)
 		return &scheduledAccountEntity{
-			value:    NewState[int64](b, "value"),
-			schedule: NewSchedule(b),
+			value:       NewState[int64](b, "value"),
+			schedule:    NewSchedule(b),
+			wakeErr:     config.wakeErr,
+			wakeStarted: config.wakeStarted,
 		}
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type scheduleErrorEvent struct {
+	id     Identity
+	method string
+	err    error
+}
+
+func TestSchedule_OnErrorReceivesInvocationFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(0, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		backend := store.NewMemory()
+		wakeErr := errors.New("scheduled wake failed")
+		errorsSeen := make(chan scheduleErrorEvent, 1)
+		rt := mustNew(t,
+			WithStore(backend),
+			WithClock(fakeClock),
+			WithIdleTimeout(5*time.Second),
+			WithEvictionInterval(time.Second),
+			WithScheduleInterval(time.Second),
+			OnError(func(id Identity, method string, err error) {
+				errorsSeen <- scheduleErrorEvent{id: id, method: method, err: err}
+			}),
+		)
+		defer rt.Close()
+		installScheduledAccount(t, rt, new(atomic.Int32), scheduledAccountConfig{wakeErr: wakeErr})
+
+		if err := Ref[scheduledAccount](rt, "alice").Arm(context.Background()); err != nil {
+			t.Fatalf("Arm: %v", err)
+		}
+		fakeClock.Advance(12 * time.Second)
+		synctest.Wait()
+
+		select {
+		case got := <-errorsSeen:
+			wantID := Identity{Type: TypeName[scheduledAccount](), Key: "alice"}
+			if got.id != wantID || got.method != "Wake" || !errors.Is(got.err, wakeErr) {
+				t.Fatalf("OnError event = %#v, want id %v, method Wake, error %v", got, wantID, wakeErr)
+			}
+		default:
+			t.Fatal("OnError did not receive scheduled invocation failure")
+		}
+	})
+}
+
+func TestSchedule_DropsInvocationFailureWithoutOnError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(0, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		backend := store.NewMemory()
+		rt := newScheduledRuntime(t, backend, fakeClock)
+		defer rt.Close()
+		installScheduledAccount(t, rt, new(atomic.Int32), scheduledAccountConfig{wakeErr: errors.New("scheduled wake failed")})
+
+		if err := Ref[scheduledAccount](rt, "alice").Arm(context.Background()); err != nil {
+			t.Fatalf("Arm: %v", err)
+		}
+		fakeClock.Advance(12 * time.Second)
+		synctest.Wait()
+
+		rows, err := backend.ListDue(context.Background(), start.Add(12*time.Second))
+		if err != nil {
+			t.Fatalf("ListDue: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("schedules after failed one-shot invocation = %#v, want none", rows)
+		}
+	})
+}
+
+func TestSchedule_DropsCancellationOnRuntimeClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(0, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		backend := store.NewMemory()
+		wakeStarted := make(chan struct{})
+		errorsSeen := make(chan scheduleErrorEvent, 1)
+		rt := mustNew(t,
+			WithStore(backend),
+			WithClock(fakeClock),
+			WithIdleTimeout(5*time.Second),
+			WithEvictionInterval(time.Second),
+			WithScheduleInterval(time.Second),
+			OnError(func(id Identity, method string, err error) {
+				errorsSeen <- scheduleErrorEvent{id: id, method: method, err: err}
+			}),
+		)
+		installScheduledAccount(t, rt, new(atomic.Int32), scheduledAccountConfig{wakeStarted: wakeStarted})
+
+		if err := Ref[scheduledAccount](rt, "alice").Arm(context.Background()); err != nil {
+			t.Fatalf("Arm: %v", err)
+		}
+		fakeClock.Advance(12 * time.Second)
+		synctest.Wait()
+		select {
+		case <-wakeStarted:
+		default:
+			t.Fatal("scheduled Wake did not start")
+		}
+
+		rt.Close()
+		select {
+		case got := <-errorsSeen:
+			t.Fatalf("OnError received shutdown cancellation: %#v", got)
+		default:
+		}
+	})
 }
 
 func newScheduledRuntime(t *testing.T, backend store.Store, sourceClock clock.Clock) *Runtime {

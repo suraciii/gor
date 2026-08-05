@@ -29,6 +29,7 @@ type Runtime struct {
 	store         store.Store
 	scheduleStore store.ScheduleStore
 	clock         clock.Clock
+	onError       func(Identity, string, error)
 	poller        *timer.Poller
 	clusterNode   *cluster.Node
 	clusterView   atomic.Pointer[cluster.View]
@@ -46,6 +47,7 @@ type Config struct {
 	Store             store.Store
 	ScheduleStore     store.ScheduleStore
 	ScheduleInterval  time.Duration
+	OnError           func(Identity, string, error)
 	MemberStore       store.MemberStore
 	NodeAddr          string
 	Generation        string
@@ -123,6 +125,7 @@ func New(options ...Option) (*Runtime, error) {
 		store:         config.Store,
 		scheduleStore: config.ScheduleStore,
 		clock:         config.Clock,
+		onError:       config.OnError,
 		done:          make(chan struct{}),
 		types:         make(map[string]typeRegistration),
 	}
@@ -188,6 +191,12 @@ func WithScheduleStore(value store.ScheduleStore) Option {
 func WithScheduleInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.ScheduleInterval = value
+	}
+}
+
+func OnError(f func(id Identity, method string, err error)) Option {
+	return func(config *Config) {
+		config.OnError = f
 	}
 }
 
@@ -394,7 +403,11 @@ type scheduleInvoker struct {
 }
 
 func (i scheduleInvoker) Invoke(ctx context.Context, id store.Identity, method string) error {
-	return i.runtime.Invoke(ctx, Identity(id), method, nil, nil)
+	err := i.runtime.Invoke(ctx, Identity(id), method, nil, nil)
+	if err != nil && ctx.Err() == nil && i.runtime.onError != nil {
+		i.runtime.onError(Identity(id), method, err)
+	}
+	return err
 }
 
 func (i scheduleInvoker) Owns(id store.Identity) bool {
