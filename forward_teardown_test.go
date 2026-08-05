@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -88,6 +89,16 @@ func TestScenario_ForwardedCallSurvivesOwnerClose(t *testing.T) {
 		target := mustNew(t, clusterRuntimeOptions(backend, members, fakeClock, "node-b", "generation-b", network.add("node-b"))...)
 		entries := make(chan struct{}, 8)
 		release := make(chan struct{})
+		var releaseOnce sync.Once
+		t.Cleanup(func() {
+			// A failed assertion must not leave the bubble with live runtimes:
+			// synctest would then panic over the goroutines and bury the real
+			// failure. Release the blocked method first so both runtimes can
+			// drain, then stop them.
+			releaseOnce.Do(func() { close(release) })
+			source.Close()
+			target.Close()
+		})
 		installBlockingEntity(t, source, entries, release)
 		installBlockingEntity(t, target, entries, release)
 		synctest.Wait()
@@ -157,14 +168,15 @@ func TestScenario_ForwardedCallSurvivesOwnerClose(t *testing.T) {
 		}
 
 		// Releasing the admitted method lets its round trip finish with the
-		// business result; only then does the owner close the transport.
-		close(release)
+		// business result; only then does the owner close the transport. The
+		// order is now enforced by the transport itself: the owner's graceful
+		// close waits for the in-flight reply to reach the caller before it
+		// completes.
+		releaseOnce.Do(func() { close(release) })
 		synctest.Wait()
 		if err := <-forwardDone; err != nil {
 			t.Fatalf("in-flight forward error = %v, want nil (business success)", err)
 		}
 		<-closeDone
-
-		source.Close()
 	})
 }

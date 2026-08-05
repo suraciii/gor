@@ -706,7 +706,7 @@ func (rt *Runtime) closeGracefully() {
 	rt.engine.BeginClose()
 	<-rt.engine.Done()
 	rt.waitDrained()
-	rt.closeTransport()
+	rt.closeTransport(true)
 	rt.finishStop()
 }
 
@@ -720,7 +720,7 @@ func (rt *Runtime) closeImmediately() {
 	}
 	rt.engine.BeginKill()
 	<-rt.engine.Done()
-	rt.closeTransport()
+	rt.closeTransport(false)
 	rt.finishStop()
 }
 
@@ -880,7 +880,13 @@ func (rt *Runtime) startTransport() {
 	}()
 }
 
-func (rt *Runtime) closeTransport() {
+// closeTransport tears the transport down once and waits for Serve to exit.
+// graceful selects the stop mode: a graceful stop calls Close, an abrupt stop
+// and a declared-death collapse call Kill. A Kill that arrives while the
+// graceful close is already in progress must still reach the transport: the
+// subcomponent that received the graceful stop command must not treat the
+// later Kill as a no-op.
+func (rt *Runtime) closeTransport(graceful bool) {
 	if rt.transport == nil {
 		return
 	}
@@ -888,7 +894,13 @@ func (rt *Runtime) closeTransport() {
 		if rt.transportStop != nil {
 			rt.transportStop()
 		}
-		_ = rt.transport.Close()
+		if graceful {
+			_ = rt.transport.Close()
+		} else {
+			_ = rt.transport.Kill()
+		}
+	} else if !graceful {
+		_ = rt.transport.Kill()
 	}
 	if rt.transportDone != nil {
 		<-rt.transportDone
@@ -917,7 +929,7 @@ func (rt *Runtime) watchCluster() {
 	}
 	rt.engine.BeginKill()
 	<-rt.engine.Done()
-	rt.closeTransport()
+	rt.closeTransport(false)
 	rt.finishStop()
 }
 

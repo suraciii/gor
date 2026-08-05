@@ -954,6 +954,11 @@ type testTransport struct {
 	probeSends   atomic.Int32
 	sendError    error
 	sendResponse []byte
+
+	// inflight counts handler deliveries that have not reached the caller;
+	// drained is armed while Close waits for them. Both are guarded by mu.
+	inflight int
+	drained  chan struct{}
 }
 
 var _ transport.Transport = (*testTransport)(nil)
@@ -1006,8 +1011,10 @@ func (t *testTransport) Send(ctx context.Context, addr string, payload []byte) (
 	}
 	peer.mu.Lock()
 	handler := peer.handler
+	peer.inflight++
 	peer.mu.Unlock()
 	if handler == nil {
+		peer.finishDelivery()
 		return nil, fmt.Errorf("transport address %q is not serving", addr)
 	}
 	result := make(chan testTransportResult, 1)
@@ -1017,17 +1024,141 @@ func (t *testTransport) Send(ctx context.Context, addr string, payload []byte) (
 	}()
 	select {
 	case result := <-result:
+		peer.finishDelivery()
 		return result.payload, result.err
 	case <-peer.closed:
+		peer.finishDelivery()
 		return nil, fmt.Errorf("transport %q closed during call", addr)
 	case <-ctx.Done():
+		peer.finishDelivery()
 		return nil, ctx.Err()
 	}
 }
 
+// finishDelivery releases one in-flight delivery; the last one closes the
+// drain that Close is waiting on. The handoff happens before the caller sees
+// the result, so a graceful Close cannot complete while a caller is still
+// owed a reply.
+func (t *testTransport) finishDelivery() {
+	t.mu.Lock()
+	t.inflight--
+	if t.inflight == 0 && t.drained != nil {
+		close(t.drained)
+		t.drained = nil
+	}
+	t.mu.Unlock()
+}
+
+// Close stops serving gracefully: new deliveries keep running (the runtime's
+// admission gate rejects them), but Close waits until every in-flight handler
+// result has reached its caller before closing the closed signal.
 func (t *testTransport) Close() error {
+	t.closeOnce.Do(func() {
+		t.mu.Lock()
+		if t.inflight == 0 {
+			close(t.closed)
+			t.mu.Unlock()
+			return
+		}
+		drained := make(chan struct{})
+		t.drained = drained
+		t.mu.Unlock()
+		<-drained
+		close(t.closed)
+	})
+	return nil
+}
+
+// Kill stops serving abruptly: in-flight deliveries are truncated at the
+// caller by the closed signal and no result is waited for.
+func (t *testTransport) Kill() error {
 	t.closeOnce.Do(func() { close(t.closed) })
 	return nil
+}
+
+// recordingTransport wraps a testTransport and records which stop method the
+// runtime invoked. The runtime-level contract — graceful stop calls Close,
+// abrupt stop and the Kill escalation call Kill — is a routing decision that
+// no flush-level test can observe deterministically: the reply delivery and
+// the transport close race under the bubble scheduler, and the delivery
+// always wins the wakeup order. Recording the method pins the routing.
+type recordingTransport struct {
+	*testTransport
+	closeCalls chan struct{}
+	killCalls  chan struct{}
+}
+
+func (r *recordingTransport) Close() error {
+	r.closeCalls <- struct{}{}
+	return r.testTransport.Close()
+}
+
+func (r *recordingTransport) Kill() error {
+	r.killCalls <- struct{}{}
+	return r.testTransport.Kill()
+}
+
+// TestRuntime_StopModeRouting pins which transport stop method each root stop
+// path selects: a graceful stop calls Close and never Kill; a Kill escalation
+// reaches the transport as Kill even when a Close already completed.
+func TestRuntime_StopModeRouting(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1750, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		network := newTestTransportNetwork()
+		base := network.add("node-a")
+		recorded := &recordingTransport{
+			testTransport: base,
+			closeCalls:    make(chan struct{}, 4),
+			killCalls:     make(chan struct{}, 4),
+		}
+		options := clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a", recorded)
+		rt := mustNew(t, options...)
+		synctest.Wait()
+		<-base.served
+
+		closeDone := make(chan struct{})
+		go func() {
+			rt.Close()
+			close(closeDone)
+		}()
+		synctest.Wait()
+		select {
+		case <-recorded.closeCalls:
+		default:
+			t.Fatal("graceful stop did not call Transport.Close")
+		}
+		select {
+		case <-recorded.killCalls:
+			t.Fatal("graceful stop called Transport.Kill")
+		default:
+		}
+		select {
+		case <-closeDone:
+		default:
+			t.Fatal("runtime Close did not return")
+		}
+
+		// A Kill after a completed graceful stop still reaches the transport
+		// as Kill: the transport must not treat the later Kill as a no-op.
+		killDone := make(chan struct{})
+		go func() {
+			rt.Kill()
+			close(killDone)
+		}()
+		synctest.Wait()
+		select {
+		case <-recorded.killCalls:
+		default:
+			t.Fatal("Kill after graceful stop did not call Transport.Kill")
+		}
+		select {
+		case <-killDone:
+		default:
+			t.Fatal("runtime Kill did not return")
+		}
+	})
 }
 
 type testTransportResult struct {
