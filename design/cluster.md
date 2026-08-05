@@ -1,137 +1,137 @@
-# 集群
+# Cluster
 
-> 这是唯一带真正分布式风险的部分。ROADMAP 里排在最后，且必须在 DST 骨架（第 4 步）之后。
+> This is the only part with genuine distributed risk. It is last in the ROADMAP and must come after the DST skeleton ([step 4](../ROADMAP.md#4-确定性模拟测试骨架)).
 
-## 先说结论：不实现共识
+## Conclusion first: no consensus
 
-`gor` 不含 Raft、不含 Paxos、不含任何 quorum 逻辑。线性一致性外包给一张**支持 CAS 的共享表**。
+`gor` has no Raft, no Paxos, no quorum logic of any kind. Linearizability is outsourced to a **shared table with CAS**.
 
-这不是妥协，是照抄一个已被验证的做法。Orleans 的 `MembershipService` 里 grep `quorum|consensus|Raft|Paxos` **零命中**——它靠一张共享表加 ETag/CAS，加心跳探测，加带过期的死亡投票。实测细节见 [research/orleans-internals.md](../research/orleans-internals.md)。
+This is not a compromise; it is copying a proven approach. Grep `quorum|consensus|Raft|Paxos` in Orleans' `MembershipService`: **zero hits** — it relies on a shared table plus ETag/CAS, heartbeat probing, and death votes with expiry. Measured details in [research/orleans-internals.md](../research/orleans-internals.md) (in Chinese).
 
-代价明确：**共享表是单点。** 表不可用时集群无法变更成员（已有节点继续服务）。这个代价换掉了整个共识实现，值得。
+The cost is explicit: **the shared table is a single point of failure.** While the table is unavailable, the cluster cannot change membership (existing nodes keep serving). This cost buys the removal of an entire consensus implementation; it is worth it.
 
 ## Membership
 
-一张表，一行一个节点：
+One table, one row per node:
 
 ```
 member(node_addr, generation, status, iam_alive_at, suspect_votes, etag)
 ```
 
-这是第 6c 步之后的形态。`suspect_votes` 只在探测与投票启用后写。
+This is the shape after step 6c. `suspect_votes` is only written once probing and voting are enabled.
 
-集群节点必须同时配置成员表和传输；只配置其中一个是无效配置。成员表提供共享成员视图，传输提供对其他成员的调用与直接探测，缺少任一项的节点不加入集群。
+A cluster node must be configured with both the membership table and the transport; configuring only one of them is an invalid configuration. The membership table provides the shared membership view; the transport provides calls and direct probing to other members; a node missing either one does not join the cluster.
 
-主键是 (node_addr, generation)。**generation 是节点每次启动新取的一个值**，同一个地址重启后是新的一行。没有它，重启的节点会认领自己上一条命的那一行，而别人可能还在给那一行投死亡票。
+The primary key is (node_addr, generation). **`generation` is a fresh value taken at every node start**; after a restart, the same address gets a new row. Without it, a restarted node would claim the row of its previous incarnation, while others may still be casting death votes on that row.
 
-### 表的接口
+### The table's interface
 
-三件事：
+Three operations:
 
-- **写自己这一行**——带 etag 的 CAS。加入、心跳、改状态都走这里。etag 为零表示「这一行必须还不存在」，跟状态表同一个约定。
-- **写别人的票**——当前探测邻居可以带 etag CAS 更新目标行的 `suspect_votes`。判死也写目标行。
-- **读全表**——节点靠它算视图。
+- **Write your own row** — CAS with the etag. Joining, heartbeat, and state changes all go through here. A zero etag means "this row must not exist yet", the same convention as the state table.
+- **Write someone else's vote** — the current probe neighbor can CAS-update the target row's `suspect_votes` with the etag. Declaring death also writes the target row.
+- **Read the whole table** — the node computes its view from it.
 
-不给「只读一行」「只读活着的」这类便利方法。视图必须是从同一次全表快照算出来的，分片去读会让一个节点看到互相矛盾的片段。
+No convenience methods like "read one row" or "read only the live ones". The view must be computed from one full-table snapshot; reading in fragments lets a node see mutually contradictory pieces.
 
-也不给「删一行」。死掉的行留着，是重启节点判断自己上一条命的依据。清理是运维的事，不是运行时的事。
+No "delete a row" either. Dead rows stay; they are how a restarted node recognizes its previous incarnation. Cleanup is an operations concern, not the runtime's.
 
-一次全表读取返回 `MemberSnapshot`：行的同一份快照和 `TableNow`。`TableNow` 来自成员表持有的、所有客户端共用的注入式 `Clock`。它是票据过期的唯一时间基准。节点各自的 `Clock` 不可用于比较别人的票，因为节点时钟可以有偏移。
+One full-table read returns a `MemberSnapshot`: a single snapshot of the rows plus `TableNow`. `TableNow` comes from the injected `Clock` held by the membership table and shared by all clients. It is the only time base for vote expiry. A node's own `Clock` cannot be used to judge other nodes' votes, because node clocks can be offset.
 
-生产实现也从这个 `Clock` 取时间。成员表和节点代码不得直接调用 `time.Now()`。
+Production code also takes time from this `Clock`. The membership table and the node code must not call `time.Now()` directly.
 
-### 节点的状态机
+### The node state machine
 
 ```
 joining → active → dead
 ```
 
-**加入**：以 `joining` 写自己这一行（etag 为零），读全表，再 CAS 成 `active`。先写后读的顺序是有意的——保证任何看得见自己的节点，自己也看得见对方。
+**Joining**: write your own row as `joining` (zero etag), read the whole table, then CAS to `active`. The write-then-read order is deliberate: it guarantees that any node that can see itself is also seen by the other side.
 
-**心跳**：按成员表的 `TableNow` 定期 CAS 更新自己的 `iam_alive_at`。
+**Heartbeat**: periodically CAS-update your own `iam_alive_at` against the table's `TableNow`.
 
-**退出**：`Close()` 时把自己 CAS 成 `dead`。走得干净的节点不需要别人来判它死。
+**Leaving**: CAS yourself to `dead` on `Close()`. A node that leaves cleanly does not need others to declare it dead.
 
-**判死**：只由当前邻居的未过期 `suspect_votes` 决定。`iam_alive_at` 陈旧不是判死证据。
+**Declaring death**: decided only by the current neighbors' unexpired `suspect_votes`. A stale `iam_alive_at` is not evidence of death.
 
-`dead` 是终态。一个被判死的节点即使还活着也不许再改自己那一行——它的 CAS 会因为 etag 对不上而失败，之后它必须自杀，不能带着一个全世界都认为已经死了的身份继续服务。
+`dead` is terminal. A declared-dead node must not modify its own row even if it is still alive — its CAS fails on the etag mismatch, and then it must self-terminate; it must not keep serving under an identity the whole world considers dead.
 
-**但 CAS 失败本身不足以断定自己死了。** 心跳的 CAS 撞冲突有两个原因：别人把这一行改成了 `dead`，或者上一次心跳其实写进去了、只是回复丢在路上——后者会让 etag 前进而节点不知道。两种原因给出同一个信号，而自杀是不可逆的，所以看到冲突必须再读一次全表：自己那一行是 `dead` 就自杀，不是就换上新的 etag 接着心跳。
+**But a CAS failure alone is not proof of your own death.** A heartbeat CAS collision has two causes: someone else changed the row to `dead`, or the previous heartbeat actually landed and only the reply was lost on the way — the latter advances the etag without the node knowing. Both causes give the same signal, and self-termination is irreversible, so on a collision the node must read the whole table again: if its row is `dead` it self-terminates; otherwise it takes the fresh etag and keeps heartbeating.
 
-不读就自杀，等于让一次丢包杀掉一个健康节点。
+Self-terminating without reading would let one dropped packet kill a healthy node.
 
-### 视图只由表上读到的行算出来
+### The view is computed only from rows read from the table
 
-**读表失败不是任何人死了的证据。** 这一轮读不到表就保留上一份视图，什么都不改。退化成「只有我」会把一次读故障放大成一次全网重新分片。
+**A table read failure is not evidence that anyone died.** If the table cannot be read this round, keep the previous view and change nothing. Degrading to "only me" would amplify one read fault into a whole-network re-sharding.
 
-**判死是先写后信。** 本地数到足够的有效票也不能直接进视图，要等那次 CAS 成功。写没写成就当对方还活着。
+**Declaring death is write-then-believe.** A local count of enough valid votes does not enter the view until the CAS succeeds. If the write did not land, treat the other side as alive.
 
-直接探测的失败也不能直接从视图摘掉目标。探测方先 CAS 写票；判死 CAS 成功前，目标仍是 `active`。
+A failed direct probe does not remove the target from the view either. The prober first CAS-writes its vote; until the death-declaring CAS succeeds, the target stays `active`.
 
-判死要经过表，这件事才有一个所有人都同意的答案。
+Death must go through the table; only then does the matter have an answer everyone agrees on.
 
-### 自杀之后运行时也要停
+### After self-termination, the runtime must also stop
 
-「不许再改自己那一行」不够。一个被判死的节点手里还攥着若干激活，它们的 ETag 已经过期，而新的调用早就路由到别的节点去了。
+"Must not modify your own row" is not enough. A declared-dead node still holds several activations whose ETags are stale, while new calls were already routed to other nodes.
 
-所以节点在一份成功读取的快照里看见自己的当前 generation 已是 `dead` 时，必须把「外部判死」这个原因报告给根运行时。根运行时先停止接纳实体调用、关闭公开停止信号，再走突发停止：取消已执行调用、拒绝队列并卸掉激活。之后的调用返回节点已停止服务错误。死节点算出来的视图里它什么都不拥有，但拒绝本地调用不能等视图变化；旧视图仍可能暂时把某个 identity 算给自己。
+So when a node sees its current generation as `dead` in a successfully read snapshot, it must report the cause "declared dead externally" to the root runtime. The root runtime first stops admitting entity calls and closes the public stop signal, then follows the abrupt stop: cancel executing calls, reject the queue, and drop activations. Calls after that return an error that the node has stopped serving. In the view a dead node computes, it owns nothing — but rejecting local calls cannot wait for the view to change; the old view may still assign some identity to it for a while.
 
-主动 `Close()` 也会把自己的成员行写成 `dead`。这只是正常离开，根运行时此前已经开始优雅停止，不能把集群节点的完成信号误认成外部判死。集群节点必须把结束原因交给根运行时，不能只给一个无原因的关闭 channel。
+An active `Close()` also writes the node's membership row as `dead`. That is only a normal leave — the root runtime already began a graceful stop — and the cluster node's completion signal must not be mistaken for an external death declaration. The cluster node must hand its end reason to the root runtime; a bare `Done` channel that carries no reason is not enough.
 
-### 差距
+### Gap
 
-集群节点已实装显式结束原因：主动关闭与外部判死都关 `Done()`，但只有外部判死关 `DeclaredDead()`。根运行时靠这个 channel 区分两者，不再从「自己是否发起过关闭」推断。判死节点不再发布最后的空视图：死节点算出来的视图里它什么都不拥有，但拒绝本地调用靠根接纳门在停止转换点立刻生效，不等视图变化，所以这份视图不应被发出（否则会触发按视图变化的优雅卸载，与突发停止冲突）。这一节已实装。
+The cluster node implements an explicit end reason: both an active close and an external death declaration close `Done()`, but only the external death declaration closes `DeclaredDead()`. The root runtime distinguishes the two by this channel, no longer inferring from "did I initiate the close myself". A declared-dead node no longer publishes the final empty view: in the view a dead node computes it owns nothing, but rejecting local calls takes effect immediately at the stop transition through the root admission gate, without waiting for the view to change, so this view must not be published (it would trigger graceful deactivation on view change, conflicting with the abrupt stop). This section is implemented.
 
-**嵌入的应用要能知道这件事。** 运行时给一个 close 掉就代表「不再服务」的 channel，`Close()`、`Kill()` 和被判死三种情形都关它。没有这个信号，应用只能靠每次调用都报错来猜，而那时候它已经在对外提供一个不工作的服务了。
+**An embedding application must be able to know this.** The runtime provides a channel whose closing means "no longer serving"; `Close()`, `Kill()`, and being declared dead all close it. Without this signal, the application could only guess from every call erroring — and by then it is already serving a service that does not work.
 
-被判死的节点不会自己爬回来。要回来就是重新加入——新的 generation，新的一行。
+A declared-dead node does not crawl back on its own. Coming back means re-joining: a fresh generation, a new row.
 
-## 探测与死亡投票
+## Probing and death votes
 
-直接探测是死亡判断的第二个信息源。成员表慢不能伪装成探测成功；一次表读失败也不再能把所有节点判死。
+Direct probing is the second information source for death judgment. A slow membership table cannot masquerade as probe success; one table read failure can no longer declare every node dead.
 
-### 谁探谁
+### Who probes whom
 
-探测用一条单点成员环，不用放置环的虚拟点。每个 `active` 的 `(node_addr, generation)` 只放一个点：`hash(node_addr + generation)`。哈希相同按完整成员 ID 排序。
+Probing uses a single-point membership ring, not the placement ring's virtual points. Each `active` `(node_addr, generation)` places exactly one point: `hash(node_addr + generation)`. Equal hashes order by the full member ID.
 
-一个节点探测自己的顺时针和逆时针相邻成员。两个方向指向同一成员时只探一次。只有一个 `active` 成员时没有目标；两个成员时各探对方一次；三个及以上时每个节点有两个目标。
+A node probes its clockwise and counter-clockwise neighbor members. When both directions point at the same member, it probes once. With one `active` member there is no target; with two, each probes the other once; with three or more, every node has two targets.
 
-每次成功读到新成员快照都重建这条环。新邻居从零次失败开始计数。旧邻居的在飞探测取消，失败计数删除，并 CAS 撤回它在旧邻居行上的票。地址相同、generation 不同也是新邻居，不能继承旧计数或旧票。
+The ring is rebuilt on every successful read of a fresh member snapshot. New neighbors start counting failures at zero. In-flight probes to old neighbors are canceled, their failure counts are deleted, and their votes on the old neighbor's row are retracted by CAS. Same address with a different generation is also a new neighbor; it inherits no old count and no old vote.
 
-这让每个节点的探测数恒为二。集群变大不增加单个节点的探测负担。
+This keeps the probe count per node constant at two. A bigger cluster does not increase any single node's probing load.
 
-### 探测路径
+### The probe path
 
-探测复用 [transport.md](transport.md) 的 `Transport.Send`。它走同一条懒拨号、帧、多路复用和假传输路径。不能另开 UDP、HTTP 或旁路 socket。
+Probing reuses `Transport.Send` from [transport.md](transport.md). It goes through the same lazy dialing, framing, multiplexing, and fake-transport path. No separate UDP, HTTP, or side-channel sockets.
 
-`cluster` 不导入 `transport`。它只依赖一个异步 `Prober`：给出目标成员 ID，返回一个回复 channel。`gor` 的适配器用 `Transport.Send` 发送 [信封](#信封)定义的 `probe` 请求。传输的服务端 handler 按 `kind` 分派；`probe` 直接交给 `cluster`，不经过实体调用。
+`cluster` does not import `transport`. It only depends on an async `Prober`: give it a target member ID, get back a reply channel. `gor`'s adapter sends the `probe` request defined in [Envelope](#envelope) via `Transport.Send`. The transport's server-side handler dispatches on `kind`; `probe` goes straight to `cluster`, not through an entity call.
 
-探测请求只带 `kind`。服务端当前成员 ID 放进普通响应的 `reply`，由发起方与快照中的目标比对；只有完全相同才算成功。地址复用后的新进程不能为旧 generation 洗掉票。
+A probe request carries only `kind`. The server's current member ID goes into the ordinary response's `reply`, and the initiator compares it with the target in its snapshot; only an exact match counts as success. A new process reusing the address must not erase votes for an old generation.
 
-服务端在本地成员仍是 `active` 且未停止服务时回复当前成员 ID；否则返回错误响应，不回成员 ID。探测本身不读写成员表，不刷新心跳，也不转发第二次。
+The server replies with its current member ID while its local member is still `active` and not stopping; otherwise it returns an error response with no member ID. Probing itself does not read or write the membership table, does not refresh heartbeats, and is not forwarded a second time.
 
-探测状态机等待回复 channel、关闭信号和由 `Clock` 创建的超时 channel。超时会取消这次 `Send`。不用 `context.WithTimeout`，也不用墙钟。
+The probe state machine waits on the reply channel, the close signal, and a timeout channel created from the `Clock`. A timeout cancels this `Send`. No `context.WithTimeout`, no wall clock.
 
-### 失败阈值
+### Failure thresholds
 
-每个目标各有一个连续失败计数。成功归零。超时、拨号失败、连接断开、错误回复都加一。只有连续失败达到 `ProbeFailures` 才写票。
+Each target has its own consecutive-failure count. Success resets it to zero. Timeout, dial failure, connection drop, and error reply each add one. A vote is written only when consecutive failures reach `ProbeFailures`.
 
-默认参数如下：
+Default parameters:
 
-| 参数 | 默认值 | 原因 |
+| Parameter | Default | Reason |
 | --- | --- | --- |
-| `ProbeInterval` | 1 秒 | 与既有心跳和视图周期一致。 |
-| `ProbeTimeout` | 500 毫秒 | 小于一个周期，不让未完成探测堆积。 |
-| `ProbeFailures` | 3 | 一两次丢包不投票，判定时间仍约为旧的三秒窗口。 |
-| `VoteTTL` | 6 秒 | 是三次探测窗口的两倍；两邻居能汇合，旧票很快失效。 |
-| `MaxTickGap` | 2 秒 | 超过两个探测周期，节点已不能可靠判断连续失败。 |
-| `MaxTableLatency` | 500 毫秒 | 自己访问成员表比一次探测还慢时，不该判别人死。 |
+| `ProbeInterval` | 1 s | Matches the existing heartbeat and view period. |
+| `ProbeTimeout` | 500 ms | Shorter than one period, so unfinished probes do not pile up. |
+| `ProbeFailures` | 3 | One or two dropped packets do not vote; the judgment time stays around the old three-second window. |
+| `VoteTTL` | 6 s | Twice the three-probe window; two neighbors can converge, and old votes expire quickly. |
+| `MaxTickGap` | 2 s | Beyond two probe periods, the node can no longer judge consecutive failures reliably. |
+| `MaxTableLatency` | 500 ms | When the node's own membership-table access is slower than one probe, it must not declare others dead. |
 
-这些值都在 `cluster.Config` 中。`VoteTTL` 是 `ProbeInterval` 的六倍，`MaxTickGap` 是两倍；`ProbeTimeout` 和 `MaxTableLatency` 都是一半。
+All of these live in `cluster.Config`. `VoteTTL` is six times `ProbeInterval`, `MaxTickGap` twice; `ProbeTimeout` and `MaxTableLatency` are each half.
 
-### 票
+### Votes
 
-`suspect_votes` 是按投票者成员 ID 去重的 map：
+`suspect_votes` is a map deduplicated by voter member ID:
 
 ```go
 map[MemberID]SuspectVote
@@ -141,191 +141,191 @@ type SuspectVote struct {
 }
 ```
 
-`MemberID` 是 `(node_addr, generation)`。一次失败阈值达到后，探测方把自己的项写成 `ExpiresAt = TableNow + VoteTTL`。后续失败只延长自己的项。探测成功立即撤回自己的项。
+`MemberID` is `(node_addr, generation)`. Once the failure threshold is reached, the prober writes its own entry as `ExpiresAt = TableNow + VoteTTL`. Later failures only extend its own entry. A successful probe immediately retracts its own entry.
 
-只有目标的当前前后邻居可创建或续期票。任何旧投票者都可撤回自己的项。目标本人、非邻居和 `joining`/`dead` 成员的票无效。有效票还必须未过期：`ExpiresAt > TableNow`。
+Only the target's current forward and backward neighbors may create or renew votes. Any former voter may retract its own entry. Votes from the target itself, from non-neighbors, and from `joining`/`dead` members are invalid. A valid vote must also be unexpired: `ExpiresAt > TableNow`.
 
-票写入是目标行的 CAS。写方从完整快照取目标行，先删除过期项，再合并自己的变更，带该行 etag 提交。CAS 冲突后重读完整快照，再算一次；不能把旧 `suspect_votes` 整列回写，丢掉并发票。目标的心跳也保留未过期票，并在写时清理过期票。
+Writing a vote is a CAS on the target row. The writer takes the target row from a full snapshot, deletes expired entries, merges its own change, and commits with the row's etag. On a CAS conflict it re-reads the full snapshot and recomputes; it must not write back the whole old `suspect_votes` column, dropping concurrent votes. The target's own heartbeat also preserves unexpired votes and cleans expired ones when writing.
 
-只读不做清理。下一次写该行时清掉过期项。判死计数始终按 `TableNow` 过滤，所以残留的旧数据没有效力。
+Reads do not clean. Expired entries are cleared on the next write to the row. Death counts are always filtered by `TableNow`, so leftover old data has no effect.
 
-### 票数与判死
+### Vote counts and declaring death
 
-对一条 `active` 目标行，先在同一成员快照重算探测环。只数目标当前前后邻居的有效票。
+For an `active` target row, recompute the probe ring on the same member snapshot first. Count only the valid votes of the target's current forward and backward neighbors.
 
-活跃成员数为 `n` 时，所需票数是 `min(2, n-1)`：
+With `n` active members, the required vote count is `min(2, n-1)`:
 
-- `n == 1`：没有外部证据，不能投死。
-- `n == 2`：唯一邻居的一票即可判死。
-- `n >= 3`：两个当前邻居都要投票。
+- `n == 1`: no external evidence; cannot be voted dead.
+- `n == 2`: one vote from the only neighbor suffices to declare death.
+- `n >= 3`: both current neighbors must vote.
 
-只有本地自检健康的 `active` 节点可以根据足够票 CAS 将目标改成 `dead`。它先保留目标行的有效票并使用当前 etag。CAS 冲突后重新读表；目标已经 `dead` 就结束，仍为 `active` 才重算。
+Only an `active` node that is locally self-check healthy may CAS the target to `dead` on sufficient votes. It keeps the target row's valid votes and uses the current etag. On a CAS conflict it re-reads the table; if the target is already `dead` it is done, and only if it is still `active` does it recompute.
 
-阈值不取全体多数。只有两个邻居直接探测这个目标；要求更多票会让没有探测职责的节点决定死亡，并把每节点工作量带回随集群增长的形状。
+The threshold is not a majority of all members. Only the two neighbors probe this target directly; demanding more votes would let nodes without probing duty decide death, and bring per-node work back to a shape that grows with the cluster.
 
-### 对称分区
+### Symmetric partitions
 
-传输分区不影响成员表时，表上的最终状态取决于两组节点在探测环上的排列。两组各自连续时，每个边界节点只有一张跨分区票，达不到两票阈值。两组交错时，每个节点的两个邻居都在另一侧；四个节点裂成 2+2 就可能把四行都 CAS 成 `dead`。
+When a transport partition does not affect the membership table, the table's final state depends on how the two groups sit on the probe ring. With each group contiguous, every boundary node has only one cross-partition vote, short of the two-vote threshold. With the groups interleaved, every node's two neighbors are on the other side; four nodes split 2+2 can CAS all four rows to `dead`.
 
-这是接受的代价。成员表没有连接拓扑，也没有共识，不能区分「另一侧已经死了」和「另一侧仍活着但不可达」。不设「最后一个 active 成员不许死」的下界。这个规则只会让 CAS 的时序任意选出幸存者，不能恢复连通性，也不能证明它比被投死的节点更可信。
+This is an accepted cost. The membership table has no connectivity topology and no consensus; it cannot distinguish "the other side is dead" from "the other side is alive but unreachable". There is no floor rule of "the last `active` member must not die". Such a rule would only let CAS timing pick an arbitrary survivor; it cannot restore connectivity, nor prove the survivor more trustworthy than the node voted dead.
 
-`n == 1` 时不会再产生新的死亡票，但这不是全局下界：两个节点还都是 `active` 时，可以同时 CAS 把对方投死，表随后仍会变成零个 `active`。
+At `n == 1` no new death votes are produced, but this is not a global floor: while two nodes are both still `active`, they can simultaneously CAS each other to death, and the table can still end up with zero `active` rows.
 
-全死后，成员表只剩 `dead` 行，所有节点的 `Done()` 都关闭，成员视图为空。仍在运行的节点看到空视图时，调用返回无属主错误，绝不回退到本地执行；已经判死的节点优先返回节点已停止服务错误。节点不会自行复活。
+After total death, the membership table holds only `dead` rows, every node's `Done()` is closed, and the membership view is empty. A node still running that sees the empty view returns the no-owner error for calls and never falls back to local execution; a node already declared dead returns the stopped-serving error first. Nodes do not resurrect themselves.
 
-恢复需要运维启动至少一个节点，以新的 generation 加入同一张成员表。它写出新的 `joining`/`active` 行后恢复成员视图；旧 `dead` 行保留。其他节点同样以新 generation 加入。没有自动恢复，也不允许把旧行改回 `active`。
+Recovery requires operations to start at least one node that joins the same membership table with a fresh generation. It restores the membership view after writing a new `joining`/`active` row; old `dead` rows stay. Other nodes join the same way with fresh generations. There is no automatic recovery, and changing an old row back to `active` is not allowed.
 
-### 自我健康检查
+### Self-check
 
-节点每个探测周期检查三件事：
+Every probe period, the node checks three things:
 
-- 上一拍到这一拍的本地 `Clock` 间隔。倒退或超过 `MaxTickGap` 是 GC 停顿、调度暂停或时钟跳变。
-- 一次全表读的完成时间。
-- 一次自己的成员行 CAS 的完成时间。
+- The local `Clock` interval from the previous tick to this one. Going backward or exceeding `MaxTickGap` means a GC pause, a scheduling stall, or a clock jump.
+- The completion time of one full-table read.
+- The completion time of one CAS on its own membership row.
 
-后两项超过 `MaxTableLatency`，或等到其 `Clock` 超时仍未完成，节点进入 `unhealthy`。时钟静态偏移不影响第一项；只比较同一节点相邻两次读数。
+If either of the last two exceeds `MaxTableLatency`, or does not finish before its `Clock` timeout, the node enters `unhealthy`. A static clock offset does not affect the first item; only two consecutive readings of the same node are compared.
 
-`unhealthy` 时节点继续读表、心跳和探测，但清空失败计数，不新写或续期票，也不根据票判死。已有票靠 TTL 自然失效。探测成功仍可撤回自己的票。
+While `unhealthy`, the node keeps reading the table, heartbeating, and probing, but clears failure counts, writes no new votes and renews none, and declares no deaths from votes. Existing votes expire naturally by TTL. A successful probe can still retract its own vote.
 
-连续三个完整周期都没有上述异常，节点回到 `healthy`。三拍防止一次短暂恢复立刻重新取得投票权。
+After three full periods with none of the above anomalies, the node returns to `healthy`. Three beats keep a brief recovery from immediately regaining voting rights.
 
-自检失败不是自杀条件。读表失败仍保留旧视图；只有在一份成功读取的快照里看见自己的当前 generation 已是 `dead`，才停止服务。这样一个仅仅访问成员表变慢的节点不会反过来放大故障。
+A failed self-check is not a reason to self-terminate. A table read failure still keeps the old view; only seeing its own current generation as `dead` in a successfully read snapshot stops the node. A node whose membership-table access merely slowed down thus does not amplify the fault in turn.
 
-### 被投死的节点
+### A node voted dead
 
-每次成功读表，以及自己的心跳 CAS 冲突后重读表，都检查本节点的 `(node_addr, generation)`。若状态已是 `dead`，立即走既有停止路径：卸掉全部激活、拒绝后续调用并关闭 `Done()`。之后不再回复探测。
+Every successful table read, and every re-read after a heartbeat CAS collision, checks the node's own `(node_addr, generation)`. If the state is already `dead`, it immediately takes the existing stop path: drop all activations, reject later calls, and close `Done()`. After that it no longer answers probes.
 
-因此，一个传输层被隔离但进程健康的节点，会在仍可访问成员表时看见邻居投出的 `dead`，然后自行停止。它不会用一次后续探测成功复活；复活只能以新 generation 重新加入。
+So a node whose transport is cut off but whose process is healthy sees the `dead` its neighbors voted while it can still reach the membership table, and stops itself. It cannot resurrect with one later probe success; resurrection means re-joining with a fresh generation.
 
-### `iam_alive_at` 的位置
+### The place of `iam_alive_at`
 
-`iam_alive_at` 保留并继续由心跳更新。它是运维可见的最后一次表心跳，不是死亡证据。
+`iam_alive_at` stays and keeps being updated by heartbeats. It is the last table heartbeat visible to operations, not evidence of death.
 
-第 6c 步删除所有「它陈旧超过 `DeadAfter` 就 CAS 为 `dead`」的逻辑。读表失败、旧时间戳和缺失心跳都不能替代直接探测与有效票。
+Step 6c deletes all "CAS to `dead` when stale beyond `DeadAfter`" logic. Table read failures, old timestamps, and missing heartbeats cannot replace direct probing and valid votes.
 
-### 验收
+### Acceptance
 
-以下都在 `make sim` 的假传输和假成员表中验证：
+All of the following are verified in `make sim` with the fake transport and the fake membership table:
 
-- 三个节点共享成员表，隔离其中一个节点的传输而不停止进程或成员表访问。两个邻居各写一票，目标行变成 `dead`，被隔离节点关闭 `Done()`。
-- 一个邻居因抖动留下票后不再续期。表时间越过 `VoteTTL`；另一个邻居随后也经历三次失败。健康目标不能因一张过期票和一张新票被判死。
-- 冻结目标的 `iam_alive_at`，但让直接探测持续成功。目标保持 `active`。
-- 注入本地时钟跳变、GC 暂停和慢成员表。节点不写票、不续票，也不根据已有票判死；连续三拍正常后才恢复投票。
-- 四个节点在探测环上交错分成 2+2，成员表保持可用。四行都可变成 `dead`，`Done()` 全部关闭；以新 generation 启动一个节点后，视图重新出现 active 成员。
+- Three nodes share the membership table; one node's transport is partitioned without stopping its process or its table access. The two neighbors each write a vote, the target row becomes `dead`, and the partitioned node closes `Done()`.
+- One neighbor leaves a vote after flapping and stops renewing it. Table time passes `VoteTTL`; the other neighbor then also suffers three failures. A healthy target must not be declared dead on one expired vote plus one fresh vote.
+- Freeze the target's `iam_alive_at` while direct probes keep succeeding. The target stays `active`.
+- Inject local clock jumps, GC pauses, and a slow membership table. The node writes no votes, renews none, and declares no deaths from existing votes; it only regains voting after three consecutive healthy beats.
+- Four nodes interleave 2+2 on the probe ring while the membership table stays available. All four rows can become `dead` and every `Done()` closes; starting one node with a fresh generation brings `active` members back into the view.
 
-## 放置
+## Placement
 
-一致性哈希环，节点按地址哈希入环，实体按 Identity 哈希落到环上第一个 active 节点。
+A consistent-hash ring: nodes hash onto the ring by address, and entities land on the first `active` node by hashing their Identity.
 
-选择哈希环而不是「随机放置 + 目录查询」：**哈希环让定位在多数情况下是纯本地计算，不需要一次网络往返。** 代价是节点变更会引起激活迁移。
+A hash ring is chosen over "random placement plus directory lookup": **a hash ring makes locating mostly pure local computation, with no network round trip.** The cost is that node changes cause activation migration.
 
-不做「按负载放置」。它需要全局负载视图，而全局视图在 DST 里极难验证。规模目标是小集群，哈希环足够。
+No load-based placement. It needs a global load view, and a global view is extremely hard to verify in DST. The scale target is small clusters; a hash ring is enough.
 
-### 哈希必须是跨进程稳定的
+### Hashing must be stable across processes
 
-**不能用 `maphash`。** 它每个进程一个随机种子，两个节点会算出两个环，视图收敛了也没用。用一个固定的、写死在代码里的函数——`hash/fnv` 就够。
+**`maphash` cannot be used.** It has a random seed per process; two nodes would compute two rings, and a converged view would not help. Use a fixed function written into the code: `hash/fnv` is enough.
 
-**每个节点在环上放若干个虚拟点**，不是一个。三五个节点每个只占一个点时，分布会歪得很难看，一个节点扛掉一半的 key。虚拟点数是一个常量，不做成配置——它不是用户该调的东西。
+**Each node places several virtual points on the ring, not one.** With three to five nodes at one point each, the distribution skews badly and one node carries half the keys. The virtual-point count is a constant, not a configuration knob — it is not something users should tune.
 
-虚拟点的位置由 `hash(地址 + generation + 序号)` 决定。带上 generation，是让同地址重启的节点落在新的位置上，不继承上一条命的那份负载分布。
+A virtual point's position comes from `hash(address + generation + index)`. Including the generation lets a node restarted at the same address land on new positions instead of inheriting its previous incarnation's load distribution.
 
-### 环就是目录，没有第二张表
+### The ring is the directory; there is no second table
 
-放置是 `hash(Identity)` 加当前成员视图算出来的，一次纯本地计算。**不另开一张目录表记「谁在哪」。**
+Placement is computed from `hash(Identity)` plus the current membership view — one pure local computation. **No separate directory table records "who is where".**
 
-Orleans 有目录表，是因为它不按哈希放置——它把激活放在选中的 silo 上，环只用来给目录分区，所以必须有地方记账。`gor` 按环放置，环本身就是账本。
+Orleans has a directory table because it does not place by hash: it puts activations on chosen silos and uses the ring only to partition the directory, so something must keep the books. `gor` places by ring; the ring itself is the ledger.
 
-加一张目录表的收益是把双激活窗口收窄：两个视图不一致的节点各自去注册，CAS 让一个输掉。但它收窄不到零——输的那个已经激活过了——代价是每次激活多一次往返、多一张表、多一条表不可用时的降级路径。窗口本来就要在文档里承认，收窄它不值这个价。
+A directory table would narrow the double-activation window: two nodes with inconsistent views each register, and CAS makes one lose. But it cannot narrow the window to zero — the loser already activated — and the cost is one more round trip per activation, one more table, and one more degradation path when the table is unavailable. The window must be acknowledged in the docs anyway; narrowing it is not worth that price.
 
-### 视图变了就卸掉不再属于自己的激活
+### When the view changes, drop activations that are no longer yours
 
-成员视图变化之后，节点上会有一些激活已经不再哈希到自己。**这些激活当场卸掉**，不等空闲驱逐。
+After a membership view change, some activations on the node no longer hash to it. **These activations are dropped on the spot**, not left to idle eviction.
 
-留着它们只有坏处：它们攥着过期的 ETag，下一次写必然撞冲突；而新的调用已经路由到新节点去了，它们也等不到。卸载走的是和空闲驱逐同一条路径，不新开一条。
+Keeping them has only downsides: they hold stale ETags, so the next write must hit a conflict; and new calls are already routed to the new node, so they will never be served. The drop takes the same path as idle eviction; no new path is added.
 
-## 目录一致性——必须诚实的部分
+## Directory consistency — the part that must be honest
 
-**`gor` 不保证同一时刻全世界只有一个激活。**
+**`gor` does not guarantee a single activation world-wide at any moment.**
 
-节点加入或离开时，各节点对成员列表的认知短暂不一致，于是同一个 key 会被算到不同节点上，产生两个激活。这个窗口在成员视图收敛后关闭。
+While nodes join or leave, nodes' views of the member list briefly disagree, so the same key can be computed to different nodes, producing two activations. The window closes once the membership views converge.
 
-上面否掉目录表，就是承认这个窗口关不掉——加一层仲裁只是把它变窄，而变窄的窗口和没变窄的窗口，用户要写的代码是同一套。所以：
+Rejecting the directory table above is admitting this window cannot be closed: an arbitration layer only narrows it, and the code users write is the same whether the window is narrow or not. So:
 
-1. 文档在用户能看见的地方写明这个窗口。
-2. 状态写入强制走 ETag（[persistence.md](persistence.md)），双激活会撞冲突而不是互相覆盖。
-3. DST 场景专门覆盖双激活窗口，断言「不会静默丢写」而不是断言「不会双激活」。
+1. The docs state this window where users can see it.
+2. State writes are forced through the ETag ([persistence.md](persistence.md)); double activations collide instead of overwriting each other.
+3. DST scenarios cover the double-activation window specifically, asserting "no silent write loss" rather than "no double activation".
 
-**这是 Orleans 的原样语义**，官方文档就是这么写的。假装能做得更强，只会让用户在错误的假设上写代码。
+**This is Orleans' semantics as-is**; its official docs say exactly this. Pretending to do better only makes users write code on false assumptions.
 
-## 路由
+## Routing
 
-每次调用先算一次 `hash(Identity)` 落在环上的哪个节点：
+Every call first computes which node `hash(Identity)` lands on:
 
-- **是自己**——照旧交给 `runtime`，跟单进程时一模一样。
-- **是别人**——转发过去（传输见下一节）。
+- **Self** — hand to `runtime` as usual, exactly as in single-process mode.
+- **Someone else** — forward it (transport in the next section).
 
-**这一步在 `gor` 里做，不在 `runtime` 里。** `runtime` 管的是「同一个 key 上的调用串行」，它不该知道集群存在，就像它现在不知道 `store` 存在一样。环的计算和转发都发生在 `gor` 这一层，`runtime` 那边接口不变。
+**This step happens in `gor`, not in `runtime`.** `runtime` is about "calls on the same key are serialized"; it must not know the cluster exists, just as it does not know `store` exists today. Ring computation and forwarding both happen in the `gor` layer; `runtime`'s interface does not change.
 
-环和成员视图自己一个包，跟 `timer` 一样的形状：拿一个成员表的接口、一个 `Clock`、自己的地址，按注入的时钟定期读全表算视图。`gor` 负责把它接上，并在视图变化时把不再属于自己的激活交给 `runtime` 卸掉。
+The ring and the membership view get their own package, shaped like `timer`: it takes a membership-table interface, a `Clock`, and its own address, and periodically reads the full table against the injected clock to compute the view. `gor` wires it up and, on view changes, hands the activations that no longer belong to this node to `runtime` for dropping.
 
-**环是纯函数。** 给一份成员视图和一个 Identity，算出一个节点。它不读时间、不做 I/O、不持有状态，单元测试直接喂视图。视图的获取是有状态的那一半，跟环分开。
+**The ring is a pure function.** Give it a membership view and an Identity, and it computes a node. It reads no time, does no I/O, holds no state; unit tests feed it views directly. Fetching the view is the stateful half, kept separate from the ring.
 
-## 传输
+## Transport
 
-节点间一条长连接，多路复用请求，不用 gRPC。接口、帧格式、连接生命周期见 [transport.md](transport.md)。
+One long-lived connection between nodes, requests multiplexed, no gRPC. Interface, frame format, and connection lifecycle in [transport.md](transport.md).
 
-`cluster` 不导入 `transport`——环算出一个地址，转发由 `gor` 那一层发起。
+`cluster` does not import `transport` — the ring computes an address, and forwarding is initiated by the `gor` layer.
 
-## 转发
+## Forwarding
 
-传输搬的是不透明字节，编解码全在 `gor` 这一层。
+The transport moves opaque bytes; all encoding and decoding lives in the `gor` layer.
 
-### 信封
+### Envelope
 
-请求都带 `kind`。第 6c 步引入这个字段。响应带返回值和结构化错误信封，定义见 [errors.md](errors.md)。
+Every request carries a `kind`. Step 6c introduces this field. Responses carry the return value and a structured error envelope, defined in [errors.md](errors.md).
 
 ```
-调用  {"kind": "invoke", "type": ..., "key": ..., "method": ..., "args": ...}
-探测  {"kind": "probe"}
-响应  {"reply": ..., "error": {"code": ..., "message": ...}}
+invoke  {"kind": "invoke", "type": ..., "key": ..., "method": ..., "args": ...}
+probe   {"kind": "probe"}
+reply   {"reply": ..., "error": {"code": ..., "message": ...}}
 ```
 
-`invoke` 的 `args` 和 `reply` 是原始 JSON。它们该还原成什么类型只有生成的代码知道，见 [codegen.md](codegen.md)。`probe` 没有 `args`；它的 `reply` 是当前成员 ID 的 JSON。
+`invoke`'s `args` and `reply` are raw JSON. Only generated code knows what types they should decode into; see [codegen.md](codegen.md). `probe` has no `args`; its `reply` is the current member ID as JSON.
 
-服务端只接受 `invoke` 和 `probe`。未知 `kind` 返回 `gor.invalid_request`。没有空 `type` 或缺字段的特殊含义。
+The server accepts only `invoke` and `probe`. An unknown `kind` returns `gor.invalid_request`. There is no special meaning for an empty `type` or missing fields.
 
-第 6b 步的转发只有 `invoke` 形状。第 6c 步为同一请求信封加入 `kind`，不新增另一套响应格式。
+Step 6b's forwarding has only the `invoke` shape. Step 6c adds `kind` to the same request envelope; it does not add a second response format.
 
-**方法返回的 error 走响应里的字段，不走传输的错误帧。** 错误帧是传输自己的故障——连接断了、帧超长。混在一起，调用方就分不清「没送到」和「送到了，但方法返回了错误」。响应错误信封保留稳定码和诊断文本；它不搬错误对象。规则和本地对等范围见 [errors.md](errors.md)。
+**A method's error travels in the response's field, not in the transport's error frame.** The error frame is the transport's own fault — connection dropped, frame too long. Mixed together, the caller could not tell "not delivered" from "delivered, but the method returned an error". The response's error envelope keeps the stable code and the diagnostic text; it does not carry the error object. The rules and the local parity scope are in [errors.md](errors.md).
 
-### 不转发第二次
+### Not forwarded a second time
 
-收到转发的节点直接执行，**不再算一次归属**。它的视图可能跟调用方不一样，而再算一次只有两种结局：弹回去（一个等着发生的环），或者报一个调用方无法处理的错误。
+A node that receives a forwarded call executes it directly, **without computing ownership again**. Its view may differ from the caller's, and recomputing has only two outcomes: bouncing back (a loop waiting to happen) or an error the caller cannot handle.
 
-不算归属不等于什么都不问：**已经 `dead` 或正在关闭的节点拒绝一切转发调用。** 这是一条关于自己的规则，不需要视图，也就不会跟别人的视图打架。
+Not computing ownership is not asking nothing: **a node that is already `dead` or stopping rejects all forwarded calls.** This is a rule about itself; it needs no view, so it cannot fight with anyone else's view.
 
-视图不一致时两个节点各自激活同一个 key，那是上面承认过的双激活窗口，靠 ETag 挡住并发写，不靠这里挡。
+When views disagree, two nodes each activate the same key — that is the double-activation window acknowledged above, held off by the ETag against concurrent writes, not by this rule.
 
-### 取消不跨网络
+### Cancellation does not cross the network
 
-调用方的 ctx 取消了，转发这一侧丢掉 pending 并返回 `ctx.Err()`，对面的方法接着跑完。服务端上下文不带调用方的取消或 deadline。完整规则见 [errors.md](errors.md)。
+When the caller's ctx is canceled, the forwarding side drops the pending request and returns `ctx.Err()`; the method on the other side keeps running to completion. The server-side context carries no caller cancellation or deadline. Full rules in [errors.md](errors.md).
 
-### 转发不重试
+### Forwarding does not retry
 
-发不出去、连接断了、对面拒绝——错误直接交给调用方。重试是不是安全只有用户知道，跟 `State.Set()` 冲突时、跟定时投递失败时是同一条立场。
+Cannot send, connection dropped, the other side rejected — the error goes straight to the caller. Only the user knows whether retrying is safe; this is the same stance as with `State.Set()` conflicts and scheduled delivery failures.
 
-## 迁移
+## Migration
 
-节点离开时它上面的激活消失，请求路由到新节点后重新从 store 激活。
+When a node leaves, its activations disappear; requests routed to the new node reactivate them from the store.
 
-**不做状态热迁移。** 状态本来就在 store 里，从 store 重建是同一条路径，多一条迁移路径就多一堆只在故障时才走到的代码。
+**No hot state migration.** State is in the store anyway; rebuilding from the store is the same path, and an extra migration path is a pile of code that only runs on failure.
 
-## 滚动升级
+## Rolling upgrades
 
-不支持不兼容变更的不停机升级，理由见 [architecture.md](architecture.md)——不做版本容忍序列化。
+No-downtime upgrades with incompatible changes are not supported; the reason is in [architecture.md](architecture.md): no version-tolerant encoding.
 
-同一集群假定跑同一版本二进制。这是本项目相对 Orleans 明确放弃的一项能力。
+The same cluster is assumed to run the same version of the binary. This is a capability the project explicitly gives up relative to Orleans.
 
-## 差距
+## Gap
 
-当前实现已覆盖本节的成员快照、探测、带过期投票、自检和节点自杀路径。仍未覆盖的是后续未列入第 6c 的运维清理与滚动升级能力。
+The current implementation covers this section's membership snapshots, probing, votes with expiry, self-checks, and the node self-termination path. Still uncovered: operational cleanup not listed in step 6c, and rolling-upgrade capability.

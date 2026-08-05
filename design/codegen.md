@@ -1,32 +1,32 @@
-# 代码生成
+# Code generation
 
-## 要解决什么
+## What this solves
 
-Go 泛型不能凭 `T` 合成一个实现 `T` 的类型。所以
-
-```go
-acct := gor.Ref[Account](rt, "alice")   // 返回 Account
-```
-
-没法纯靠泛型实现。同类 Go 项目的通行解法是把类型丢掉：
+Go generics cannot synthesize a type implementing `T` from `T` itself. So
 
 ```go
-resp, err := system.AskGrain(ctx, identity, msg, timeout)   // any 进 any 出
+acct := gor.Ref[Account](rt, "alice")   // returns Account
 ```
 
-goakt 就是这样（实测 `AskGrain(ctx, *GrainIdentity, message any, timeout) (any, error)`，`GrainContext.Message() any` / `Response(any)`）。代价是所有类型错误推迟到运行时。
+cannot be done with generics alone. The common solution in similar Go projects is to drop the types:
 
-`gor` 不接受这个代价，走代码生成。
+```go
+resp, err := system.AskGrain(ctx, identity, msg, timeout)   // any in, any out
+```
 
-## 输入契约
+goakt does exactly this (measured: `AskGrain(ctx, *GrainIdentity, message any, timeout) (any, error)`, `GrainContext.Message() any` / `Response(any)`). The cost is that all type errors are deferred to runtime.
 
-生成器读用户写的 Go interface。合法的实体接口方法必须：
+`gor` does not accept that cost and goes with code generation.
 
-- 第一个参数是 `context.Context`
-- 最后一个返回值是 `error`
-- 中间参数与返回值可编码
+## The input contract
 
-返回值个数不限。「可编码」指的是 `encoding/json` 编得动——本地调用直传不经过序列化，但同一个方法转发出去时要过一遍 JSON，编不动的类型在那一刻才炸，而那时已经晚了。
+The generator reads user-written Go interfaces. A valid entity interface method must:
+
+- take `context.Context` as its first parameter
+- return `error` last
+- have encodable parameters and return values in between
+
+The number of return values is unrestricted. "Encodable" means `encoding/json` can encode it: local calls pass values through without serialization, but the same method goes through JSON when forwarded, and an unencodable type blows up at exactly that moment, when it is already too late.
 
 ```go
 type Account interface {
@@ -34,26 +34,26 @@ type Account interface {
 }
 ```
 
-不满足契约的方法，生成器报错并指出行号——**不静默跳过**。静默跳过会让用户以为方法生成了，跑起来才发现没有。
+A method that does not satisfy the contract makes the generator report an error with the line number — **no silent skipping**. Silent skipping lets users believe the method was generated and only discover otherwise at runtime.
 
-这套契约来自 `alecthomas/go-rpcgen` 的做法（interface + 命名返回值 + 末位 error），是 Go 里被验证过的形状。
+This contract comes from `alecthomas/go-rpcgen`'s approach (interface + named return values + trailing error), a shape proven in Go.
 
-## 哪些接口会被生成
+## Which interfaces are generated
 
-只生成带标记的：
+Only marked ones are generated:
 
 ```go
 //gor:entity
 type Account interface { ... }
 ```
 
-包里的其他 interface 生成器不看。
+The generator ignores the package's other interfaces.
 
-不用「包里所有导出的 interface」这条规则：那样一个普通的辅助 interface 也要被拿去检查契约，用户为了让生成器闭嘴得把它挪到别的包去。标记显式，而且和「不满足契约就报错」这条能共存——没标记的不检查，标记了的必须合规。
+The "all exported interfaces in the package" rule is rejected: then an ordinary helper interface would also be checked against the contract, and users would have to move it to another package to silence the generator. The marker is explicit and coexists with "report errors on contract violations": unmarked ones are not checked; marked ones must comply.
 
-## 输出
+## Output
 
-每个接口生成一个代理：
+Each interface gets one generated proxy:
 
 ```go
 type accountProxy struct {
@@ -68,65 +68,65 @@ func (p *accountProxy) Deposit(ctx context.Context, amount int64) (int64, error)
 }
 ```
 
-以及一个服务端侧的分发函数，把方法名 + 参数还原成对实现类型的直接调用。
+Plus a server-side dispatch function that turns a method name plus arguments back into a direct call on the implementation type.
 
-## 参数和返回值各装进一个结构体
+## Arguments and return values each go into a struct
 
-`Invoke` 一头一个值，而方法可以收多个参数、返回多个值。所以**每个方法生成一对结构体**，代理和分发函数都用它们：
+`Invoke` takes one value on each side, while a method can take several parameters and return several values. So **each method generates a pair of structs**, used by both the proxy and the dispatch function:
 
 ```go
 type accountDepositRequest struct { A0 int64 }
 type accountDepositReply   struct { R0 int64 }
 ```
 
-不为「只有一个」开特例。单值时直接传 `&amount` 确实少一层，但那样生成器就有两条路径，而两条路径要各自测、各自维护。生成的代码没人读，少一层缩进不值这个价。
+No special case for "only one". Passing `&amount` directly for a single value does save one layer, but then the generator has two paths, and two paths each need their own tests and maintenance. Nobody reads generated code; one less layer of indentation is not worth that price.
 
-**没有参数、或者只返回 `error` 的方法，照样生成空结构体。** 跨节点时这一对结构体就是线上的字节：空结构体编码成 `{}`，编解码只有一条路径；不生成就要在编码前后各加一次「是不是 nil」的判断。没有网络的时候它确实是死代码，有了网络它是那条路径最短的形态。
+**Methods with no parameters or only an `error` return still get the empty structs.** Across nodes, this pair of structs is the bytes on the wire: empty structs encode to `{}`, and there is exactly one encode/decode path; without them, an "is it nil" check would be needed before and after encoding. Without a network it is indeed dead code; with a network it is the shortest form of that path.
 
-## 生成物怎么接进运行时
+## How generated artifacts plug into the runtime
 
-生成物落在子包，用户的接口包不引用它（原因见下面的类型检查死锁）。那么运行时怎么知道 `Account` 的分发函数在哪？
+The artifacts land in a subpackage, and the user's interface package does not import it (reason: the type-checking deadlock below). So how does the runtime know where `Account`'s dispatch function lives?
 
-生成器额外产出一个安装函数：
+The generator additionally emits an install function:
 
 ```go
 gorgen.Install(rt)
 ```
 
-它把每个接口的分发函数和代理构造函数登记到 `rt` 上。之后：
+It registers each interface's dispatch function and proxy constructor on `rt`. After that:
 
 ```go
-gor.Register[Account](rt, factory)        // 分发函数从登记表里取
-acct := gor.Ref[Account](rt, "alice")     // 代理从登记表里取，返回值类型是 Account
+gor.Register[Account](rt, factory)        // dispatch function taken from the registry
+acct := gor.Ref[Account](rt, "alice")     // proxy taken from the registry; return type is Account
 ```
 
-`Register` 因此少一个参数——第 1 步手写的那个 `dispatch` 由生成器接管。这是计划内的破坏性改动。
+`Register` therefore loses one parameter: the hand-written `dispatch` from [step 1](../ROADMAP.md#1-单进程运行时) is taken over by the generator. This is a planned breaking change.
 
-**否决了 `init()` 自动登记。** 它能省掉 `Install(rt)` 这一行，代价是用户必须记得写一个空导入，忘了就是运行时才发现的失败，而且登记表变成进程级全局——第 4 步的模拟测试要在一个进程里跑多个节点。登记表挂在 `rt` 上，`Install` 显式调用，两个问题一起没有。
+**Automatic registration via `init()` is rejected.** It saves the `Install(rt)` line, at the cost of users having to remember a blank import — forget it and the failure only shows up at runtime — and the registry becoming a process-wide global, while step 4's simulation tests run several nodes in one process. With the registry on `rt` and `Install` called explicitly, both problems disappear together.
 
-生成器不硬编码类型名字符串。它产出的是 `gor.InstallType[Account](rt, dispatchAccount, newAccountProxy, newAccountCall)` 这样的泛型调用，名字由 `gor` 自己按跟 `Register` / `Ref` 同一套规则算——三处用同一个函数，就不存在算不到一起的可能。
+The generator does not hardcode type-name strings. It emits a generic call like `gor.InstallType[Account](rt, dispatchAccount, newAccountProxy, newAccountCall)`, and `gor` itself computes the names with the same rules as `Register` / `Ref`: one shared function for all three places, so they cannot disagree.
 
-## 服务端怎么从字节还原类型
+## How the server rebuilds types from bytes
 
-转发来的调用只有方法名和一段 JSON（信封见 [cluster.md](cluster.md)）。`gor` 不知道 `"Deposit"` 的参数该解成什么，只有生成的代码知道。所以每个类型多产出一个函数：
+A forwarded call carries only a method name and a JSON blob (envelope in [cluster.md](cluster.md)). `gor` does not know what `"Deposit"`'s arguments decode into; only generated code does. So each type gets one more function:
 
 ```go
 func newAccountCall(method string) (args any, reply any)
 ```
 
-它按方法名造一对空壳，`"Deposit"` 给出 `&accountDepositRequest{}` 和 `&accountDepositReply{}`。认不出的方法名两个都给 nil——版本不一致的节点之间这是真会发生的事。
+It builds a pair of empty shells by method name: `"Deposit"` yields `&accountDepositRequest{}` and `&accountDepositReply{}`. An unrecognized method name yields nil for both — something that really happens between nodes on mismatched versions.
 
-**名字带类型，跟 `dispatchAccount`、`newAccountProxy` 一样。** 一个包里可以有好几个实体接口，不带类型名的 `newCall` 第二个就编译不过。生成物里凡是每类型一份的东西，名字都带类型，这条没有例外。
+**The name carries the type, like `dispatchAccount` and `newAccountProxy`.** A package can hold several entity interfaces; a `newCall` without the type name would not compile once there is a second one. Everything in the artifacts that is generated per type carries the type in its name; no exceptions.
 
-接下来一路都是已有的东西：`json.Unmarshal` 填进 args，交给**同一个 `Invoke`**，回来 `json.Marshal(reply)`。转发进来的调用和本地代理发起的调用从这一步起走同一条路，串行、激活、分发都不另开一份。
+From here on it is all existing machinery: `json.Unmarshal` fills the args, they go through **the same `Invoke`**, and the result comes back as `json.Marshal(reply)`. From this point, forwarded calls and calls initiated by local proxies share one path; serialization, activation, and dispatch are not duplicated.
 
-**只有 `newCall` 是为网络存在的。** 代理、分发函数、结构体本来就有。这也是 `Invoke` 的参数从 `[]any` 改成 `any` 的理由——`[]any` 装不回类型，一个结构体指针可以。
+**Only `newCall` exists for the network.** Proxies, dispatch functions, and structs existed anyway. This is also why `Invoke`'s argument changed from `[]any` to `any`: `[]any` cannot hold the types back, a struct pointer can.
 
-登记表里没有的类型，`Register` 返回错误。`Ref` 没有 error 返回值，找不到就 panic。这不是运行期状况，是接线没接上：同一个类型的 `Register` 会在启动时先报出来，`Ref` 的 panic 只是兜底。
+`Register` returns an error for a type missing from the registry. `Ref` has no error return; it panics when the type is missing. This is not a runtime condition; it is wiring that was never connected: the same type's `Register` reports first at startup, and the `Ref` panic is only a fallback.
 
-## 关键解耦
+## The key decoupling
 
-生成物只依赖一个窄接口：
+Generated artifacts depend on one narrow interface:
 
 ```go
 type Invoker interface {
@@ -134,49 +134,49 @@ type Invoker interface {
 }
 ```
 
-这一条决定了生成代码的稳定性：**运行时内部怎么改都不需要重新生成。** 传输换了、目录换了、序列化换了，生成物不动。
+This one line decides the stability of generated code: **no matter how the runtime changes internally, nothing is regenerated.** New transport, new directory, new encoding — the artifacts do not move.
 
-这个技巧来自 `segmentio/glue`——用一个窄 `Call` 接口让生成物与传输实现彻底解耦。
+This trick comes from `segmentio/glue`: a narrow `Call` interface that fully decouples generated artifacts from transport implementations.
 
-## 实现路径
+## Implementation path
 
-用 `golang.org/x/tools/go/packages` 加载包，`go/types` 拿类型信息，`text/template` 出代码。
+Load packages with `golang.org/x/tools/go/packages`, get type information from `go/types`, emit code with `text/template`.
 
-**已知的坑**：`go/types` 要求被加载的包能通过类型检查。如果生成物和用户接口在同一个包，那么「生成物还不存在」→「用户代码引用它 → 包类型检查失败」→「生成器无法加载包」，死锁。
+**A known pitfall**: `go/types` requires the loaded package to pass type checking. If the artifacts lived in the same package as the user interface, then "the artifacts do not exist yet" → "user code references them → the package fails type checking" → "the generator cannot load the package" — a deadlock.
 
-解法：**生成物落在子包**（例如 `internal/gorgen/`）。用户接口所在的包不引用生成物，由 `gor.Register` / `gor.Ref` 在运行时通过注册表关联。
+The solution: **the artifacts land in a subpackage** (for example `internal/gorgen/`). The package holding the user interface does not import the artifacts; `gor.Register` / `gor.Ref` connect them at runtime through the registry.
 
-## 生成器怎么测
+## How the generator is tested
 
-`go/packages` 会起 `go list` 子进程，一次几百毫秒。默认测试套件的规矩是单个测试 50 ms 以内、不起进程，所以生成器要拆成两层：
+`go/packages` spawns a `go list` subprocess, hundreds of milliseconds each time. The default test suite's rules are under 50 ms per test and no subprocesses, so the generator splits into two layers:
 
-- **加载层**：`go/packages` + `go/types` → 一个纯数据的模型（接口名、方法名、参数类型串、返回值类型串、出错时的行号）。
-- **渲染层**：模型 → 源码。
+- **Loading layer**: `go/packages` + `go/types` → a pure-data model (interface name, method names, parameter type strings, return type strings, line numbers on error).
+- **Rendering layer**: model → source code.
 
-渲染层不认识 `go/types`，测试直接手搓模型，跑得飞快，进默认套件。加载层的端到端测试要真起工具链，单独一条 target。
+The rendering layer does not know `go/types`; tests hand-build the model directly, run fast, and live in the default suite. The loading layer's end-to-end tests really start the toolchain and get their own target.
 
-这个拆分不只是为了测试。契约检查的报错发生在加载层，渲染层拿到的模型按定义已经合规——两层的职责本来就该分开。
+The split is not just for testing. Contract violations are reported in the loading layer, and the model the rendering layer receives is compliant by construction — the two layers' responsibilities were always separate.
 
-## 调用方式
+## Invocation
 
 ```bash
 go run github.com/suraciii/gor/cmd/gorgen -pkg ./domain
 ```
 
-或 `//go:generate`。
+Or `//go:generate`.
 
-不做 `go build` 时自动生成——Go 没有这个钩子，硬做只能靠 wrapper 脚本，而那会让 `go test ./...` 这种最常用的命令行为变得不可预测。生成是显式一步，CI 里加一个「生成物与源码一致」的检查。
+No automatic generation on `go build`: Go has no such hook; forcing it would need a wrapper script, and that would make the most common command, `go test ./...`, behave unpredictably. Generation is an explicit step, and CI gets a "generated artifacts match the source" check.
 
-## 差距
+## Gap
 
-**`newCall` 已由生成器产出，`Invoke` 的参数也已是 `any`。** 这是 6b 转发接通时完成的生成物变更；生成物现在同时服务本地调用和转发调用。
+**`newCall` is already produced by the generator, and `Invoke`'s argument is already `any`.** These artifact changes were completed when 6b forwarding was connected; the artifacts now serve local and forwarded calls alike.
 
-**导入别名冲突。** 生成器按包名写导入，两个不同路径的包重名（`a/domain` 和 `b/domain`）会产出编译不过的代码。方法签名里出现跨包类型时才会碰到。生成器应当自己分配别名，现在没做。
+**Import alias collisions.** The generator writes imports by package name; two packages with the same name at different paths (`a/domain` and `b/domain`) produce code that does not compile. This only happens when a method signature uses cross-package types. The generator should assign its own aliases; it does not yet.
 
-## 否决的方案
+## Rejected approaches
 
-**运行时 reflect 合成代理。** Go 的 `reflect.MakeFunc` 能构造函数值，但不能构造实现任意接口的类型。做不到。
+**Runtime reflect-synthesized proxies.** Go's `reflect.MakeFunc` can construct function values but not a type implementing an arbitrary interface. It cannot be done.
 
-**反过来让用户写 struct，生成 interface。** 少一次手写，但用户看不到自己的 API 面，而 API 面是给调用方看的最重要的东西。
+**The other way around: users write a struct, the generator produces the interface.** One less hand-written piece, but users would not see their own API surface — and the API surface is the most important thing callers see.
 
-**protobuf/IDL 先行。** 要求用户在 Go 之外再学一套语言，且 IDL 表达不了 Go 类型系统的全部。`gor` 的立场是 Go interface 就是 IDL。
+**protobuf/IDL first.** It would require users to learn another language on top of Go, and IDL cannot express the whole Go type system. gor's stance: the Go interface is the IDL.
