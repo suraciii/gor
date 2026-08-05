@@ -10,11 +10,11 @@ import (
 // Handler processes one incoming request payload.
 //
 // The context is canceled when the serving transport or the request's
-// connection is closed. A returned error is sent to the peer as text, so the
-// peer receives a new error with the same message; errors.Is and errors.As do
-// not preserve the handler's original error across this boundary. Handlers
-// should stop promptly after ctx is canceled because Close waits for active
-// handlers to return.
+// connection is closed. How a returned error crosses the transport is defined
+// by the transport implementation: TCP sends it as text, so the peer receives
+// a new error with the same message and errors.Is and errors.As do not preserve
+// the handler's original error. Handlers should stop promptly after ctx is
+// canceled because Close waits for active handlers to return.
 type Handler func(context.Context, []byte) ([]byte, error)
 
 // Transport moves opaque request payloads to an address and serves incoming
@@ -22,15 +22,18 @@ type Handler func(context.Context, []byte) ([]byte, error)
 //
 // Implementations must honor Send contexts, support concurrent calls, invoke
 // handlers with cancelable contexts, and ensure Close stops serving and waits
-// for active handlers and transport resources to finish. A canceled Send does
-// not prove that the peer did not execute the request. Errors returned by a
-// remote handler are text at this boundary and do not retain their original
-// error identity.
+// for active handlers and transport resources to finish. Handlers may be
+// invoked concurrently for different requests and must be safe for that use.
+// A canceled Send does not prove that the peer did not execute the request.
+// Send error representation is transport-specific. MaxPayloadSize limits
+// Frame-based wire protocols; a custom Transport implementation is not
+// required to enforce it.
 type Transport interface {
 	// Send sends payload to addr and returns the peer's response payload.
 	Send(context.Context, string, []byte) ([]byte, error)
 	// Serve accepts requests until ctx is canceled, Close is called, or the
-	// serving transport encounters an unrecoverable error.
+	// serving transport encounters an unrecoverable error. It may invoke handler
+	// concurrently for different requests.
 	Serve(context.Context, Handler) error
 	// Addr returns the address on which the transport is bound.
 	Addr() string

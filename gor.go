@@ -123,6 +123,12 @@ type Config struct {
 // Invoker from the runtime; application code normally consumes generated
 // proxies instead of implementing Invoker.
 type Invoker interface {
+	// Invoke invokes method for id, using the generated request in args and
+	// writing the generated response to reply. For a local call, ctx bounds
+	// activation and delivery; for a forwarded call, it bounds forwarding at
+	// the initiating Runtime. A forwarded call may continue on the owning
+	// Runtime after ctx is canceled, and errors returned from that Runtime do
+	// not preserve the original errors.Is or errors.As identity.
 	Invoke(context.Context, Identity, string, any, any) error
 }
 
@@ -249,7 +255,8 @@ func WithClock(value clock.Clock) Option {
 
 // WithMailboxCapacity sets the number of calls that may wait in one entity's
 // mailbox. If omitted, New allows 16 queued calls per entity; calls that cannot
-// be queued are rejected.
+// be queued are rejected. The value must not be negative; New panics when it
+// creates a mailbox with a negative capacity.
 func WithMailboxCapacity(value int) Option {
 	return func(config *Config) {
 		config.MailboxCapacity = value
@@ -312,7 +319,8 @@ func WithTransport(value transport.Transport) Option {
 // OnError sets the callback for errors from background scheduled invocations
 // and normal OnDeactivate hooks. If omitted, those errors are not reported.
 // The callback may run asynchronously and concurrently with application code;
-// it is not called for ordinary foreground Invoke errors.
+// it is not called for ordinary foreground Invoke errors. Cancellation errors
+// from scheduled invocations during shutdown are not reported.
 func OnError(f func(id Identity, method string, err error)) Option {
 	return func(config *Config) {
 		config.OnError = f
@@ -361,7 +369,9 @@ func WithGeneration(value string) Option {
 }
 
 // WithHeartbeatInterval sets the cluster heartbeat interval. If omitted, New
-// uses one second; the option has no effect when clustering is disabled.
+// uses one second; the option has no effect when clustering is disabled. When
+// clustering is enabled, the value must be positive; a non-positive value makes
+// New panic while creating the cluster ticker.
 func WithHeartbeatInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.HeartbeatInterval = value
@@ -370,7 +380,8 @@ func WithHeartbeatInterval(value time.Duration) Option {
 
 // WithViewInterval sets how often the cluster membership view is refreshed. If
 // omitted, New uses one second; the option has no effect when clustering is
-// disabled.
+// disabled. When clustering is enabled, the value must be positive; a
+// non-positive value makes New panic while creating the cluster ticker.
 func WithViewInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.ViewInterval = value

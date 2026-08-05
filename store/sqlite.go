@@ -15,8 +15,8 @@ const sqliteBusyTimeout = 5000
 // SQLite is a SQLite-backed implementation of Store, MemberStore, and
 // ScheduleStore.
 //
-// A SQLite value owns the database handles opened by its constructor. Call
-// Close when the backend is no longer needed.
+// Call Close when the backend is no longer needed; it releases the database
+// handles opened during construction.
 type SQLite struct {
 	readDB      *sql.DB
 	writeDB     *sql.DB

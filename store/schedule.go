@@ -29,9 +29,15 @@ type Schedule struct {
 type ScheduleStore interface {
 	// ListDue returns every schedule whose DueAt is no later than now.
 	ListDue(context.Context, time.Time) ([]Schedule, error)
-	// Claim advances or deletes a schedule when its ETag is still current.
+	// Claim compares the schedule's identity, name, and ETag atomically. When
+	// they match, a non-zero nextDueAt replaces DueAt and increments the stored
+	// ETag; a zero nextDueAt deletes the schedule. It returns true only when the
+	// update or deletion succeeds, and returns false with a nil error when the
+	// row is absent or its ETag is stale.
 	Claim(context.Context, Schedule, time.Time) (bool, error)
-	// Put inserts or replaces a schedule without an ETag precondition.
+	// Put inserts or replaces a schedule without an ETag precondition. A new
+	// row receives ETag 1; replacing an existing row increments its current
+	// ETag. The input ETag is ignored.
 	Put(context.Context, Schedule) error
 	// Delete unconditionally removes the named schedule, if it exists.
 	Delete(context.Context, Identity, string) error

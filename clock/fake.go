@@ -53,9 +53,11 @@ func (f *Fake) NewTicker(interval time.Duration) Ticker {
 	return ticker
 }
 
-// Advance moves the fake clock by d and delivers due ticks to active
-// tickers. If a ticker already has an unread tick, additional due ticks are
-// discarded until that tick is read.
+// Advance moves the fake clock by d. A negative d moves the clock backward and
+// produces no new tick. When a positive advance crosses multiple deadlines for
+// a ticker, Advance attempts to deliver only the latest crossed deadline; the
+// earlier deadlines are discarded. If the ticker already has an unread tick,
+// the new tick is discarded as well.
 func (f *Fake) Advance(d time.Duration) {
 	f.mu.Lock()
 	f.now = f.now.Add(d)

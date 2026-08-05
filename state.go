@@ -67,10 +67,11 @@ func (s State[T]) Get() T {
 }
 
 // Set JSON-encodes value and persists the entity's complete state record using
-// ctx. A JSON encoding error, including an error encoding another registered
-// state while rebuilding the record, leaves the current value unchanged and is
-// returned without a store write. Store errors leave the current value
-// unchanged and are returned as well; in particular,
+// ctx. A JSON encoding error for value or another registered state leaves the
+// current value unchanged and is returned without a store write. Store errors
+// leave the current in-memory value unchanged, but do not establish whether the
+// store wrote the record; callers must not assume the write failed or retry
+// unconditionally. Store errors are returned as well; in particular,
 // errors.Is(err, store.ErrConflict) reports an ETag conflict.
 // A store write failure also discards the current entity activation after the
 // containing call completes, so the next call creates a fresh activation.

@@ -62,9 +62,9 @@ func NewSchedule(b *Binder) Schedule {
 // name a generated entity method callable as func(context.Context) error; Set
 // does not validate the name or signature, so an invalid method is stored and
 // fails when the scheduler invokes it. A successful Set persists the schedule.
-// The scheduler claims each due occurrence before invoking it, providing
-// at-most-once delivery, and does not automatically retry an invocation that
-// returns an error. Setting the same name again replaces its method and timing.
+// Each due occurrence is delivered at most once, and an invocation that returns
+// an error is not automatically retried. Setting the same name again replaces
+// its method and timing.
 // Set returns ErrScheduleStoreUnavailable when no schedule store is configured,
 // or the error returned by the store.
 func (s Schedule) Set(ctx context.Context, name string, when ScheduleTime, method string) error {

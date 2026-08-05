@@ -11,9 +11,6 @@ import "time"
 // Implementations must be safe for concurrent calls. Now reports the current
 // time on the implementation's timeline. NewTicker requires a positive
 // duration and must panic when given a non-positive duration.
-// These are the only operations required because gor needs only current time
-// and periodic notifications; production code should not read wall-clock time
-// through another path.
 type Clock interface {
 	// Now returns the current time on this clock's timeline.
 	Now() time.Time
