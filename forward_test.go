@@ -4,11 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
+	"time"
 
+	"github.com/suraciii/gor/clock"
+	"github.com/suraciii/gor/cluster"
 	runtimepkg "github.com/suraciii/gor/runtime"
+	"github.com/suraciii/gor/store"
+	"github.com/suraciii/gor/transport"
 )
 
 func TestRuntime_HandleInvokesMethodAndEncodesReply(t *testing.T) {
@@ -203,4 +211,350 @@ func TestRuntime_HandleRejectsWhileClosing(t *testing.T) {
 		}
 		<-closeDone
 	})
+}
+
+func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1200, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		backend := store.NewMemory()
+		network := newTestTransportNetwork()
+		firstTransport := network.add("node-a")
+		secondTransport := network.add("node-b")
+		firstOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-a", "generation-a")
+		firstOptions = append(firstOptions, WithTransport(firstTransport))
+		secondOptions := clusterRuntimeOptions(backend, members, fakeClock, "node-b", "generation-b")
+		secondOptions = append(secondOptions, WithTransport(secondTransport))
+		first := mustNew(t, firstOptions...)
+		second := mustNew(t, secondOptions...)
+		defer first.Close()
+		defer second.Close()
+		installRoutedAccount(t, first, "node-a")
+		installRoutedAccount(t, second, "node-b")
+		synctest.Wait()
+		<-firstTransport.served
+		<-secondTransport.served
+
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+		remote := findForwardTarget(t, first, "node-b")
+		var remoteReply routedAccountEchoReply
+		if err := first.Invoke(context.Background(), remote, "Echo", &routedAccountEchoRequest{A0: "payload"}, &remoteReply); err != nil {
+			t.Fatalf("forwarded invocation error = %v", err)
+		}
+		if remoteReply.R0 != "node-b:payload" {
+			t.Fatalf("forwarded reply = %q, want node-b:payload execution", remoteReply.R0)
+		}
+		if got := firstTransport.sends.Load(); got != 1 {
+			t.Fatalf("forward sends = %d, want 1", got)
+		}
+
+		err := first.Invoke(context.Background(), remote, "Fail", &routedAccountFailRequest{}, nil)
+		if err == nil || err.Error() != "remote failure" {
+			t.Fatalf("forwarded method error = %v, want remote failure", err)
+		}
+
+		local := findForwardTarget(t, first, "node-a")
+		beforeLocal := firstTransport.sends.Load()
+		var localReply routedAccountWhoReply
+		if err := first.Invoke(context.Background(), local, "Who", &routedAccountWhoRequest{}, &localReply); err != nil {
+			t.Fatalf("local invocation error = %v", err)
+		}
+		if localReply.R0 != "node-a" {
+			t.Fatalf("local reply = %q, want node-a execution", localReply.R0)
+		}
+		if got := firstTransport.sends.Load(); got != beforeLocal {
+			t.Fatalf("local invocation sent %d transport requests, want none", got-beforeLocal)
+		}
+
+		sendError := errors.New("network down")
+		firstTransport.sendError = sendError
+		beforeFailure := firstTransport.sends.Load()
+		err = first.Invoke(context.Background(), remote, "Who", &routedAccountWhoRequest{}, nil)
+		if err != sendError {
+			t.Fatalf("transport error = %v, want original error %v", err, sendError)
+		}
+		if got := firstTransport.sends.Load(); got != beforeFailure+1 {
+			t.Fatalf("transport sends after failure = %d, want one attempt", got-beforeFailure)
+		}
+	})
+}
+
+func TestRuntime_InvokeDoesNotSendWithoutOwner(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1300, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		network := newTestTransportNetwork()
+		fakeTransport := network.add("node-a")
+		options := clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a")
+		options = append(options, WithTransport(fakeTransport))
+		rt := mustNew(t, options...)
+		defer rt.Close()
+		installRoutedAccount(t, rt, "node-a")
+		synctest.Wait()
+		<-fakeTransport.served
+
+		self := findClusterMember(t, members, "node-a", "generation-a")
+		self.Status = store.MemberDead
+		if _, err := members.WriteMember(context.Background(), self); err != nil {
+			t.Fatalf("mark node dead: %v", err)
+		}
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+
+		var reply routedAccountWhoReply
+		err := rt.Invoke(context.Background(), Identity{Type: TypeName[routedAccount](), Key: "alice"}, "Who", &routedAccountWhoRequest{}, &reply)
+		var wrongOwner WrongOwnerError
+		if !errors.As(err, &wrongOwner) || wrongOwner.Owner != "" {
+			t.Fatalf("invocation without owner error = %v, want empty-owner WrongOwnerError", err)
+		}
+		if got := fakeTransport.sends.Load(); got != 0 {
+			t.Fatalf("invocation without owner sent %d transport requests", got)
+		}
+	})
+}
+
+func TestRuntime_StartsAndClosesConfiguredTransport(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(1400, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		fakeTransport := newTestTransportNetwork().add("node-a")
+		options := clusterRuntimeOptions(store.NewMemory(), members, fakeClock, "node-a", "generation-a")
+		options = append(options, WithTransport(fakeTransport))
+		rt := mustNew(t, options...)
+		<-fakeTransport.served
+
+		rt.Close()
+		select {
+		case <-fakeTransport.closed:
+		default:
+			t.Fatal("configured transport was not closed")
+		}
+		select {
+		case <-fakeTransport.serveDone:
+		default:
+			t.Fatal("transport Serve is still running after Runtime.Close")
+		}
+	})
+}
+
+type routedAccount interface {
+	Who(context.Context) (string, error)
+	Echo(context.Context, string) (string, error)
+	Fail(context.Context) error
+}
+
+type routedAccountEntity struct {
+	label string
+}
+
+type routedAccountWhoRequest struct{}
+type routedAccountWhoReply struct {
+	R0 string
+}
+type routedAccountEchoRequest struct {
+	A0 string
+}
+type routedAccountEchoReply struct {
+	R0 string
+}
+type routedAccountFailRequest struct{}
+type routedAccountFailReply struct{}
+
+func (a *routedAccountEntity) Who(context.Context) (string, error) {
+	return a.label, nil
+}
+
+func (a *routedAccountEntity) Echo(_ context.Context, value string) (string, error) {
+	return a.label + ":" + value, nil
+}
+
+func (*routedAccountEntity) Fail(context.Context) error {
+	return errors.New("remote failure")
+}
+
+func dispatchRoutedAccount(ctx context.Context, instance routedAccount, method string, args any, reply any) error {
+	switch method {
+	case "Who":
+		value, err := instance.Who(ctx)
+		if err == nil {
+			reply.(*routedAccountWhoReply).R0 = value
+		}
+		return err
+	case "Echo":
+		value, err := instance.Echo(ctx, args.(*routedAccountEchoRequest).A0)
+		if err == nil {
+			reply.(*routedAccountEchoReply).R0 = value
+		}
+		return err
+	case "Fail":
+		return instance.Fail(ctx)
+	default:
+		return fmt.Errorf("unknown method %q", method)
+	}
+}
+
+func newRoutedAccountCall(method string) (args any, reply any) {
+	switch method {
+	case "Who":
+		return &routedAccountWhoRequest{}, &routedAccountWhoReply{}
+	case "Echo":
+		return &routedAccountEchoRequest{}, &routedAccountEchoReply{}
+	case "Fail":
+		return &routedAccountFailRequest{}, &routedAccountFailReply{}
+	default:
+		return nil, nil
+	}
+}
+
+func installRoutedAccount(t *testing.T, rt *Runtime, label string) {
+	t.Helper()
+	if err := InstallType[routedAccount](rt, dispatchRoutedAccount, func(invoker Invoker, id Identity) routedAccount {
+		return &routedAccountProxy{invoker: invoker, id: id}
+	}, newRoutedAccountCall); err != nil {
+		t.Fatal(err)
+	}
+	if err := Register[routedAccount](rt, func(*Binder) routedAccount {
+		return &routedAccountEntity{label: label}
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type routedAccountProxy struct {
+	invoker Invoker
+	id      Identity
+}
+
+func (p *routedAccountProxy) Echo(ctx context.Context, value string) (string, error) {
+	var reply routedAccountEchoReply
+	err := p.invoker.Invoke(ctx, p.id, "Echo", &routedAccountEchoRequest{A0: value}, &reply)
+	return reply.R0, err
+}
+
+func (p *routedAccountProxy) Who(ctx context.Context) (string, error) {
+	var reply routedAccountWhoReply
+	err := p.invoker.Invoke(ctx, p.id, "Who", &routedAccountWhoRequest{}, &reply)
+	return reply.R0, err
+}
+
+func (p *routedAccountProxy) Fail(ctx context.Context) error {
+	var reply routedAccountFailReply
+	return p.invoker.Invoke(ctx, p.id, "Fail", &routedAccountFailRequest{}, &reply)
+}
+
+func findForwardTarget(t *testing.T, rt *Runtime, owner string) Identity {
+	t.Helper()
+	view := rt.clusterView.Load()
+	for index := 0; index < 4096; index++ {
+		candidate := Identity{Type: TypeName[routedAccount](), Key: fmt.Sprintf("forward-%d", index)}
+		candidateOwner, ok := cluster.Owner(*view, store.Identity(candidate))
+		if ok && candidateOwner == owner {
+			return candidate
+		}
+	}
+	t.Fatalf("no identity owned by %q", owner)
+	return Identity{}
+}
+
+type testTransportNetwork struct {
+	mu         sync.Mutex
+	transports map[string]*testTransport
+}
+
+func newTestTransportNetwork() *testTransportNetwork {
+	return &testTransportNetwork{transports: make(map[string]*testTransport)}
+}
+
+func (n *testTransportNetwork) add(addr string) *testTransport {
+	t := &testTransport{
+		network:   n,
+		addr:      addr,
+		served:    make(chan struct{}),
+		closed:    make(chan struct{}),
+		serveDone: make(chan struct{}),
+	}
+	n.mu.Lock()
+	n.transports[addr] = t
+	n.mu.Unlock()
+	return t
+}
+
+type testTransport struct {
+	network *testTransportNetwork
+	addr    string
+
+	mu      sync.Mutex
+	handler transport.Handler
+
+	served    chan struct{}
+	closed    chan struct{}
+	serveDone chan struct{}
+	serveOnce sync.Once
+	closeOnce sync.Once
+	sends     atomic.Int32
+	sendError error
+}
+
+var _ transport.Transport = (*testTransport)(nil)
+
+func (t *testTransport) Addr() string {
+	return t.addr
+}
+
+func (t *testTransport) Serve(ctx context.Context, handler transport.Handler) error {
+	t.mu.Lock()
+	t.handler = handler
+	t.mu.Unlock()
+	t.serveOnce.Do(func() { close(t.served) })
+	defer close(t.serveDone)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.closed:
+		return nil
+	}
+}
+
+func (t *testTransport) Send(ctx context.Context, addr string, payload []byte) ([]byte, error) {
+	t.sends.Add(1)
+	if t.sendError != nil {
+		return nil, t.sendError
+	}
+	t.network.mu.Lock()
+	peer := t.network.transports[addr]
+	t.network.mu.Unlock()
+	if peer == nil {
+		return nil, fmt.Errorf("unknown transport address %q", addr)
+	}
+	peer.mu.Lock()
+	handler := peer.handler
+	peer.mu.Unlock()
+	if handler == nil {
+		return nil, fmt.Errorf("transport address %q is not serving", addr)
+	}
+	result := make(chan testTransportResult, 1)
+	go func() {
+		response, err := handler(context.Background(), payload)
+		result <- testTransportResult{payload: response, err: err}
+	}()
+	select {
+	case result := <-result:
+		return result.payload, result.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (t *testTransport) Close() error {
+	t.closeOnce.Do(func() { close(t.closed) })
+	return nil
+}
+
+type testTransportResult struct {
+	payload []byte
+	err     error
 }

@@ -14,6 +14,7 @@ import (
 	runtimepkg "github.com/suraciii/gor/runtime"
 	"github.com/suraciii/gor/store"
 	"github.com/suraciii/gor/timer"
+	"github.com/suraciii/gor/transport"
 )
 
 var ErrTypeNotInstalled = errors.New("entity type is not installed; call InstallType or run the generated Install")
@@ -39,6 +40,10 @@ type Runtime struct {
 	clock         clock.Clock
 	onError       func(Identity, string, error)
 	poller        *timer.Poller
+	transport     transport.Transport
+	transportDone chan struct{}
+	transportStop context.CancelFunc
+	transportOnce sync.Once
 	clusterNode   *cluster.Node
 	clusterView   atomic.Pointer[cluster.View]
 	clusterDone   chan struct{}
@@ -55,6 +60,7 @@ type Config struct {
 	Store             store.Store
 	ScheduleStore     store.ScheduleStore
 	ScheduleInterval  time.Duration
+	Transport         transport.Transport
 	OnError           func(Identity, string, error)
 	MemberStore       store.MemberStore
 	NodeAddr          string
@@ -135,6 +141,7 @@ func New(options ...Option) (*Runtime, error) {
 		scheduleStore: config.ScheduleStore,
 		clock:         config.Clock,
 		onError:       config.OnError,
+		transport:     config.Transport,
 		done:          make(chan struct{}),
 		types:         make(map[string]typeRegistration),
 	}
@@ -151,6 +158,9 @@ func New(options ...Option) (*Runtime, error) {
 	}
 	if config.ScheduleStore != nil && config.ScheduleInterval > 0 {
 		rt.poller = timer.New(config.ScheduleStore, config.Clock, config.ScheduleInterval, scheduleInvoker{runtime: rt})
+	}
+	if rt.clusterNode != nil && rt.transport != nil {
+		rt.startTransport()
 	}
 	return rt, nil
 }
@@ -200,6 +210,12 @@ func WithScheduleStore(value store.ScheduleStore) Option {
 func WithScheduleInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.ScheduleInterval = value
+	}
+}
+
+func WithTransport(value transport.Transport) Option {
+	return func(config *Config) {
+		config.Transport = value
 	}
 }
 
@@ -258,9 +274,15 @@ func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args 
 		return rt.Runtime.Invoke(ctx, id, method, args, reply)
 	}
 	view := rt.clusterView.Load()
-	owner, _ := cluster.Owner(*view, store.Identity(id))
-	if owner != rt.nodeAddr {
+	owner, ok := cluster.Owner(*view, store.Identity(id))
+	if !ok {
 		return WrongOwnerError{Owner: owner}
+	}
+	if owner != rt.nodeAddr {
+		if rt.transport == nil {
+			return WrongOwnerError{Owner: owner}
+		}
+		return rt.forward(ctx, owner, id, method, args, reply)
 	}
 	return rt.Runtime.Invoke(ctx, id, method, args, reply)
 }
@@ -372,6 +394,7 @@ func (rt *Runtime) Close() {
 		<-rt.clusterDone
 	}
 	rt.Runtime.Close()
+	rt.closeTransport()
 }
 
 func (rt *Runtime) Kill() {
@@ -385,6 +408,7 @@ func (rt *Runtime) Kill() {
 		<-rt.clusterDone
 	}
 	rt.Runtime.Kill()
+	rt.closeTransport()
 }
 
 func (rt *Runtime) Done() <-chan struct{} {
@@ -394,6 +418,31 @@ func (rt *Runtime) Done() <-chan struct{} {
 func (rt *Runtime) stopServing() {
 	rt.stopOnce.Do(func() {
 		close(rt.done)
+	})
+}
+
+func (rt *Runtime) startTransport() {
+	serveContext, stopServe := context.WithCancel(context.Background())
+	rt.transportStop = stopServe
+	rt.transportDone = make(chan struct{})
+	go func() {
+		defer close(rt.transportDone)
+		_ = rt.transport.Serve(serveContext, rt.handle)
+	}()
+}
+
+func (rt *Runtime) closeTransport() {
+	if rt.transport == nil {
+		return
+	}
+	rt.transportOnce.Do(func() {
+		if rt.transportStop != nil {
+			rt.transportStop()
+		}
+		_ = rt.transport.Close()
+		if rt.transportDone != nil {
+			<-rt.transportDone
+		}
 	})
 }
 
