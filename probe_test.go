@@ -44,7 +44,7 @@ func TestTransportProberPreservesTransportAndResponseErrors(t *testing.T) {
 		t.Fatalf("transport error = %v, want %v", transportResult.Err, transportErr)
 	}
 
-	responsePayload, err := json.Marshal(callResponse{Error: "cluster node is dead"})
+	responsePayload, err := json.Marshal(callResponse{Error: &errorEnvelope{Message: "cluster node is dead"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestTransportProberReturnsMismatchedMemberIDAsProbeResult(t *testing.T) {
 
 func TestTransportProberRejectsMalformedMemberIDReply(t *testing.T) {
 	result := <-(&transportProber{transport: &probeTransport{
-		response: []byte(`{"reply":"not-a-member-id","error":""}`),
+		response: []byte(`{"reply":"not-a-member-id"}`),
 	}}).Probe(context.Background(), cluster.MemberID{NodeAddr: "node-b", Generation: "generation-b"})
 	if result.Err == nil {
 		t.Fatal("malformed probe reply returned nil error")
@@ -139,8 +139,8 @@ func TestRuntime_HandleProbeReturnsCurrentMemberIDWithoutTableAccess(t *testing.
 		if err := json.Unmarshal(payload, &response); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
-		if response.Error != "" {
-			t.Fatalf("probe response error = %q", response.Error)
+		if response.Error != nil {
+			t.Fatalf("probe response error = %#v", response.Error)
 		}
 		var reply cluster.MemberID
 		if err := json.Unmarshal(response.Reply, &reply); err != nil {
@@ -182,8 +182,8 @@ func TestRuntime_HandleProbeRejectsUnknownKind(t *testing.T) {
 	if err := json.Unmarshal(payload, &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !strings.Contains(response.Error, `unknown request kind "unknown"`) {
-		t.Fatalf("response error = %q, want unknown-kind error", response.Error)
+	if response.Error == nil || response.Error.Code != string(ErrInvalidRequest) || !strings.Contains(response.Error.Message, `unknown request kind "unknown"`) {
+		t.Fatalf("response error = %#v, want invalid unknown-kind error", response.Error)
 	}
 }
 
@@ -195,16 +195,16 @@ func TestRuntime_HandleProbeRejectsStoppedNode(t *testing.T) {
 		rt := mustNew(t, clusterRuntimeOptions(store.NewMemory(), members, clock.NewFake(start), "node-a", "generation-a", network.add("node-a"))...)
 		rt.Close()
 
-		payload, err := rt.handle(context.Background(), []byte(`{"kind":"probe"}`))
+		payload, err := rt.handleProbe()
 		if err != nil {
-			t.Fatalf("handle error = %v", err)
+			t.Fatalf("handle probe error = %v", err)
 		}
 		var response callResponse
 		if err := json.Unmarshal(payload, &response); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
-		if response.Error == "" {
-			t.Fatal("stopped node returned a probe reply")
+		if response.Error == nil || response.Error.Code != string(ErrNodeDead) {
+			t.Fatalf("stopped node probe response = %#v, want node-dead code", response.Error)
 		}
 	})
 }

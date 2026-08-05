@@ -2,7 +2,6 @@ package domain
 
 import (
 	"context"
-	"errors"
 	"log"
 	"time"
 
@@ -11,7 +10,8 @@ import (
 
 const OfflineAfter = 30 * time.Second
 
-var ErrWorkshopIDRequired = errors.New("workshop id is required")
+// ErrWorkshopIDRequired reports that a device report has no workshop ID.
+const ErrWorkshopIDRequired gor.Code = "shadow.workshop_id_required"
 
 const (
 	LifecycleActivated   = "activated"

@@ -3,6 +3,7 @@ package gor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/suraciii/gor/store"
@@ -72,7 +73,8 @@ func (s State[T]) Get() T {
 // leave the current in-memory value unchanged, but do not establish whether the
 // store wrote the record; callers must not assume the write failed or retry
 // unconditionally. Store errors are returned as well; in particular,
-// errors.Is(err, store.ErrConflict) reports an ETag conflict.
+// errors.Is(err, store.ErrConflict) and errors.Is(err, ErrPersistenceConflict)
+// report an ETag conflict.
 // A store write failure also discards the current entity activation after the
 // containing call completes, so the next call creates a fresh activation.
 // On success, subsequent Get calls return value.
@@ -104,7 +106,10 @@ func (s *stateCellValue[T]) decode(data []byte) error {
 func (b *Binder) load(ctx context.Context) error {
 	record, err := b.runtime.store.Read(ctx, b.identity)
 	if err != nil {
-		return err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return withCode(ErrPersistenceFailed, err)
 	}
 	if len(record.Data) == 0 {
 		b.etag = record.ETag
@@ -150,8 +155,15 @@ func (b *Binder) persist(ctx context.Context, changed stateCell, changedData []b
 	}
 	etag, err := b.runtime.store.Write(ctx, b.identity, data, b.etag)
 	if err != nil {
-		b.discard = err
-		return err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if errors.Is(err, store.ErrConflict) {
+			b.discard = withCode(ErrPersistenceConflict, err)
+		} else {
+			b.discard = withCode(ErrPersistenceFailed, err)
+		}
+		return b.discard
 	}
 	b.etag = etag
 	return nil

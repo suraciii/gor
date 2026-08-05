@@ -9,14 +9,10 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sort"
-	"strings"
 	"testing/synctest"
 	"time"
 
 	"github.com/suraciii/gor"
-	clusterpkg "github.com/suraciii/gor/cluster"
-	"github.com/suraciii/gor/mail"
-	runtimepkg "github.com/suraciii/gor/runtime"
 	"github.com/suraciii/gor/store"
 )
 
@@ -282,7 +278,6 @@ func chooseScheduleFault(rng *rand.Rand) scheduleFaultKind {
 }
 
 func classifyOutcome(err error) (string, error) {
-	var wrongOwner gor.WrongOwnerError
 	switch {
 	case err == nil:
 		return "ok", nil
@@ -296,15 +291,17 @@ func classifyOutcome(err error) (string, error) {
 		return "member-list-error", nil
 	case simErrorIs(err, errMemberAppliedFailure):
 		return "member-write-applied-then-error", nil
-	case simErrorIs(err, clusterpkg.ErrNodeDead):
+	case simErrorIs(err, gor.ErrNodeDead):
 		return "cluster-node-dead", nil
-	case simErrorIs(err, store.ErrConflict):
+	case simErrorIs(err, gor.ErrPersistenceConflict), simErrorIs(err, store.ErrConflict):
 		return "store-conflict", nil
-	case errors.As(err, &wrongOwner):
+	case simErrorIs(err, gor.ErrPersistenceFailed):
+		return "store-write-unknown", nil
+	case simErrorIs(err, gor.ErrNoOwner):
 		return "wrong-owner", nil
-	case simErrorIs(err, mail.ErrClosed), simErrorIs(err, runtimepkg.ErrRuntimeClosed):
+	case simErrorIs(err, gor.ErrRuntimeClosed):
 		return "closed", nil
-	case simErrorIs(err, mail.ErrOverloaded):
+	case simErrorIs(err, gor.ErrOverloaded):
 		return "overloaded", nil
 	case simErrorIs(err, context.Canceled):
 		return "canceled", nil
@@ -314,7 +311,7 @@ func classifyOutcome(err error) (string, error) {
 }
 
 func simErrorIs(err, target error) bool {
-	return errors.Is(err, target) || (err != nil && strings.Contains(err.Error(), target.Error()))
+	return errors.Is(err, target)
 }
 
 func logEntityStates(log *eventLog, backend *fakeStore, ids []store.Identity) error {

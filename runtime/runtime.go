@@ -20,6 +20,7 @@ import (
 var (
 	ErrTypeNotRegistered = errors.New("entity type is not registered")
 	ErrRuntimeClosed     = errors.New("runtime closed")
+	ErrPanic             = errors.New("runtime panic")
 )
 
 type Identity struct {
@@ -347,7 +348,7 @@ func (r *Runtime) createActivation(ctx context.Context, id Identity, registratio
 	defer func() {
 		if value := recover(); value != nil {
 			act = nil
-			err = fmt.Errorf("activation factory panicked: %v", value)
+			err = fmt.Errorf("%w: activation factory panicked: %v", ErrPanic, value)
 		}
 		r.mu.Lock()
 		delete(r.pending, id)
@@ -408,7 +409,7 @@ func (r *Runtime) callFinished(act *activation) {
 func (r *Runtime) dispatch(registration Registration, act *activation, ctx context.Context, method string, args any, reply any) (err error) {
 	defer func() {
 		if value := recover(); value != nil {
-			err = fmt.Errorf("entity method panicked: %v", value)
+			err = fmt.Errorf("%w: entity method panicked: %v", ErrPanic, value)
 			r.stopActivation(act)
 		}
 	}()

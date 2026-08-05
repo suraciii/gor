@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/suraciii/gor/clock"
-	"github.com/suraciii/gor/mail"
 	"github.com/suraciii/gor/store"
 )
 
@@ -263,11 +262,14 @@ func TestOnCallReportsOverload(t *testing.T) {
 		synctest.Wait()
 
 		err := rt.Invoke(context.Background(), id, "Block", nil, nil)
-		if !errors.Is(err, mail.ErrOverloaded) {
-			t.Fatalf("overloaded Invoke error = %v, want %v", err, mail.ErrOverloaded)
+		if !errors.Is(err, ErrOverloaded) {
+			t.Fatalf("overloaded Invoke error = %v, want %v", err, ErrOverloaded)
+		}
+		if got, ok := CodeOf(err); !ok || got != ErrOverloaded {
+			t.Fatalf("CodeOf(overloaded error) = (%q, %v), want (%q, true)", got, ok, ErrOverloaded)
 		}
 		got := <-events
-		assertObservation(t, got, "Block", mail.ErrOverloaded)
+		assertObservation(t, got, "Block", ErrOverloaded)
 
 		close(release)
 		synctest.Wait()

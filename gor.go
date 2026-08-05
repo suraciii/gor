@@ -19,12 +19,6 @@ import (
 	"github.com/suraciii/gor/transport"
 )
 
-// ErrTypeNotInstalled is the sentinel that Register wraps when an entity type
-// has not been installed in the target Runtime. Ref instead panics with a
-// string message based on this value; it does not panic with an error that
-// callers can inspect with errors.Is.
-var ErrTypeNotInstalled = errors.New("entity type is not installed; call InstallType or run the generated Install")
-
 // Identity identifies an entity by its registered type name and key.
 type Identity = runtimepkg.Identity
 type Activation = runtimepkg.Activation
@@ -36,9 +30,8 @@ type Activation = runtimepkg.Activation
 //
 // For a forwarded call, the initiating Runtime reports one observation whose
 // duration includes forwarding; the owning Runtime does not report a second
-// observation. If the forwarded call returns a remote error, Err contains an
-// error reconstructed from its text, so errors.Is and errors.As do not apply
-// to the original remote error.
+// observation. A remote coded error is reconstructed so errors.Is matches its
+// Code; an opaque remote error retains only its diagnostic text.
 type CallObservation struct {
 	EntityType string
 	Method     string
@@ -443,20 +436,6 @@ func WithMaxTableLatency(value time.Duration) Option {
 	}
 }
 
-// WrongOwnerError reports that a clustered Runtime has no current owner for
-// an identity. Invoke returns this error without forwarding a request when the
-// current view has no active owner. Owner is always the empty string in the
-// current behavior.
-type WrongOwnerError struct {
-	Owner string
-}
-
-// Error returns the message "identity belongs to node %q", formatted with
-// e.Owner.
-func (e WrongOwnerError) Error() string {
-	return fmt.Sprintf("identity belongs to node %q", e.Owner)
-}
-
 // Invoke calls method for id, passing args and reply to the registered entity
 // dispatch. Calls for the same identity are serialized; calls for different
 // identities may run concurrently.
@@ -465,23 +444,20 @@ func (e WrongOwnerError) Error() string {
 // passed to the entity method. For a remote owner, ctx limits the forwarding
 // operation at the initiating Runtime; canceling it does not cancel the
 // already forwarded entity call, which may continue on the remote Runtime.
-// An identity with no current owner returns WrongOwnerError without being
-// forwarded. Errors from registration, activation, dispatch, context
-// cancellation, or forwarding are returned to the caller. When a forwarded
-// call returns an error from the remote Runtime, the error crosses the
-// transport as text and does not retain its original type or wrapping; use of
-// errors.Is or errors.As against the original remote error is therefore not
-// applicable.
+// An identity with no current owner returns an error matching ErrNoOwner
+// without being forwarded. A forwarded error with a Code is reconstructed so
+// errors.Is can match that Code; errors from an opaque error retain only text.
+// Caller cancellation and deadline errors are returned unchanged.
 //
 // Once local invocation admission has stopped, new local entity calls are
 // rejected. A direct Invoke may still be admitted during the Runtime's closing
 // window before that point.
 func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	if rt.onCall == nil {
-		return rt.invoke(ctx, id, method, args, reply)
+		return publicError(rt.invoke(ctx, id, method, args, reply))
 	}
 	started := rt.clock.Now()
-	err := rt.invoke(ctx, id, method, args, reply)
+	err := publicError(rt.invoke(ctx, id, method, args, reply))
 	rt.onCall(CallObservation{
 		EntityType: id.Type,
 		Method:     method,
@@ -493,16 +469,20 @@ func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args 
 
 func (rt *Runtime) invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	if rt.clusterNode == nil {
-		return rt.engine.Invoke(ctx, id, method, args, reply)
+		return rt.invokeLocal(ctx, id, method, args, reply)
 	}
 	view := rt.clusterView.Load()
 	owner, ok := cluster.Owner(*view, store.Identity(id))
 	if !ok {
-		return WrongOwnerError{Owner: owner}
+		return fmt.Errorf("%w: identity currently has no active owner", ErrNoOwner)
 	}
 	if owner != rt.nodeAddr {
 		return rt.forward(ctx, owner, id, method, args, reply)
 	}
+	return rt.invokeLocal(ctx, id, method, args, reply)
+}
+
+func (rt *Runtime) invokeLocal(ctx context.Context, id Identity, method string, args any, reply any) error {
 	return rt.engine.Invoke(ctx, id, method, args, reply)
 }
 
@@ -577,7 +557,15 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 			bound := instance.(boundInstance)
 			err := registration.dispatch(ctx, bound.entity, method, args, reply)
 			if discard := bound.binder.discardError(); discard != nil {
-				return runtimepkg.Discard{Err: errors.Join(err, discard)}
+				joined := errors.Join(err, discard)
+				code, ok := CodeOf(err)
+				if !ok {
+					code, ok = CodeOf(discard)
+				}
+				if ok {
+					return runtimepkg.Discard{Err: withCode(code, joined)}
+				}
+				return runtimepkg.Discard{Err: joined}
 			}
 			return err
 		},

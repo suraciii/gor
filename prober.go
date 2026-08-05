@@ -48,8 +48,8 @@ func (p transportProber) Probe(ctx context.Context, target cluster.MemberID) <-c
 			results <- cluster.ProbeResult{Err: fmt.Errorf("decode probe response: %w", err)}
 			return
 		}
-		if response.Error != "" {
-			results <- cluster.ProbeResult{Err: probeResponseError{message: response.Error}}
+		if response.Error != nil {
+			results <- cluster.ProbeResult{Err: probeResponseError{message: response.Error.Message}}
 			return
 		}
 

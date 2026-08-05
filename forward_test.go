@@ -14,7 +14,6 @@ import (
 
 	"github.com/suraciii/gor/clock"
 	"github.com/suraciii/gor/cluster"
-	runtimepkg "github.com/suraciii/gor/runtime"
 	"github.com/suraciii/gor/store"
 	"github.com/suraciii/gor/transport"
 )
@@ -32,8 +31,8 @@ func TestRuntime_HandleInvokesMethodAndEncodesReply(t *testing.T) {
 	if err := json.Unmarshal(payload, &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Error != "" {
-		t.Fatalf("response error = %q, want empty", response.Error)
+	if response.Error != nil {
+		t.Fatalf("response error = %#v, want empty", response.Error)
 	}
 	var reply accountDepositReply
 	if err := json.Unmarshal(response.Reply, &reply); err != nil {
@@ -67,8 +66,37 @@ func TestRuntime_HandleReturnsMethodErrorInResponse(t *testing.T) {
 	if err := json.Unmarshal(payload, &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Error != "method failed" {
-		t.Fatalf("response error = %q, want method failed", response.Error)
+	if response.Error == nil || response.Error.Message != "method failed" || response.Error.Code != "" {
+		t.Fatalf("response error = %#v, want opaque method failed", response.Error)
+	}
+}
+
+func TestRuntime_HandlePrioritizesBusinessErrorOverReplyEncoding(t *testing.T) {
+	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
+	defer rt.Close()
+	installEnvelopeAccount(t, rt)
+
+	payload, err := rt.handle(context.Background(), []byte(`{"kind":"invoke","type":"gor.envelopeAccount","key":"alice","method":"Fail","args":{}}`))
+	if err != nil {
+		t.Fatalf("handle business error = %v", err)
+	}
+	var response callResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("decode business error response: %v", err)
+	}
+	if response.Error == nil || response.Error.Code != string(envelopeFailureCode) || response.Reply != nil {
+		t.Fatalf("business error response = %#v, want coded error without reply", response)
+	}
+
+	payload, err = rt.handle(context.Background(), []byte(`{"kind":"invoke","type":"gor.envelopeAccount","key":"alice","method":"Succeed","args":{}}`))
+	if err != nil {
+		t.Fatalf("handle reply encoding error = %v", err)
+	}
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("decode reply encoding response: %v", err)
+	}
+	if response.Error == nil || response.Error.Code != string(ErrReplyEncodeFailed) || response.Reply != nil {
+		t.Fatalf("reply encoding response = %#v, want reply-encode-failed without reply", response)
 	}
 }
 
@@ -85,8 +113,8 @@ func TestRuntime_HandleRejectsUnknownMethod(t *testing.T) {
 	if err := json.Unmarshal(payload, &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Error == "" {
-		t.Fatal("unknown method response has no error text")
+	if response.Error == nil || response.Error.Code != string(ErrUnknownMethod) {
+		t.Fatalf("response error = %#v, want unknown-method code", response.Error)
 	}
 }
 
@@ -102,8 +130,8 @@ func TestRuntime_HandleRejectsUnregisteredType(t *testing.T) {
 	if err := json.Unmarshal(payload, &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !strings.Contains(response.Error, "entity type is not installed") {
-		t.Fatalf("response error = %q, want an unregistered type error", response.Error)
+	if response.Error == nil || response.Error.Code != string(ErrTypeNotInstalled) {
+		t.Fatalf("response error = %#v, want type-not-installed code", response.Error)
 	}
 }
 
@@ -119,8 +147,8 @@ func TestRuntime_HandleRejectsBadJSON(t *testing.T) {
 	if err := json.Unmarshal(payload, &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !strings.Contains(response.Error, "decode invocation request") {
-		t.Fatalf("response error = %q, want a request decode error", response.Error)
+	if response.Error == nil || response.Error.Code != string(ErrInvalidRequest) || !strings.Contains(response.Error.Message, "decode invocation request") {
+		t.Fatalf("response error = %#v, want invalid request error", response.Error)
 	}
 }
 
@@ -137,8 +165,8 @@ func TestRuntime_HandleRejectsBadArguments(t *testing.T) {
 	if err := json.Unmarshal(payload, &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !strings.Contains(response.Error, "decode Deposit arguments") {
-		t.Fatalf("response error = %q, want an argument decode error", response.Error)
+	if response.Error == nil || response.Error.Code != string(ErrInvalidRequest) || !strings.Contains(response.Error.Message, "decode Deposit arguments") {
+		t.Fatalf("response error = %#v, want invalid argument error", response.Error)
 	}
 }
 
@@ -154,8 +182,8 @@ func TestRuntime_HandleRejectsClosedRuntime(t *testing.T) {
 	if err := json.Unmarshal(payload, &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Error != runtimepkg.ErrRuntimeClosed.Error() {
-		t.Fatalf("response error = %q, want %q", response.Error, runtimepkg.ErrRuntimeClosed.Error())
+	if response.Error == nil || response.Error.Code != string(ErrRuntimeClosed) {
+		t.Fatalf("response error = %#v, want runtime-closed code", response.Error)
 	}
 }
 
@@ -200,8 +228,8 @@ func TestRuntime_HandleRejectsWhileClosing(t *testing.T) {
 		if err := json.Unmarshal(payload, &response); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
-		if response.Error != runtimepkg.ErrRuntimeClosed.Error() {
-			t.Fatalf("response error = %q, want %q", response.Error, runtimepkg.ErrRuntimeClosed.Error())
+		if response.Error == nil || response.Error.Code != string(ErrRuntimeClosed) {
+			t.Fatalf("response error = %#v, want runtime-closed code", response.Error)
 		}
 
 		close(release)
@@ -211,6 +239,33 @@ func TestRuntime_HandleRejectsWhileClosing(t *testing.T) {
 		}
 		<-closeDone
 	})
+}
+
+func TestRuntime_HandleMapsCanceledServingContextAfterShutdown(t *testing.T) {
+	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
+	defer rt.Close()
+	registerAccount(t, rt)
+	rt.stopServing()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	payload, err := rt.handleInvoke(ctx, callRequest{
+		Kind:   requestKindInvoke,
+		Type:   TypeName[Account](),
+		Key:    "alice",
+		Method: "Balance",
+		Args:   json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("handle error = %v, want nil", err)
+	}
+	var response callResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Error == nil || response.Error.Code != string(ErrRuntimeClosed) {
+		t.Fatalf("response error = %#v, want runtime-closed code", response.Error)
+	}
 }
 
 func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
@@ -251,8 +306,8 @@ func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
 		}
 
 		err := first.Invoke(context.Background(), remote, "Fail", &routedAccountFailRequest{}, nil)
-		if err == nil || err.Error() != "remote failure" {
-			t.Fatalf("forwarded method error = %v, want remote failure", err)
+		if err == nil || !strings.Contains(err.Error(), "remote failure") {
+			t.Fatalf("forwarded method error = %v, want remote failure diagnostic", err)
 		}
 		if errors.Is(err, remoteFailure) {
 			t.Fatal("forwarded error retained the remote sentinel")
@@ -261,8 +316,21 @@ func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
 		if errors.As(err, &typedFailure) {
 			t.Fatal("forwarded error retained the remote error type")
 		}
+		assertRoutedFailureCode(t, err)
 
 		local := findForwardTarget(t, first, "node-a")
+		assertRoutedFailureCode(t, first.Invoke(context.Background(), local, "Fail", &routedAccountFailRequest{}, nil))
+		opaqueErr := first.Invoke(context.Background(), remote, "Opaque", &routedAccountOpaqueRequest{}, nil)
+		if opaqueErr == nil {
+			t.Fatal("opaque forwarded error was dropped")
+		}
+		if errors.Is(opaqueErr, remoteFailure) {
+			t.Fatal("opaque forwarded error retained the remote sentinel")
+		}
+		if got, ok := CodeOf(opaqueErr); ok {
+			t.Fatalf("CodeOf(opaque forwarded error) = (%q, true), want no code", got)
+		}
+
 		beforeLocal := firstTransport.sends.Load()
 		var localReply routedAccountWhoReply
 		if err := first.Invoke(context.Background(), local, "Who", &routedAccountWhoRequest{}, &localReply); err != nil {
@@ -288,24 +356,33 @@ func TestRuntime_InvokeForwardsToOwner(t *testing.T) {
 
 		firstTransport.sendResponse = []byte("{")
 		err = first.Invoke(context.Background(), remote, "Who", &routedAccountWhoRequest{}, nil)
-		if err == nil || !strings.Contains(err.Error(), "decode invocation response") {
-			t.Fatalf("invalid response envelope error = %v, want response decode error", err)
+		if err == nil || !errors.Is(err, ErrTransportFailed) || !strings.Contains(err.Error(), "decode invocation response") {
+			t.Fatalf("invalid response envelope error = %v, want transport failure", err)
 		}
 
-		firstTransport.sendResponse = []byte(`{"reply":"invalid","error":""}`)
+		firstTransport.sendResponse = []byte(`{"reply":"invalid"}`)
 		var invalidReply routedAccountWhoReply
 		err = first.Invoke(context.Background(), remote, "Who", &routedAccountWhoRequest{}, &invalidReply)
-		if err == nil || !strings.Contains(err.Error(), "decode Who reply") {
-			t.Fatalf("invalid response reply error = %v, want reply decode error", err)
+		if err == nil || !errors.Is(err, ErrTransportFailed) || !strings.Contains(err.Error(), "decode Who reply") {
+			t.Fatalf("invalid response reply error = %v, want transport failure", err)
 		}
 		firstTransport.sendResponse = nil
+
+		beforeEncodeFailure := firstTransport.sends.Load()
+		err = first.Invoke(context.Background(), remote, "Who", &unmarshalableArgs{Callback: func() {}}, nil)
+		if err == nil || !errors.Is(err, ErrRequestEncodeFailed) {
+			t.Fatalf("request encoding error = %v, want request-encode-failed", err)
+		}
+		if got := firstTransport.sends.Load(); got != beforeEncodeFailure {
+			t.Fatalf("request encoding sent %d transport requests", got-beforeEncodeFailure)
+		}
 
 		sendError := errors.New("network down")
 		firstTransport.sendError = sendError
 		beforeFailure := firstTransport.sends.Load()
 		err = first.Invoke(context.Background(), remote, "Who", &routedAccountWhoRequest{}, nil)
-		if err != sendError {
-			t.Fatalf("transport error = %v, want original error %v", err, sendError)
+		if err == sendError || !errors.Is(err, ErrTransportFailed) || !errors.Is(err, sendError) {
+			t.Fatalf("transport error = %v, want transport-failed wrapping %v", err, sendError)
 		}
 		if got := firstTransport.sends.Load(); got != beforeFailure+1 {
 			t.Fatalf("transport sends after failure = %d, want one attempt", got-beforeFailure)
@@ -535,9 +612,8 @@ func TestRuntime_InvokeDoesNotSendWithoutOwner(t *testing.T) {
 
 		var reply routedAccountWhoReply
 		err := rt.Invoke(context.Background(), Identity{Type: TypeName[routedAccount](), Key: "alice"}, "Who", &routedAccountWhoRequest{}, &reply)
-		var wrongOwner WrongOwnerError
-		if !errors.As(err, &wrongOwner) || wrongOwner.Owner != "" {
-			t.Fatalf("invocation without owner error = %v, want empty-owner WrongOwnerError", err)
+		if !errors.Is(err, ErrNoOwner) {
+			t.Fatalf("invocation without owner error = %v, want ErrNoOwner", err)
 		}
 		if got := fakeTransport.sends.Load(); got != 0 {
 			t.Fatalf("invocation without owner sent %d transport requests", got)
@@ -601,6 +677,81 @@ type routedAccount interface {
 	Echo(context.Context, string) (string, error)
 	Block(context.Context) error
 	Fail(context.Context) error
+	Opaque(context.Context) error
+}
+
+type envelopeAccount interface {
+	Fail(context.Context) error
+	Succeed(context.Context) error
+}
+
+type envelopeAccountRequest struct{}
+
+type envelopeAccountReply struct {
+	Callback func()
+}
+
+type envelopeAccountEntity struct{}
+
+const envelopeFailureCode Code = "test.envelope_failure"
+
+func (*envelopeAccountEntity) Fail(context.Context) error {
+	return fmt.Errorf("business failure: %w", envelopeFailureCode)
+}
+
+func (*envelopeAccountEntity) Succeed(context.Context) error {
+	return nil
+}
+
+func dispatchEnvelopeAccount(ctx context.Context, instance envelopeAccount, method string, args any, reply any) error {
+	typedReply := reply.(*envelopeAccountReply)
+	typedReply.Callback = func() {}
+	switch method {
+	case "Fail":
+		return instance.Fail(ctx)
+	case "Succeed":
+		return instance.Succeed(ctx)
+	default:
+		return fmt.Errorf("unknown method %q", method)
+	}
+}
+
+func newEnvelopeAccountCall(method string) (args any, reply any) {
+	switch method {
+	case "Fail", "Succeed":
+		return &envelopeAccountRequest{}, &envelopeAccountReply{}
+	default:
+		return nil, nil
+	}
+}
+
+func installEnvelopeAccount(t *testing.T, rt *Runtime) {
+	t.Helper()
+	if err := InstallType[envelopeAccount](rt, dispatchEnvelopeAccount, func(invoker Invoker, id Identity) envelopeAccount {
+		return &envelopeAccountProxy{invoker: invoker, id: id}
+	}, newEnvelopeAccountCall); err != nil {
+		t.Fatal(err)
+	}
+	if err := Register[envelopeAccount](rt, func(*Binder) envelopeAccount {
+		return &envelopeAccountEntity{}
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type envelopeAccountProxy struct {
+	invoker Invoker
+	id      Identity
+}
+
+func (p *envelopeAccountProxy) Fail(ctx context.Context) error {
+	var reply envelopeAccountReply
+	return p.invoker.Invoke(ctx, p.id, "Fail", &envelopeAccountRequest{}, &reply)
+}
+
+func (p *envelopeAccountProxy) Succeed(ctx context.Context) error {
+	var reply envelopeAccountReply
+	return p.invoker.Invoke(ctx, p.id, "Succeed", &envelopeAccountRequest{}, &reply)
 }
 
 type routedAccountEntity struct {
@@ -625,6 +776,22 @@ type routedAccountBlockRequest struct{}
 type routedAccountBlockReply struct{}
 type routedAccountFailRequest struct{}
 type routedAccountFailReply struct{}
+type routedAccountOpaqueRequest struct{}
+type routedAccountOpaqueReply struct{}
+type accountFailRequest struct{}
+type accountFailReply struct{}
+
+func assertRoutedFailureCode(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, routedFailureCode) {
+		t.Fatalf("method error = %v, want routed failure code", err)
+	}
+	if got, ok := CodeOf(err); !ok || got != routedFailureCode {
+		t.Fatalf("CodeOf(error) = (%q, %v), want (%q, true)", got, ok, routedFailureCode)
+	}
+}
+
+const routedFailureCode Code = "test.routed_failure"
 
 type routedFailureError struct{}
 
@@ -661,6 +828,10 @@ func (a *routedAccountEntity) Block(ctx context.Context) error {
 }
 
 func (*routedAccountEntity) Fail(context.Context) error {
+	return fmt.Errorf("remote failure: %w", routedFailureCode)
+}
+
+func (*routedAccountEntity) Opaque(context.Context) error {
 	return remoteFailure
 }
 
@@ -682,6 +853,8 @@ func dispatchRoutedAccount(ctx context.Context, instance routedAccount, method s
 		return instance.Block(ctx)
 	case "Fail":
 		return instance.Fail(ctx)
+	case "Opaque":
+		return instance.Opaque(ctx)
 	default:
 		return fmt.Errorf("unknown method %q", method)
 	}
@@ -697,6 +870,8 @@ func newRoutedAccountCall(method string) (args any, reply any) {
 		return &routedAccountBlockRequest{}, &routedAccountBlockReply{}
 	case "Fail":
 		return &routedAccountFailRequest{}, &routedAccountFailReply{}
+	case "Opaque":
+		return &routedAccountOpaqueRequest{}, &routedAccountOpaqueReply{}
 	default:
 		return nil, nil
 	}
@@ -745,6 +920,11 @@ func (p *routedAccountProxy) Who(ctx context.Context) (string, error) {
 func (p *routedAccountProxy) Fail(ctx context.Context) error {
 	var reply routedAccountFailReply
 	return p.invoker.Invoke(ctx, p.id, "Fail", &routedAccountFailRequest{}, &reply)
+}
+
+func (p *routedAccountProxy) Opaque(ctx context.Context) error {
+	var reply routedAccountOpaqueReply
+	return p.invoker.Invoke(ctx, p.id, "Opaque", &routedAccountOpaqueRequest{}, &reply)
 }
 
 func findForwardTarget(t *testing.T, rt *Runtime, owner string) Identity {

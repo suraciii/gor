@@ -784,6 +784,8 @@ func newAccountCall(method string) (args any, reply any) {
 		return &accountDepositRequest{}, &accountDepositReply{}
 	case "Balance":
 		return &accountBalanceRequest{}, &accountBalanceReply{}
+	case "Fail":
+		return &accountFailRequest{}, &accountFailReply{}
 	default:
 		return nil, nil
 	}

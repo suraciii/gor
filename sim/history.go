@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/anishathalye/porcupine"
+	"github.com/suraciii/gor"
 	"github.com/suraciii/gor/store"
 )
 
@@ -28,8 +29,10 @@ func counterOperationOutputFor(value int64, err error) counterOperationOutput {
 	switch {
 	case err == nil:
 		return counterOperationOutput{value: value, status: counterOperationSucceeded}
-	case simErrorIs(err, errAppliedWriteFailure), simErrorIs(err, context.Canceled):
+	case simErrorIs(err, errAppliedWriteFailure), simErrorIs(err, gor.ErrPersistenceFailed), simErrorIs(err, context.Canceled):
 		return counterOperationOutput{value: value, status: counterOperationUnknown}
+	case simErrorIs(err, errWriteFailure):
+		return counterOperationOutput{value: value, status: counterOperationFailed}
 	default:
 		return counterOperationOutput{value: value, status: counterOperationFailed}
 	}
