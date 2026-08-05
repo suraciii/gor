@@ -1,131 +1,131 @@
-# 模拟测试骨架
+# The simulation test skeleton
 
-[testing.md](testing.md) 说了模拟测试该长什么样，也说了为什么它是架构约束。这篇说骨架具体由哪几件东西组成。
+[testing.md](testing.md) says what simulation tests should look like and why it is an architectural constraint. This document says exactly which pieces the skeleton is made of.
 
-## 这一步造什么
+## What this step builds
 
-骨架 = 种子 + 故障注入 + 崩溃重启 + 事件日志 + 不变量断言。
+Skeleton = seed + fault injection + crash and restart + event log + invariant assertions.
 
-**不造真实网络。** 跨节点故障通过 `sim` 构建标签下的假 `Transport` 注入；它是往已有骨架上挂新的故障源，不是让测试依赖真实网络。
+**No real network.** Cross-node faults are injected through the fake `Transport` under the `sim` build tag; it hangs a new fault source onto the existing skeleton, not making tests depend on a real network.
 
-这就是「DST 排在集群之前」的实际含义：先把驱动和断言建好，集群到了直接插进来。
+This is what "DST before the cluster" actually means: build the driver and the assertions first; when the cluster arrives, it plugs straight in.
 
-## 确定性到哪里为止
+## Where determinism ends
 
-Go 里控制不了 goroutine 调度。这决定了骨架能承诺什么、不能承诺什么，是这篇里最要紧的一节。
+Goroutine scheduling cannot be controlled in Go. This decides what the skeleton can and cannot promise, and it is the most important section of this document.
 
-两种不确定性要分开看：
+Two kinds of nondeterminism must be kept apart:
 
-- **注入的**——下一步做什么、这次读写失不失败、延迟多久。全部由种子驱动的一个 PRNG 决定，且只在驱动这一个 goroutine 里取值。完全可复现。
-- **环境的**——两个并发调用谁先进 mailbox、哪个 goroutine 先醒。控制不了。
+- **Injected** — what the next step does, whether this read or write fails, how long the delay is. All decided by one PRNG driven by the seed, drawn only in the single driver goroutine. Fully reproducible.
+- **Environmental** — which of two concurrent calls enters the mailbox first, which goroutine wakes up first. Not controllable.
 
-一步长这样：
+A step looks like this:
 
-1. 从 PRNG 取出这一步的动作和故障配置。
-2. 执行——起若干个调用 goroutine。
-3. `synctest.Wait()` 等到 bubble 静止。
-4. 在静止点上观测，检查不变量。
+1. Draw this step's actions and fault configuration from the PRNG.
+2. Execute — start some call goroutines.
+3. `synctest.Wait()` until the bubble is quiescent.
+4. Observe at the quiescence point and check invariants.
 
-## 日志分两半
+## The log splits in two
 
-这是最容易想错的一处，值得把话说死。
+This is the easiest place to get wrong; it is worth stating in no uncertain terms.
 
-直觉上，静止点上的观测应该与交错无关：调用都做完了，`Add` 又满足交换律，实体的值不管什么顺序都一样。
+Intuitively, observations at the quiescence point should be interleaving-independent: all calls are done, `Add` is commutative, and the entity's value is the same regardless of order.
 
-**故障一旦会停用激活，这条就不成立了。** 同一实体上两个并发调用，注入「写生效了但报错」：第一个调用写进去了、报错了、激活被停用。第二个调用要么还排在队里跟着被拒（实体的值加了一次），要么赶在停用之前重新激活、读到新值、再写一次（加了两次）。哪一种发生取决于调度。
+**Once faults can deactivate activations, this stops holding.** Two concurrent calls on the same entity with "the write took effect but errored" injected: the first call writes, errors, and the activation is deactivated. The second call either is still queued and gets rejected along with it (the entity's value was incremented once), or re-activates in time, reads the new value, and writes again (incremented twice). Which one happens depends on scheduling.
 
-结局的多重集同理——`{写错误, 写错误}` 和 `{写错误, 已关闭}` 都可能。
+The multiset of outcomes is the same: both `{write error, write error}` and `{write error, closed}` are possible.
 
-所以：**有故障注入的时候，没有任何观测是交错无关的。** 日志因此分两半：
+So: **with fault injection, no observation is interleaving-independent.** The log therefore splits in two:
 
-- **决定**——PRNG 产出的东西：这一步打哪个实体、加多少、注入什么故障、崩不崩溃。完全由种子决定。
-- **观测**——结局、实体的值、不变量检查的中间量。给人看的，出问题时照着它复盘。
+- **Decisions** — what the PRNG produced: which entity this step hits, how much to add, which fault to inject, whether to crash. Fully decided by the seed.
+- **Observations** — outcomes, entity values, intermediate quantities of invariant checks. For humans; when something fails, reconstruct the incident from them.
 
-**复现测试只比对决定那一半。** 观测那一半照常写进日志，但不参与比对。
+**The reproduction test compares only the decision half.** The observation half is still written to the log, but does not take part in the comparison.
 
-这不是把标准放低。复现要保证的事情是「拿着种子重跑，能再次撞上同一串故障」，而这件事完全由决定那一半决定。决定的复现性也不是白测的——它防的是骨架自己的经典 bug：从多个 goroutine 里摇 PRNG，取值顺序一乱，种子就再也复现不了任何东西。
+This is not lowering the bar. What reproduction must guarantee is "re-running with the seed hits the same fault sequence again", and that is fully decided by the decision half. Decision reproducibility is not tested for nothing: it guards against the skeleton's own classic bug, drawing the PRNG from several goroutines. Once the draw order scrambles, the seed never reproduces anything again.
 
-**别为了让观测也能比对，去削负载。** 把并发改成串行、把 delta 改成 0、把写故障排除在随机池外——这些都能让日志变确定，代价是被测的东西没了。
+**Do not shrink the load to make observations comparable.** Making concurrency serial, making delta 0, or excluding write faults from the random pool all make the log deterministic, at the cost of the thing under test being gone.
 
-交错相关的正确性不靠复现，靠两样东西：不变量断言（对任何交错都必须成立）和 porcupine（检查历史能不能线性化，本来就与交错无关）。
+Interleaving-dependent correctness does not rely on reproduction; it relies on two things: invariant assertions (must hold for every interleaving) and porcupine (checks whether a history linearizes, which is interleaving-independent by nature).
 
-Go 里没有更强的东西可拿（[testing.md](testing.md) 里引了 Resonate 的同一结论）。把做不到的写成能做到，只会让第一个 flaky 出现时没人知道该信什么。
+Go offers nothing stronger ([testing.md](testing.md) cites Resonate's same conclusion). Writing the impossible as possible only makes nobody know what to trust when the first flake appears.
 
-## 一个「节点」是什么
+## What a "node" is
 
-一个节点 = 一个 `runtime.Runtime`。多个节点共用一个 `Store`。第 6 步之前节点之间没有别的联系。
+A node = one `runtime.Runtime`. Several nodes share one `Store`. Before [step 6](../ROADMAP.md#6-multiple-nodes), nodes have no other connection.
 
-- **崩溃**——丢掉全部内存状态，保留 store。
-- **重启**——在同一个 store 上建一个新的 `Runtime`。
+- **Crash** — drop all in-memory state, keep the store.
+- **Restart** — build a new `Runtime` on the same store.
 
-**双激活这时候就能测了。** 两个 Runtime 共用一个 store、激活同一个 identity，这本身就是双激活——不需要网络分区来制造。集群不稳期间的核心风险在第 4 步就有断言兜着，第 6 步只是换一种把它造出来的方式。
+**Double activation becomes testable here.** Two Runtimes sharing one store activating the same identity is double activation by itself — no network partition needed to produce it. The core risk of cluster instability is already covered by assertions at step 4; step 6 only changes the way it is produced.
 
-## 崩溃不是 Close
+## A crash is not Close
 
-`Close()` 排空 mailbox、等在飞的调用做完。那是优雅停机。
+`Close()` drains the mailbox and waits for in-flight calls to finish. That is a graceful stop.
 
-崩溃要让在飞的调用立刻以错误返回，不给实体收尾机会。所以 `runtime` 要多一条停止路径：`Kill()`——取消所有在飞调用的 context，关掉 mailbox，不等排空。
+A crash must make in-flight calls return with an error immediately, giving entities no teardown chance. So `runtime` needs one more stop path: `Kill()` — cancel all in-flight calls' contexts, close the mailbox, do not wait for draining.
 
-**`Kill()` 必须让 goroutine 全部退出。** 这不是洁癖：bubble 里所有 goroutine 永久阻塞时 synctest 会 panic 报死锁。一个泄漏的崩溃节点不会安静地漏着，它会让整个模拟测试挂掉。
+**`Kill()` must make every goroutine exit.** This is not cleanliness: synctest panics with a deadlock report when every goroutine in the bubble blocks forever. A leaking crashed node does not leak quietly; it takes down the whole simulation test.
 
-正在执行用户方法的调用，Go 杀不掉。`Kill()` 只能取消 context；不理 context 的用户方法会继续跑完。这跟真实进程崩溃不一样，但没有别的办法，而模拟测试里的实体是我们自己写的。
+Go cannot kill a call that is executing a user method. `Kill()` can only cancel the context; a user method that ignores its context keeps running to completion. This differs from a real process crash, but there is no other way, and the entities in simulation tests are written by us.
 
-**崩溃之后要等假存储把手上的活干完。** `Kill()` 取消 context，调用方立刻拿着取消错误回来了，实体方法却还留在假存储里睡着。bubble 的假时钟只在所有 goroutine 都 durably blocked 时才走，而 root 一退出它就彻底停——那个睡着的 goroutine 再也醒不过来，synctest 判泄漏。
+**After a crash, wait for the fake store to finish its in-flight work.** `Kill()` cancels the context and the caller returns with the cancellation error right away, but the entity method is still asleep inside the fake store. The bubble's fake clock only advances while every goroutine is durably blocked, and once the root exits it stops outright: the sleeping goroutine can never wake, and synctest reports a leak.
 
-所以假存储要能报告「手上没活了」，驱动在每一步观测之前等它一下。等的方式是 channel：驱动一阻塞，假时钟就推进，睡眠自己就结束了。
+So the fake store must be able to report "no work in hand", and the driver waits for it before every observation step. The waiting is done with a channel: once the driver blocks, the fake clock advances, and the sleep ends on its own.
 
-**凡是推进时间的地方都要等它，不只是观测之前。** bubble 的时钟只在所有 goroutine 都 durably blocked 时才走，而 `synctest.Wait()` 一返回，驱动自己就又跑起来了——驱动只要不阻塞，注入的延迟就一步都不动。
+**Wherever time is advanced, wait for it — not only before observations.** The bubble's clock only moves while every goroutine is durably blocked, and the moment `synctest.Wait()` returns, the driver itself is running again: as long as the driver does not block, injected delays never move a step.
 
-只在观测前等一次的后果不是「慢一点」，是一个组件可以永远停在一次注入的延迟里：它的循环再也不转，看上去却还活着。这个症状会伪装成被测系统的 bug——上一次它伪装成的是「两个节点各自算出一份只有自己的视图」，查了很久才查到驱动身上。
+Waiting only before observations does not cost "a bit of slowness"; a component can stay stuck in one injected delay forever: its loop never turns again, yet it looks alive. This symptom disguises itself as a bug in the system under test — last time it disguised itself as "two nodes each computing a view that contains only itself", and it took a long investigation to find the driver.
 
-顺带的好处是，崩溃那个节点没来得及回话的写会在这一步的观测里落地——真实世界正是这样。第 6 步的假网络会撞上一模一样的问题，接口先在这里定下来。
+A side benefit: writes the crashed node never got to answer land in this step's observation — exactly as in the real world. Step 6's fake network will hit the very same problem; the interface is settled here first.
 
-## 故障注入点
+## The fault injection seam
 
-现在只有一个真正的外部 I/O 接缝：`Store`。假存储实现 `store.Store`，按种子注入四种：
+Right now there is exactly one real external I/O seam: `Store`. The fake store implements `store.Store` and injects four kinds by seed:
 
-- 读失败
-- 写失败，且没生效
-- **写失败，但生效了**
-- 延迟（`time.Sleep`，bubble 里是假的）
+- Read failure
+- Write failure that did not take effect
+- **Write failure that took effect**
+- Delay (`time.Sleep`, fake inside the bubble)
 
-第三种是重点。写到了、回复丢了、调用方不知道——这是分布式存储里最常见也最容易写错的一类结局。[persistence.md](persistence.md) 的「写失败之后」那条规则就是冲着它去的，模拟测试要证明它够用。
+The third is the point. It landed, the reply was lost, the caller does not know — the most common and most miswritten kind of outcome in distributed storage. [persistence.md](persistence.md)'s "after a failed write" rule exists precisely for it, and the simulation tests must prove it sufficient.
 
-慢响应不单列，它就是延迟。
+Slow responses are not a separate kind; they are the delay.
 
-## 为什么还要注入 Clock
+## Why inject a Clock at all
 
-bubble 里 `time.Now()` 已经是假的，`clock.Real` 直接能用。那 `Clock` 接口是不是多余？
+Inside the bubble, `time.Now()` is already fake, and `clock.Real` works as-is. So is the `Clock` interface redundant?
 
-不是，两个理由：
+No, for two reasons:
 
-- bubble 外的单元测试也要控制时间，那里 `time.Now()` 是真的。
-- 一个 bubble 只有一个时钟。第 6 步要测节点间时钟不同步，得给每个节点一个带偏移的 `Clock`。
+- Unit tests outside the bubble also need to control time, and there `time.Now()` is real.
+- One bubble has exactly one clock. To test clock skew between nodes at step 6, each node needs a `Clock` with an offset.
 
-「生产代码里不许 `time.Now()`」照旧。它保证的是时间从一个可替换的地方来，不是保证某一种替换方式。
+"No `time.Now()` in production code" stays. It guarantees time comes from a replaceable place; it does not guarantee any particular replacement.
 
-## 不变量
+## Invariants
 
-每步之后检查。前两条从假存储的记账里直接查，与实体类型无关：
+Checked after every step. The first two are read directly from the fake store's bookkeeping, independent of entity type:
 
-- **ETag 单调。** 一条记录的 ETag 只增不减。
-- **不凭空生成。** 存储里任何一个时刻的内容，都必须等于某一次 `Write` 提交过的字节。没有哪次写能被静默改写成别的东西。
+- **ETags are monotonic.** A record's ETag only grows.
+- **Nothing is invented.** The content of storage at any moment must equal the bytes some `Write` committed. No write can be silently rewritten into something else.
 
-第三条要一个 porcupine 模型：
+The third needs a porcupine model:
 
-- **单实体的调用历史可线性化。**
+- **The call history of a single entity is linearizable.**
 
-## porcupine 怎么接
+## How porcupine plugs in
 
-被测实体是一个计数器：`Add(ctx, n) (int64, error)`，返回加完之后的值。顺序规格三行写完，交错情况却很多——正合适。
+The entity under test is a counter: `Add(ctx, n) (int64, error)`, returning the value after the add. The sequential spec fits in three lines, while the interleavings are many — just right.
 
-历史里每个操作记「调用时刻、返回时刻、输入、输出」，时刻取 bubble 的假时间。
+Each operation in the history records call time, return time, input, and output; times come from the bubble's fake clock.
 
-**结局不明的调用记成在飞操作**，不记成失败。崩溃或者「写生效了但报错」之后，调用方拿到错误，但操作可能已经生效了。porcupine 对没有返回的操作允许它线性化到任何位置、或者根本不发生——这正是「不知道」的准确表达。记成失败会让检查器拒绝一段其实合法的历史。
+**Calls with unknown outcomes are recorded as in-flight operations**, not as failures. After a crash or "the write took effect but errored", the caller gets an error, but the operation may have taken effect. For an operation that never returned, porcupine allows linearizing it at any position or not at all — which is exactly the accurate expression of "not knowing". Recording it as a failure makes the checker reject a history that is actually legal.
 
-## 事件日志
+## The event log
 
-一行一个事件，纯文本，人能读。决定和观测各有前缀，比对时按前缀筛：
+One event per line, plain text, human-readable. Decisions and observations have their own prefixes; comparison filters by prefix:
 
 ```
 seed=8f3c2a1b
@@ -135,48 +135,48 @@ seed=8f3c2a1b
 0001 decision crash node=1
 ```
 
-**编号只给决定行，从 0 连续数下去。** 观测行不编号。要是编号跨着两半连着数，决定行长什么样就取决于前面记了几行观测——比对的那一半依赖了不比对的那一半，观测行数一变，复现测试就为着跟种子无关的理由挂掉。
+**Only decision lines are numbered, counting consecutively from 0.** Observation lines are not numbered. If numbering ran across both halves, what a decision line looks like would depend on how many observations came before it: the compared half would depend on the uncompared half, and a change in observation count would fail the reproduction test for reasons unrelated to the seed.
 
-同一个种子重跑，`decision` 行逐字节相同——这条本身要有一个测试。
+Re-running with the same seed gives byte-identical `decision` lines — this rule itself needs a test.
 
-**任何失败都把整份日志打出来**，不是只打决定那一半。观测那半存在的意义就是这一刻。
+**Any failure prints the whole log**, not just the decision half. The observation half exists for exactly this moment.
 
-不用 JSON。出问题时人要盯着两份日志找第一行差异，`diff` 比什么都好使。
+No JSON. When something fails, a human stares at two logs looking for the first differing line; `diff` beats everything.
 
-## 包与测试
+## Package and tests
 
-`sim/` 包，build tag `sim`，测试名以 `TestSim` 开头（`make sim` 用 `-run TestSim` 筛）。
+The `sim/` package, build tag `sim`, tests named with a `TestSim` prefix (`make sim` filters with `-run TestSim`).
 
-`sim` 依赖 `gor`、`runtime`、`store`、`clock`，不被它们依赖。
+`sim` depends on `gor`, `runtime`, `store`, and `clock`; none of them depend on it.
 
-**不变量跑一批种子，不是一个。** 一个种子只走出一条轨迹，覆盖不到几种故障组合。种子列表写死（比如从某个基数连着取 64 个），这样失败可复现，也不引入墙钟随机。复现测试反过来只用一个固定种子就够——它测的是骨架自己别从多个 goroutine 里摇 PRNG，不是测覆盖率。
+**Invariants run over a batch of seeds, not one.** One seed walks one trajectory and cannot cover several fault combinations. The seed list is hardcoded (for example 64 consecutive seeds from some base), so failures reproduce without introducing wall-clock randomness. The reproduction test, in turn, needs only one fixed seed: it tests that the skeleton itself does not draw the PRNG from multiple goroutines, not coverage.
 
-porcupine（`github.com/anishathalye/porcupine`）是新依赖。
+porcupine (`github.com/anishathalye/porcupine`) is a new dependency.
 
-## 后面几步往骨架上挂什么
+## What the later steps hang on the skeleton
 
-第 5 步：定时任务的表是一个新的故障源（扫描失败、抢占失败、抢占落了但回复丢了），带一条新不变量「同一次到期只投递一次」。见 [timers.md](timers.md)。
+Step 5: the scheduled-task table is a new fault source (scan failures, claim failures, the claim landed but the reply was lost), with a new invariant: "one delivery per due time". See [timers.md](timers.md).
 
-第 6a 步：成员表是又一个新故障源，形状跟定时任务表一样。新不变量：
+Step 6a: the membership table is yet another fault source, shaped like the scheduled-task table. New invariants:
 
-- **成员视图最终收敛。** 故障停止之后，所有活着的节点算出同一份视图。
-- **一个 key 在收敛后只归一个节点。** 收敛期间可以不止一个——那是承认的双激活窗口，不是 bug。
-- **判死不可逆。** 被判死的节点不会自己爬回 `active`。
+- **Membership views eventually converge.** After faults stop, all live nodes compute the same view.
+- **After convergence, one key belongs to one node.** During convergence there may be more than one: that is the acknowledged double-activation window, not a bug.
+- **Declaring death is irreversible.** A declared-dead node does not crawl back to `active` by itself.
 
-「活着的节点」指的是**自己还认为自己活着**的节点，不是驱动没崩掉的节点。成员表持续变慢会让节点互相判死直至全体自杀（见 [cluster.md](cluster.md)），那是 6a 已知的失效模式；这时候一个属主都没有，不该算不变量被破。全体死光之后靠重启动作把节点带回来——新的 generation，新的一行，收敛照样要发生。
+"Live nodes" means nodes that **still consider themselves alive**, not nodes the driver did not crash. A persistently slow membership table makes nodes declare each other dead until everyone self-terminates (see [cluster.md](cluster.md)); that is 6a's known failure mode, and with no owner left at all it must not count as a broken invariant. After everyone is dead, the restart action brings nodes back: a fresh generation, a new row, and convergence must still happen.
 
-**属主唯一要用一批探针身份去查**，不是只查被测实体那两个。`Owns` 是纯计算，不落存储也不激活，几十个 key 的成本可以忽略，而查满一批的效果等于比对视图——两个节点只要视图不同，就必然有某个 key 的属主对不上。这样也不用为了测试给运行时开一个「把视图交出来」的方法。
+**Owner uniqueness must be checked with a batch of probe identities**, not just the two under test. `Owns` is pure computation; it writes nothing to storage and activates nothing, so a few dozen keys cost nothing, and checking a full batch equals comparing views: whenever two nodes' views differ, some key's owner necessarily disagrees. This also avoids opening a "hand over the view" method on the runtime for tests.
 
-**归属过滤之后 `claim-lost` 不再是每批种子都撞得到的事件。** 非属主的轮询器根本不去抢，两个轮询器抢同一行只在视图不一致的窗口里才可能。这是 [timers.md](timers.md) 那条规则的结果，不是覆盖率退步。
+**After ownership filtering, `claim-lost` is no longer an event every seed batch hits.** A non-owner poller never claims; two pollers claiming the same row is only possible inside the inconsistent-view window. This is the result of [timers.md](timers.md)'s rule, not a coverage regression.
 
-第 6b 步：
+Step 6b:
 
-- `Transport` 的假实现：网络分区、消息重排、丢弃。
-- 每个节点一个带偏移的 `Clock`。
-- 分区期间的并发写被 ETag 挡住——这条不是新不变量，是第 4 步那条在新故障源下重跑。
+- The fake `Transport` implementation: network partitions, message reordering, dropping.
+- One `Clock` with an offset per node.
+- Concurrent writes during a partition are blocked by the ETag — this is not a new invariant; it is step 4's invariant re-run under a new fault source.
 
-第 6c 步：探测失败与投票，新不变量是「健康节点不会被过期的票误杀」。
+Step 6c: probe failures and voting; the new invariant is "a healthy node is not killed by expired votes".
 
-## 差距
+## Gap
 
-当前假网络可确定性模拟分区、丢弃和恢复，但尚未注入延迟或消息重排。现有 DST 因此不能覆盖消息时序变化。
+The current fake network deterministically simulates partitions, drops, and recovery, but does not yet inject delays or message reordering. The existing DST therefore cannot cover message-timing changes.

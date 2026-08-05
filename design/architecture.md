@@ -1,8 +1,8 @@
-# 架构
+# Architecture
 
-## 依赖方向
+## Dependency directions
 
-图只画生产包的直接 import。实线是当前代码已有的边；`┈┈▶` 是尚未接通的目标边。
+The diagram shows only direct imports of production packages. Solid lines are edges that exist in the current code; `┈┈▶` is a target edge not yet connected.
 
 ```
 gor ────────▶ runtime ────────▶ mail
@@ -17,65 +17,65 @@ gor ────────▶ runtime ────────▶ mail
 gor ──────────▶ transport
 ```
 
-`sim` 只在 `sim` 构建标签下存在，依赖生产包来搭建测试场景，不属于这张生产依赖图。`cluster` 与 `transport` 都是可选能力，二者都已被 `gor` 使用；`transport` 仍保持独立包。
+`sim` exists only under the `sim` build tag and depends on production packages to set up test scenarios; it is not part of this production dependency diagram. `cluster` and `transport` are both optional capabilities, and `gor` uses both; `transport` remains its own package.
 
-`cluster` 不导入 `transport`。它只负责算出远端归属，`gor` 拿这个地址去转发。判断「归谁」和「怎么送过去」是两件事，让前者认识后者只会在测试环的时候拖出一个网络栈。
+`cluster` does not import `transport`. It only computes remote ownership; `gor` takes that address and forwards. Deciding "who owns it" and "how to get it there" are two things; making the former know the latter only drags a network stack into ring tests.
 
-`timer` 只认接口：一张表、一个 `Clock`、一个「能发起调用」的东西。`gor` 把 `store` 的实现和 `runtime` 接到它上面。
+`timer` knows only interfaces: a table, a `Clock`, and something that can initiate calls. `gor` wires the `store` implementation and `runtime` onto it.
 
-依赖只向下。`runtime` 不知道 `cluster` 存在，而且**不需要为它留任何接口**。
+Dependencies point only downward. `runtime` does not know `cluster` exists, and **does not need to leave any interface for it**.
 
-第 6b 步的路由发生在 `gor` 这一层：每次调用先问环这个 Identity 归谁，是自己就交给 `runtime`，是别人就转发（见 [cluster.md](cluster.md)）。`runtime` 那边的接口一个字都不用改——它管的是「同一个 key 上的调用串行」，跟这个 key 为什么落在本节点无关。
+[Step 6b](../ROADMAP.md#6b-forwarding)'s routing happens in the `gor` layer: every call first asks the ring who owns this Identity; if it is self, hand to `runtime`; if someone else, forward (see [cluster.md](cluster.md)). `runtime`'s interface does not change one word — it is about "calls on the same key are serialized", unrelated to why this key lands on this node.
 
-`runtime` 同样不导入 `store`——实体状态由 `gor` 在工厂闭包里读写，`runtime` 只交出 Identity、拿回一个不透明的实例（见 [persistence.md](persistence.md)）。
+`runtime` also does not import `store`: entity state is read and written by `gor` inside the factory closure; `runtime` only hands out an Identity and gets back an opaque instance (see [persistence.md](persistence.md)).
 
-`runtime` 唯一因为集群多出来的东西，是一个按 Identity 卸掉激活的入口：视图变化后 `gor` 用它卸掉不再属于本节点的实体。它跟空闲驱逐走同一条路径，也不透露集群的存在。
+The only thing `runtime` gains because of the cluster is an entry to drop activations by Identity: after a view change, `gor` uses it to drop entities that no longer belong to this node. It shares the idle-eviction path and does not reveal the cluster's existence.
 
-**单节点模式不注入任何东西**，`gor` 直接走本地那条分支。不为「留扩展点」造一个恒返回本节点的假实现——那种实现是活着的死代码，第 1 到 5 步一行都不需要它。
+**Single-node mode injects nothing**; `gor` takes the local branch directly. No fake implementation that always returns this node is built to "leave an extension point" — that is living dead code; not one line of it is needed in steps 1 through 5.
 
-## 包职责
+## Package responsibilities
 
-| 包 | 职责 | 不属于它的 |
-|---|---|---|
-| `gor` | 公开 API、配置组装 | 任何算法 |
-| `runtime` | 激活缓存、生命周期、本地目录、请求分发 | 网络、存储实现 |
-| `mail` | 单个实体的串行执行队列 | 知道实体是什么 |
-| `store` | 状态读写 + CAS 表抽象及各后端实现 | 知道实体语义 |
-| `timer` | 扫到期、抢占、投递（见 [timers.md](timers.md)） | 知道实体语义 |
-| `cluster` | 成员表、节点状态机、视图轮询、一致性哈希环（见 [cluster.md](cluster.md)） | 执行实体方法、转发 |
-| `transport` | 节点间字节搬运 | 序列化格式的语义 |
-| `sim` | 假网络、假时钟、故障注入、不变量断言 | 生产代码路径 |
-| `cmd/gorgen` | 代码生成器 | 运行时行为 |
+| Package | Responsibility | Not its job |
+| --- | --- | --- |
+| `gor` | Public API, configuration assembly | Any algorithm |
+| `runtime` | Activation cache, lifecycle, local directory, request dispatch | Network, storage implementations |
+| `mail` | The serial execution queue of a single entity | Knowing what an entity is |
+| `store` | State read/write plus the CAS table abstraction and its backends | Knowing entity semantics |
+| `timer` | Scan due, claim, deliver (see [timers.md](timers.md)) | Knowing entity semantics |
+| `cluster` | Membership table, node state machine, view polling, consistent-hash ring (see [cluster.md](cluster.md)) | Executing entity methods, forwarding |
+| `transport` | Byte transport between nodes | The semantics of the encoding format |
+| `sim` | Fake network, fake clock, fault injection, invariant assertions | Production code paths |
+| `cmd/gorgen` | The code generator | Runtime behavior |
 
-## 三条边界规则
+## Three boundary rules
 
-**执行事实与判定分离。** `mail` 只管「让这些调用一个接一个跑」，它不判断谁该跑、跑在哪。`runtime` 做判定。混在一起就没法单独对调度做穷举测试。
+**Execution and decision are separated.** `mail` only makes "these calls run one after another"; it does not decide who should run or where. `runtime` decides. Mixed together, scheduling could not be exhaustively tested on its own.
 
-**I/O 全部在接口后面。** `store`、`transport`、时钟——没有例外。这是 [testing.md](testing.md) 里 DST 的硬前提，违反一次就有一整条路径无法模拟。
+**All I/O sits behind interfaces.** `store`, `transport`, clocks — no exceptions. This is the hard precondition of DST in [testing.md](testing.md); one violation leaves an entire path impossible to simulate.
 
-**不读墙钟。** 所有时间通过注入的 `Clock` 接口获取。`time.Now()` 在非测试代码里出现即视为 bug。
+**No wall clock.** All time comes through the injected `Clock` interface. `time.Now()` in non-test code is a bug on sight.
 
-## 序列化
+## Encoding
 
-节点间传输需要编码。**不自研序列化格式。**
+Inter-node transport needs encoding. **No self-invented serialization format.**
 
-Orleans 有 3 万行序列化代码，主要为了版本容忍（滚动升级时新旧节点互通）。Go 侧不追求这个能力——`gor` 假定同一集群内所有节点跑同一版本二进制，滚动升级期间的不兼容通过停机或双写方案在应用层解决。
+Orleans has 30k lines of serialization code, mostly for version tolerance (old and new nodes interoperating during rolling upgrades). The Go side does not pursue this capability: `gor` assumes every node in a cluster runs the same version of the binary, and incompatibilities during rolling upgrades are resolved at the application layer through downtime or dual-write schemes.
 
-代价明确：**不支持不停机滚动升级到不兼容的方法签名。** 收益是省掉一整个子系统。
+The cost is explicit: **rolling upgrades to incompatible method signatures without downtime are not supported.** The gain is an entire subsystem not built.
 
-选 `encoding/json`，跟实体状态落盘同一套。理由是不引入第二套序列化故事，外加线上内容人能直接读——排查跨节点问题时这一条比性能值钱。
+`encoding/json` is chosen, the same story as entity state persistence. The reason is no second serialization story, plus humans can read it directly in production — worth more than performance when debugging cross-node problems.
 
-**不抽 `Codec` 接口。** 只有一个实现的接口是仪式。真要换编码时，换的地方是编解码那几行，不是接口的形状。
+**No `Codec` interface.** An interface with one implementation is ceremony. When encoding really needs to change, the change is in the few encode/decode lines, not in the shape of an interface.
 
-编码发生在 `gor` 这一层。`transport` 搬的是不透明字节，它不认识被编码的东西（见 [transport.md](transport.md)）。
+Encoding happens in the `gor` layer. `transport` moves opaque bytes and does not recognize what is encoded (see [transport.md](transport.md)).
 
-## 与 Orleans 的结构对照
+## Structural comparison with Orleans
 
-不追求对应关系，但记录一下规模差异的来源。Orleans `src/` 实测 27.4 万行，其中真正需要在 Go 侧重建的核心只有约 2.6 万行（目录 + membership + 激活 + 放置 + 哈希环 + 调度器），因为：
+No one-to-one correspondence is pursued, but the source of the size difference is recorded. Orleans' `src/` measures 274k lines, of which only about 26k genuinely need rebuilding on the Go side (directory + membership + activation + placement + hash ring + scheduler), because:
 
-- 序列化（3.1 万行）—— 上面说的，不做。
-- 流、事务、事件溯源、journaling（3.5 万行）—— 不在范围内。
-- 云厂商 provider（约 2.6 万行）—— 换成嵌入式存储 + Postgres 两个后端。
-- `src/api/` 基线快照（3.5 万行）—— 根本不是实现代码。
+- Serialization (31k lines) — not done, as said above.
+- Streams, transactions, event sourcing, journaling (35k lines) — out of scope.
+- Cloud provider code (about 26k lines) — replaced by the embedded store and Postgres backends.
+- The `src/api/` baseline snapshot (35k lines) — not implementation code at all.
 
-而 Go 侧还能再省：调度器在 .NET 需要 823 行自定义 `TaskScheduler`，在 Go 是 goroutine + channel，约 100 行。详见 [research/orleans-internals.md](../research/orleans-internals.md)。
+And the Go side can save even more: the scheduler needs 823 lines of custom `TaskScheduler` in .NET, versus a goroutine plus a channel in Go, about 100 lines. Details in [research/orleans-internals.md](../research/orleans-internals.md) (in Chinese).

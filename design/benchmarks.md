@@ -1,45 +1,45 @@
-# 性能基线
+# Performance baseline
 
-## 为什么要有
+## Why it exists
 
-两个用处，都不是为了好看的数字。
+Two purposes; neither is about pretty numbers.
 
-**对内**：改动之后能发现自己变慢了。没有基线，性能回退要等到用户报上来才知道。
+**Inward**: spot that a change made things slower. Without a baseline, a performance regression is only discovered when a user reports it.
 
-**对外**：用户要能判断这个库能不能用在他的场景里。一个说不出自己有多快的库，用户只能自己测，或者直接不用。
+**Outward**: users must be able to judge whether this library fits their scenario. For a library that cannot say how fast it is, users have to measure it themselves, or simply not use it.
 
-## 测三样
+## Three measurements
 
-**调用往返** —— 内存存储，单进程，同一个实体上串行调一个什么都不做的方法。量的是运行时自己的开销：mailbox 一进一出、激活查表、反射分发。掺了存储就量不出来了。
+**Invocation round trip** — in-memory store, single process, serial calls to a method that does nothing on one entity. It measures the runtime's own overhead: mailbox in and out, activation lookup, reflection dispatch. Mix in storage and it cannot be measured.
 
-**状态写入** —— 真盘，一次 `Set()` 落地要多久。这是用户最关心的那个数，因为它决定了一个实体每秒能改多少次状态。
+**State write** — real disk; how long one `Set()` takes to land. This is the number users care about most, because it decides how many state changes per second one entity can do.
 
-**冷激活** —— 实体被驱逐之后，第一次调用要等多久。虚拟实体的核心承诺是「不用管生命周期」，这个数字说明这句话的代价。
+**Cold activation** — after an entity is evicted, how long the first call takes. The core promise of virtual entities is "you do not manage the lifecycle"; this number states the price of that sentence.
 
-这一条要用真盘存储，实体身上得有一份已经写过的状态。被驱逐意味着状态回到了盘上，读回来的那一下就是这个代价的大头。内存存储量出来的是运行时查表建实例的开销，不是用户等的那段时间。
+This one needs a real-disk store, and the entity must carry state that was written before. Being evicted means the state went back to disk, and reading it back is the bulk of this cost. An in-memory store would measure the runtime's lookup-and-construct overhead, not the time the user waits.
 
-三样各自单独一个 benchmark，不合成一个综合分数。综合分数掩盖的正是「慢在哪一层」这个唯一有用的信息。
+Each of the three gets its own benchmark; no composite score. A composite score hides exactly the only useful information: which layer is slow.
 
-## 不测什么
+## What is not measured
 
-- **不跟 Orleans 比。** 两边的运行时、GC、序列化全不一样，比出来的数字解释不了任何事，只会变成一句可以被随便引用的营销话。
-- **不报每节点 QPS。** 它取决于用户的方法体在干什么，跟库无关。
-- **不把跨节点转发并入前三项。** 6b 已实装，单独测量「转发比本地贵多少」，而不是把它和单进程绝对值合成一个数字。
+- **No comparison with Orleans.** The runtimes, GCs, and serialization all differ; the resulting numbers explain nothing and become a freely quotable marketing line.
+- **No per-node QPS.** It depends on what the user's method bodies do; it has nothing to do with the library.
+- **Cross-node forwarding is not merged into the three above.** [6b](../ROADMAP.md#6b-forwarding) is implemented; measure "how much more expensive forwarding is than local" separately, rather than compositing it with single-process absolute numbers.
 
-## 数字旁边必须写测量条件
+## Every number must carry its measurement conditions
 
-一个没有条件的数字是假的。每份结果都要带：机器（CPU、核数）、盘（型号或至少「SSD / 机械 / 虚拟盘」）、Go 版本、存储后端、fsync 开没开、并发度。
+A number without conditions is fake. Every result must carry: machine (CPU, core count), disk (model, or at least "SSD / HDD / virtual disk"), Go version, storage backend, fsync on or off, concurrency.
 
-**存储的 benchmark 不许在 tmpfs 上跑。** `/tmp` 在很多机器上是 tmpfs，那里的 `fsync` 是空转，测出来的写入延迟比真盘快两三个数量级，数字整份作废。要用真盘上的目录，并且在条件里写明它是真盘。
+**Storage benchmarks must not run on tmpfs.** On many machines `/tmp` is tmpfs, where `fsync` is a no-op; measured write latency comes out two to three orders of magnitude faster than on a real disk, and the whole set of numbers is void. Use a directory on a real disk and state in the conditions that it is one.
 
-这条不是洁癖：一次 `fsync` 在真盘上是毫秒级，在 tmpfs 上是微秒级。差三个数量级的数字会让所有基于它的判断都是错的。
+This is not cleanliness: one `fsync` is milliseconds on a real disk and microseconds on tmpfs. Numbers three orders of magnitude apart make every judgment based on them wrong.
 
-**拦的是内存文件系统，不是「只认某一种盘」。** tmpfs 和 ramfs 报错，其它一律放行。列一张认可的文件系统白名单会让 xfs、btrfs、zfs 上的人跑不了 benchmark，而他们的盘是真的——真盘的种类是开集，内存文件系统就那么两个。
+**What is blocked is memory filesystems, not "only one kind of disk is accepted".** tmpfs and ramfs are rejected; everything else is allowed through. A whitelist of approved filesystems would stop people on xfs, btrfs, or zfs from running benchmarks, and their disks are real: the kinds of real disks form an open set; memory filesystems are just those two.
 
-## 数字放哪儿
+## Where the numbers live
 
-一个文件，跟代码走。改动大了就重测，重测就覆盖，不留历史——历史归 git log。
+One file, moving with the code. Big changes get re-measured; re-measuring overwrites; no history is kept — history belongs to git log.
 
-**基线不进 CI 门禁。** 用数字做门禁只会制造 flaky：同一台机器上跑两次都能差一成，何况 CI 的机器是共享的。它是给人看的，不是给机器卡的。
+**The baseline is not a CI gate.** Gating on numbers only breeds flakiness: two runs on the same machine can differ by ten percent, let alone on shared CI machines. It is for humans to read, not for machines to enforce.
 
-回退靠人看：改了热路径的 PR，自己重测一遍，数字变了就在描述里说清楚。
+Regression detection is by human review: a PR touching the hot path re-measures, and if the numbers moved, the description says so.

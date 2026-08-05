@@ -1,87 +1,88 @@
-# 测试
+# Testing
 
-> 这是本项目最重要的设计文档。测试策略在这里是**架构约束**，不是测试组的内部事务。
+> This is the most important design document in the project. The testing strategy here is an **architectural constraint**, not the internal business of the testing team.
 
-## 为什么它是架构约束
+## Why it is an architectural constraint
 
-Orleans 的测试代码实测 17.7 万行 / 1168 文件，其中 **258 个文件依赖 `TestCluster`（起真实进程内集群），136 个文件含 `Task.Delay` 或 `Thread.Sleep`**。
+Orleans' test code measures 177k lines across 1168 files, of which **258 files depend on `TestCluster` (spinning up a real in-process cluster) and 136 files contain `Task.Delay` or `Thread.Sleep`**.
 
-也就是说：正确性藏在时序里。测试通过意味着「这次运气好」，不意味着不变量成立。这种测试套件既不能作为移植的预言机，也不能作为重构的护栏。
+In other words: correctness hides in timing. A passing test means "lucky this time", not "the invariants hold". Such a suite can serve neither as an oracle for the port nor as a guardrail for refactoring.
 
-`gor` 不重复这条路。约束从第一天生效，因为它们**无法事后加装**：
+`gor` does not repeat this path. The constraints apply from day one, because they **cannot be retrofitted**:
 
-1. 所有 I/O 在接口后面。
-2. 所有时间通过注入的 `Clock`，生产代码里 `time.Now()` 即 bug。
-3. 组件是显式状态机——状态转换是可枚举的函数，不是散在 goroutine 里的隐式流程。
-4. 跨调用的等待用 channel，不用 mutex（原因见下）。
+1. All I/O is behind interfaces.
+2. All time comes from an injected `Clock`; `time.Now()` in production code is a bug.
+3. Components are explicit state machines — state transitions are enumerable functions, not implicit flows scattered across goroutines.
+4. Cross-call waiting uses channels, not mutexes (reason below).
 
-第 4 条最容易被违反且后果最隐蔽，所以在 [scheduling.md](scheduling.md) 里单独写了。
+Rule 4 is the easiest to violate and the most insidious in consequence, so [scheduling.md](scheduling.md) covers it separately.
 
-## 两条轨道
+## Two tracks
 
-**单元测试**（`make test`）—— 验证单个包。单节点运行时、mailbox、store、哈希环、生成器。要求单个测试 50ms 以内，不起网络，不起进程。
+**Unit tests** (`make test`) — verify a single package: single-node runtime, mailbox, store, hash ring, generator. Requirements: each test under 50 ms, no network, no subprocesses.
 
-**模拟测试**（`make sim`）—— 验证分布式不变量。假网络 + 假时钟 + 故障注入 + 固定种子。跑得慢，单独一条 target，不进默认 `test`。
+**Simulation tests** (`make sim`) — verify distributed invariants. Fake network + fake clock + fault injection + fixed seeds. Slow, on a separate target, out of the default `test`.
 
-命名与放置要读得出验证对象：`TestMailbox_SerializesCalls` 是单元测试，`TestSim_PartitionDoesNotLoseWrites` 是模拟测试。
+Naming and placement must make the verification subject readable: `TestMailbox_SerializesCalls` is a unit test, `TestSim_PartitionDoesNotLoseWrites` is a simulation test.
 
-## synctest 能做什么，不能做什么
+## What synctest can and cannot do
 
-`testing/synctest` 在 **Go 1.25 GA**（这是 `go.mod` 要求 1.25 的唯一原因）。它提供 `synctest.Test` 建立一个 goroutine bubble，bubble 内时间是假的，`synctest.Wait()` 等到 bubble 内所有 goroutine 都 "durably blocked"。
+`testing/synctest` is GA in **Go 1.25** (the only reason `go.mod` requires 1.25). It provides `synctest.Test` to set up a goroutine bubble; time inside the bubble is fake, and `synctest.Wait()` waits until every goroutine in the bubble is "durably blocked".
 
-这解决了「等一个异步过程完成」这个测试里最大的 flaky 来源——不用 `time.Sleep(100 * time.Millisecond)` 然后祈祷。
+This removes the biggest source of flakiness in tests, "waiting for an async process to finish": no more `time.Sleep(100 * time.Millisecond)` followed by a prayer.
 
-**它的边界必须记清**：
+**Its boundaries must be remembered**:
 
-- 真实网络 I/O、真实 syscall 会破坏 bubble 的静止判定。所以假网络是必需品，不是加分项。
-- **阻塞在 mutex 上不算 durably blocked。** 用 mutex 做等待的代码，`synctest.Wait()` 判不出静止，测试会挂或误判。这是第 4 条约束的来源。
-- 它是单元测试工具，不是 DST 框架——它不控制 goroutine 的调度顺序。
+- Real network I/O and real syscalls break the bubble's quiescence judgment. So the fake network is a necessity, not a bonus.
+- **Blocking on a mutex is not durably blocked.** For code that waits with a mutex, `synctest.Wait()` cannot judge quiescence; the test hangs or misjudges. This is where rule 4 comes from.
+- It is a unit-testing tool, not a DST framework — it does not control goroutine scheduling order.
 
-## 模拟测试怎么搭
+## How simulation tests are built
 
-Go 里没有可用的现成 DST 框架，这一点要说清楚，免得后来者去找：
+There is no usable off-the-shelf DST framework in Go; this must be stated clearly so later comers do not go looking:
 
-- **gosim**（`jellevandenhooff/gosim`）形状最对（多机、确定性 goroutine 调度），但只有 80 stars 且 **2024-12 后停更**。不能依赖。
-- **Antithesis** 能用，2025-09 报价 16.8 万美元/年。不在本项目的成本结构里。
-- **porcupine**（`anishathalye/porcupine`，1230 stars，活跃）是线性一致性检查器——它验证一段历史是否可线性化，但不控制调度。有用，但只是拼图的一块。
+- **gosim** (`jellevandenhooff/gosim`) has the right shape (multi-machine, deterministic goroutine scheduling), but only 80 stars and **abandoned after 2024-12**. Cannot be relied on.
+- **Antithesis** works; quoted 168k USD/year in 2025-09. Not in this project's cost structure.
+- **porcupine** (`anishathalye/porcupine`, 1230 stars, active) is a linearizability checker: it verifies whether a history is linearizable, but does not control scheduling. Useful, but only one piece of the puzzle.
 
-Resonate 团队的公开结论也是：Go 里无法控制 goroutine 调度，DST 必须侵入式地约束整个代码库。
+Resonate's public conclusion is the same: goroutine scheduling cannot be controlled in Go, so DST must invasively constrain the whole codebase.
 
-所以 `sim` 包自建。下面是它要有的几件东西，怎么搭见 [simulation.md](simulation.md)：
+So the `sim` package builds its own. Below are the pieces it needs; how they are built in [simulation.md](simulation.md):
 
-**假网络** —— 实现 `Transport` 接口。可以按种子决定消息延迟、重排、丢弃、分区。分区是一个「哪些节点对之间不通」的集合，可随时变更。
+**Fake network** — implements the `Transport` interface. It can decide message delay, reordering, dropping, and partitioning by seed. A partition is a set of "which node pairs cannot talk"; it can change at any time.
 
-**假时钟** —— bubble 内用 `synctest` 的时间；跨节点的时间偏移由 `Clock` 实现里的 per-node offset 提供，用来测时钟不同步。
+**Fake clock** — uses `synctest`'s time inside the bubble; cross-node time offsets come from a per-node offset in the `Clock` implementation, for testing clock skew.
 
-假时钟的 ticker **必须跟真 `time.Ticker` 一样丢 tick**：接收方跟不上时非阻塞地丢掉，不是等它来读。阻塞发送会让推进时间的那只手被一个卡住的消费者拖死，而故障注入的全部意义就是把消费者卡住。这跟 [timers.md](timers.md) 的「错过的窗口不补」是同一条：攒了多少次到期，醒来只打一次。
+The fake clock's ticker **must drop ticks like a real `time.Ticker`**: when the receiver cannot keep up, ticks are dropped non-blockingly instead of waiting for it to read. A blocking send lets a stuck consumer drag down the hand that advances time — and the whole point of fault injection is to stick the consumer. This is the same line as [timers.md](timers.md)'s "missed windows are not made up": however many due times piled up, waking fires once.
 
-丢 tick 带来一条硬要求：**订阅时钟必须在构造函数里完成，不能留到 goroutine 里。** `go c.run()` 里再 `NewTicker`，构造函数返回和订阅生效之间就有一个窗口；窗口里推进时间，那一拍直接丢掉，而下一拍要等满一个周期。表现是一个偶发失败的测试——组件看上去活着，就是不动。
+Dropping ticks imposes a hard requirement: **clock subscription must happen in the constructor, not inside a goroutine.** If `NewTicker` runs inside `go c.run()`, there is a window between the constructor returning and the subscription taking effect; advance time inside that window and that tick is dropped outright, while the next tick must wait a full period. The symptom is an intermittently failing test — the component looks alive but does not move.
 
-「构造函数返回 ⇒ 它的时钟订阅已经生效」要成为不变量。这样调用方不需要知道有这么个窗口，测试也不用靠先 `synctest.Wait()` 一下来绕开它。
+"Constructor returns ⇒ its clock subscription is already in effect" must be an invariant. Then callers do not need to know the window exists, and tests do not need a `synctest.Wait()` first to work around it.
 
-**假存储** —— 内存实现 `Store`，能注入写失败、慢响应、以及「写成功了但响应丢了」这个最容易出错的情况。
+**Fake store** — an in-memory `Store` implementation that can inject write failures, slow responses, and "the write succeeded but the response was lost", the easiest case to get wrong.
 
-**故障注入** —— 节点崩溃（丢掉全部内存状态，保留 store）、节点暂停（模拟长 GC）、网络分区、分区恢复。
+**Fault injection** — node crash (drop all in-memory state, keep the store), node pause (simulating a long GC), network partition, partition recovery.
 
-**不变量断言** —— 每个 step 后检查。核心几条：
-- 状态不被静默覆盖（双激活撞 ETag 必须报冲突）。
-- 同一实体的调用历史可线性化（交给 porcupine）。
-- 定时任务不重复投递。
-- 成员视图最终收敛。
+**Invariant assertions** — checked after every step. The core ones:
 
-**种子复现** —— 失败时打印种子，同种子重跑必须得到逐字节相同的事件序列。这条本身要有一个测试。
+- State is never silently overwritten (a double activation hitting the ETag must report a conflict).
+- The call history of the same entity is linearizable (handed to porcupine).
+- Scheduled tasks are not delivered twice.
+- Membership views eventually converge.
 
-## 禁止事项
+**Seed reproduction** — on failure, print the seed; re-running with the same seed must produce a byte-identical event sequence. This rule itself needs a test.
 
-- 禁止真实外部依赖：真网络、真进程、真数据库、真文件系统（单元测试层面）。
+## Forbidden
 
-  **唯一的例外是嵌入式存储后端自己的测试。** 没法在不碰磁盘的前提下验证一个 SQLite 后端真的把数据落下去了。这类测试用 `t.TempDir()`，只测那一个后端包。再往上的每一层——`runtime`、`gor`、`sim`——一律用内存 `Store`。例外就此打住，不要让它蔓延。
-- 禁止真实时间：不许 `time.Sleep` 做同步，不许 `for now < deadline` 轮询做断言。
-- 禁止 flaky：不许依赖测试执行顺序，不许用时间戳做种子，不许 `t.Skip` 掩盖偶发失败。发现 flaky 就当 bug 修，不当噪音容忍。
-- 禁止新旧测试并存：迁移完成就删旧的。
+- No real external dependencies: real network, real processes, real databases, real filesystems (at the unit-test level).
 
-## 与 ROADMAP 的关系
+  **The only exception is the embedded storage backend's own tests.** A SQLite backend cannot be verified to really persist data without touching disk. These tests use `t.TempDir()` and test only that one backend package. Every layer above — `runtime`, `gor`, `sim` — uses the in-memory `Store`. The exception stops here; do not let it spread.
+- No real time: no `time.Sleep` for synchronization, no `for now < deadline` polling for assertions.
+- No flakiness: no dependence on test execution order, no timestamps as seeds, no `t.Skip` to cover up intermittent failures. Treat flakiness as a bug to fix, not noise to tolerate.
+- No old and new tests side by side: once the migration is done, delete the old ones.
 
-DST 骨架是 ROADMAP 第 4 步，**排在集群（第 6 步）之前**。
+## Relationship with the ROADMAP
 
-顺序不能换。上面四条约束里的每一条，如果等集群写完再回来加，都意味着重写集群。这是本项目唯一一处「顺序不可协商」的地方。
+The DST skeleton is [step 4](../ROADMAP.md#4-deterministic-simulation-test-skeleton) of the ROADMAP, **before the cluster ([step 6](../ROADMAP.md#6-multiple-nodes))**.
+
+The order cannot be swapped. Adding any of the four constraints above after the cluster is written means rewriting the cluster. This is the project's only "the order is non-negotiable" spot.

@@ -1,12 +1,12 @@
-# 错误与取消
+# Errors and cancellation
 
-## 目标
+## Goal
 
-调用结果可以离开进程。任意 Go `error` 对象不能。跨节点结果因此只投影为稳定码和文本，不尝试把对象装回去。
+Call outcomes can leave the process. Arbitrary Go `error` objects cannot. Cross-node outcomes are therefore projected onto a stable code and text; no attempt to pack the object back.
 
-投影规则只看错误是否带 `Code`。它不按错误的具体类型列白名单。框架错误在产生处自己带码；应用错误由应用自己带码；其余错误一律是不透明错误。
+The projection rule looks only at whether the error carries a `Code`. It does not whitelist concrete error types. Framework errors carry their own codes where they are produced; application errors are coded by the application; everything else is an opaque error.
 
-## 公开类型
+## Public types
 
 ```go
 type Code string
@@ -18,49 +18,49 @@ type Coded interface {
 func CodeOf(error) (Code, bool)
 ```
 
-`Code` 实现 `error` 和 `Coded`。应用用包级常量声明它：
+`Code` implements `error` and `Coded`. Applications declare it as a package-level constant:
 
 ```go
 const ErrWorkshopIDRequired gor.Code = "shadow.workshop_id_required"
 ```
 
-`CodeOf` 返回错误树里唯一可达的码。它按 `errors.Is` 的方式遍历错误本身、`Unwrap() error` 链和每个 `Unwrap() []error` 分支，收集其中所有 `Coded` 的码。恰有一个不同的码时返回它；没有码，或多于一个不同的码时返回空，表示该错误没有确定的码。这样合并多个错误不再是特例：合并只是给同一棵树增加分支，码的可达性按同一条规则判定。
+`CodeOf` returns the only reachable code in the error tree. It walks the error itself, the `Unwrap() error` chain, and every `Unwrap() []error` branch the way `errors.Is` does, collecting the codes of all `Coded` errors found. With exactly one distinct code it returns it; with no code, or more than one distinct code, it returns empty, meaning the error has no determinate code. Merging multiple errors thus stops being a special case: a merge only adds branches to the same tree, and code reachability is judged by the same rule.
 
-远端重建的带码错误也实现 `Coded`。它的 `Is` 只比较 `Code`。当 `ErrWorkshopIDRequired` 是错误树里唯一可达的码时，下列断言在本地和远端都成立：
+A coded error rebuilt on the remote side also implements `Coded`. Its `Is` compares only `Code`. When `ErrWorkshopIDRequired` is the only reachable code in the error tree, the following assertion holds locally and remotely:
 
 ```go
 errors.Is(err, ErrWorkshopIDRequired)
 ```
 
-错误树里没有码，或多于一个不同的码时，`CodeOf` 返回空，信封不带码，源端重建只提供文本的错误；调用方不能对这样的错误跨节点匹配某个码。这是 `errors.Is` 的完整对等范围。远端错误不等于原错误，不恢复任意 sentinel，不保证 `errors.As` 得到原类型，也不保留包装层数、字段或合并的成员。
+When the error tree has no code, or more than one distinct code, `CodeOf` returns empty, the envelope carries no code, and the source side rebuilds a text-only error; callers cannot match such an error against a code across nodes. This is the full parity scope of `errors.Is`. The remote error is not equal to the original: no arbitrary sentinel is restored, `errors.As` is not guaranteed to yield the original type, and wrap depth, fields, and merged members are not preserved.
 
-## 码空间
+## The code space
 
-有效码形如 `<owner>.<name>`。两段都由小写 ASCII 字母、数字和下划线组成，且以字母开头。`owner` 是码的归属边界。应用选择自己拥有的 `owner`；`gor` 保留。
+A valid code has the form `<owner>.<name>`. Both parts consist of lowercase ASCII letters, digits, and underscores, and start with a letter. `owner` is the ownership boundary of the code. Applications choose an `owner` they own; `gor.*` is reserved.
 
-本版框架码集合封闭如下：
+This version's framework code set is sealed as follows:
 
-| Code | 结局 |
+| Code | Outcome |
 | --- | --- |
-| `gor.no_owner` | 当前视图没有可路由的拥有者。 |
-| `gor.node_dead` | 目标节点已停止服务。 |
-| `gor.runtime_closed` | 运行时或实体 mailbox 已关闭。 |
-| `gor.overloaded` | 调用在方法开始前因队列满被拒绝。 |
-| `gor.type_not_installed` | 目标节点没有该实体类型。 |
-| `gor.unknown_method` | 目标类型不含所请求的方法。 |
-| `gor.invalid_request` | 请求形状或参数不能按当前契约解码。 |
-| `gor.persistence_conflict` | 状态写入遇到版本冲突。 |
-| `gor.persistence_failed` | 状态写入失败，且不是版本冲突。 |
-| `gor.panic` | 工厂或实体方法 panic。 |
-| `gor.request_encode_failed` | 源端不能把参数编码为调用请求。 |
-| `gor.reply_encode_failed` | 成功调用的返回值不能编码。 |
-| `gor.transport_failed` | 请求、响应或连接传递失败；执行结局未知。 |
+| `gor.no_owner` | The current view has no routable owner. |
+| `gor.node_dead` | The target node has stopped serving. |
+| `gor.runtime_closed` | The runtime or the entity's mailbox is closed. |
+| `gor.overloaded` | The call was rejected for a full queue before the method started. |
+| `gor.type_not_installed` | The target node does not have this entity type. |
+| `gor.unknown_method` | The target type has no such method. |
+| `gor.invalid_request` | The request's shape or arguments cannot be decoded under the current contract. |
+| `gor.persistence_conflict` | The state write hit a version conflict. |
+| `gor.persistence_failed` | The state write failed, and it was not a version conflict. |
+| `gor.panic` | The factory or the entity method panicked. |
+| `gor.request_encode_failed` | The source could not encode the arguments into a call request. |
+| `gor.reply_encode_failed` | The return values of a successful call could not be encoded. |
+| `gor.transport_failed` | The request, response, or connection failed to transfer; the execution outcome is unknown. |
 
-框架不得为同一结局在这组码之外另造 `gor.*` 码。应用不得使用 `gor.*`。本版不会为任意错误类型注册额外映射，也不会从错误文本推导码。
+The framework must not invent `gor.*` codes outside this set for the same outcome. Applications must not use `gor.*`. This version registers no extra mappings for arbitrary error types and derives no codes from error text.
 
-## 调用响应信封
+## The call response envelope
 
-调用响应改为：
+The call response becomes:
 
 ```go
 type errorEnvelope struct {
@@ -74,45 +74,45 @@ type callResponse struct {
 }
 ```
 
-`Error == nil` 表示调用成功。非 nil 时 `Code` 可为空，`Message` 必填。空码表示不透明错误；接收端重建一个只提供文本的错误。非空码重建一个 `Coded` 错误，令 `errors.Is` 按码匹配。
+`Error == nil` means the call succeeded. When non-nil, `Code` may be empty and `Message` is required. An empty code means an opaque error; the receiving end rebuilds a text-only error. A non-empty code rebuilds a `Coded` error so `errors.Is` matches by code.
 
-调用处理按这个顺序执行：
+Call handling runs in this order:
 
-1. 执行方法，先得到业务错误。
-2. 业务错误非 nil 时，只投影它到 `Error`，不编码 `Reply`。
-3. 业务错误为 nil 时，编码 `Reply`。编码失败则返回带 `gor.reply_encode_failed` 的 `Error`。
-4. 最后编码整个 `callResponse`。
+1. Execute the method; first obtain the business error.
+2. When the business error is non-nil, project only it into `Error`; do not encode `Reply`.
+3. When the business error is nil, encode `Reply`. An encoding failure returns `Error` with `gor.reply_encode_failed`.
+4. Last, encode the whole `callResponse`.
 
-第 2 步是优先级规则。回复编码是诊断层故障，不能替换已经得到的业务错误。第 4 步失败时没有可发送的调用结果，按 `gor.transport_failed` 处理；它不能覆盖一个已经可发送的业务错误。
+Step 2 is the priority rule. Reply encoding is a diagnostic-layer failure and must not replace a business error already obtained. When step 4 fails, there is no sendable call result; treat it as `gor.transport_failed`, which must not override a business error that is already sendable.
 
-请求编码失败和 `Send`、响应解码失败也以 `gor.request_encode_failed` 或 `gor.transport_failed` 返回。`gor.transport_failed` 不表示请求未送达、方法未开始或状态未改变。
+Request-encoding failures, `Send` failures, and response-decoding failures also return `gor.request_encode_failed` or `gor.transport_failed`. `gor.transport_failed` does not mean the request was not delivered, the method did not start, or state did not change.
 
-## 本地与远端
+## Local and remote
 
-本地调用不经过信封。它保留原错误对象。只要错误链中有声明的 `Code`，本地 `errors.Is` 已按 Go 标准规则匹配该码。
+Local calls do not go through the envelope. They keep the original error object. As long as the error chain declares a `Code`, local `errors.Is` matches it by Go's standard rules.
 
-远端调用在服务端投影错误、在源端重建错误。投影使用 `CodeOf`，重建使用只按码匹配的错误。因此确定的码是两种位置共享的唯一错误身份。文本可以补充上下文，但不得影响任何分支。
+Remote calls project the error on the server and rebuild it on the source. Projection uses `CodeOf`; rebuilding uses an error that matches only by code. The determinate code is therefore the one error identity both locations share. Text may add context but must not affect any branch.
 
-框架在所有公开调用路径上构造表中的码，包括本地路径。这样 `errors.Is` 对框架码也不依赖调用位置。内部包的旧 sentinel 可以继续作为内部实现细节，但不得作为 `gor` 公开调用结果的唯一身份。
+The framework constructs the table's codes on every public call path, including local ones. Then `errors.Is` does not depend on call location for framework codes either. Internal packages' old sentinels may remain as internal implementation details, but must not be the sole identity of a `gor` public call result.
 
-## 取消
+## Cancellation
 
-`Runtime.invoke` 把调用方 `ctx` 传给 `transport.Send`。`Send` 因该 `ctx` 完成时，源端直接返回 `ctx.Err()` 并移除本地 pending 请求。
+`Runtime.invoke` passes the caller's `ctx` to `transport.Send`. When `Send` completes because of that `ctx`, the source returns `ctx.Err()` directly and removes the local pending request.
 
-接收端 handler 的 context 来自服务生命周期，不派生自发送方 `ctx`，也不带发送方 deadline。没有取消帧和 deadline 字段。请求一旦被接收，远端方法只会因远端自身的关闭、终止或方法逻辑而取消。
+The receiving handler's context comes from the service lifecycle; it does not derive from the sender's `ctx` and carries no sender deadline. There are no cancellation-frame or deadline fields. Once a request is received, the remote method is canceled only by the remote side's own shutdown, termination, or method logic.
 
-所以源端取消有三条要求：
+Source-side cancellation therefore has three requirements:
 
-1. 源端返回原始 `ctx.Err()`，不等待远端。
-2. 远端上下文不取消，远端方法继续执行。
-3. 后到的远端结果被丢弃，不写回调用方的 reply。
+1. The source returns the original `ctx.Err()` and does not wait for the remote side.
+2. The remote context is not canceled; the remote method keeps executing.
+3. A late-arriving remote result is discarded and not written into the caller's reply.
 
-调用方没有可观察的“已经送达”边界。它不能从取消、超时或 `gor.transport_failed` 推出远端未执行。传输失败不能证明未执行的规则独立于取消规则，必须保留。
+The caller has no observable "delivered" boundary. It cannot conclude from cancellation, timeout, or `gor.transport_failed` that the remote side did not execute. The rule that a transport failure cannot prove non-execution is independent of the cancellation rules and must be kept.
 
-## 不做的事
+## What is not done
 
-不增加任意类型注册、字段序列化、错误链或合并结构的保真、错误码 codegen 注解、取消帧或远端 deadline 传播。它们都扩大 wire contract，却不改变稳定码这一条唯一的跨节点错误身份。码的可达性会穿过合并取唯一码，但这不是保真：合并的成员、个数和各自文本都不跨节点保留。
+No arbitrary type registration, no field serialization, no fidelity of error chains or joined structures, no error-code codegen annotations, no cancellation frames, no remote deadline propagation. All of them widen the wire contract without changing the stable code, the one cross-node error identity. Code reachability takes the unique code through a join, but that is not fidelity: the joined members, their count, and their individual texts are not preserved across nodes.
 
-## 差距
+## Gap
 
-当前实现已使用错误信封，按业务错误优先于成功回复编码的顺序处理，并在源端重建带码错误；公开调用路径、取消边界、shadow 和模拟器迁移也已有覆盖。仍未提供任意错误类型注册、字段或错误链保真、合并结构的保真、取消帧或远端截止时间传播；这些属于「不做的事」，不是当前缺口。
+The current implementation already uses the error envelope, processes business errors before encoding successful replies, and rebuilds coded errors on the source; public call paths, the cancellation boundary, and the shadow and simulator migrations are covered. Still not provided: arbitrary error type registration, field or error-chain fidelity, joined-structure fidelity, cancellation frames, or remote deadline propagation. These belong to "what is not done"; they are not current gaps.
