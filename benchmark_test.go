@@ -301,7 +301,7 @@ func openBenchmarkSQLite(b *testing.B, filename string) *store.SQLite {
 
 func waitForBenchmarkEviction(b *testing.B, rt *Runtime) {
 	b.Helper()
-	for len(rt.Identities()) != 0 {
+	for len(rt.Activations()) != 0 {
 		runtime.Gosched()
 	}
 }

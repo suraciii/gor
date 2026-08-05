@@ -74,6 +74,8 @@ func (c *simulationCluster) newRuntime(id, generation int) (*gor.Runtime, error)
 		gor.WithVoteTTL(6*simulationStepDuration),
 		gor.WithMaxTickGap(2*simulationStepDuration),
 		gor.WithMaxTableLatency(simulationStepDuration/2),
+		gor.WithIdleTimeout(2*simulationStepDuration),
+		gor.WithEvictionInterval(simulationStepDuration),
 		gor.WithTransport(network),
 	)
 }

@@ -92,8 +92,8 @@ func run(ctx context.Context, args []string) (runErr error) {
 		return err
 	}
 
-	if identities := rt.Identities(); len(identities) != 0 {
-		return fmt.Errorf("active identities after idle eviction = %#v, want none", identities)
+	if activations := rt.Activations(); len(activations) != 0 {
+		return fmt.Errorf("active activations after idle eviction = %#v, want none", activations)
 	}
 	value, err := device.Shadow(ctx)
 	if err != nil {

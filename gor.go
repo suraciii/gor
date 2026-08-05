@@ -42,7 +42,7 @@ type Deactivatable interface {
 }
 
 type Runtime struct {
-	*runtimepkg.Runtime
+	engine           *runtimepkg.Runtime
 	store            store.Store
 	scheduleStore    store.ScheduleStore
 	clock            clock.Clock
@@ -158,7 +158,7 @@ func New(options ...Option) (*Runtime, error) {
 		initialView = <-clusterNode.ViewChanges()
 	}
 	rt := &Runtime{
-		Runtime:       runtimepkg.New(config.Config),
+		engine:        runtimepkg.New(config.Config),
 		store:         config.Store,
 		scheduleStore: config.ScheduleStore,
 		clock:         config.Clock,
@@ -339,7 +339,7 @@ func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args 
 
 func (rt *Runtime) invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
 	if rt.clusterNode == nil {
-		return rt.Runtime.Invoke(ctx, id, method, args, reply)
+		return rt.engine.Invoke(ctx, id, method, args, reply)
 	}
 	view := rt.clusterView.Load()
 	owner, ok := cluster.Owner(*view, store.Identity(id))
@@ -349,7 +349,7 @@ func (rt *Runtime) invoke(ctx context.Context, id Identity, method string, args 
 	if owner != rt.nodeAddr {
 		return rt.forward(ctx, owner, id, method, args, reply)
 	}
-	return rt.Runtime.Invoke(ctx, id, method, args, reply)
+	return rt.engine.Invoke(ctx, id, method, args, reply)
 }
 
 func (rt *Runtime) Owns(id store.Identity) bool {
@@ -391,7 +391,7 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrTypeNotInstalled, name)
 	}
-	return rt.Runtime.Register(name, runtimepkg.Registration{
+	return rt.engine.Register(name, runtimepkg.Registration{
 		Factory: func(ctx context.Context, id runtimepkg.Identity) (any, error) {
 			binder := newBinder(rt, id)
 			entity := factory(binder)
@@ -458,7 +458,7 @@ func (rt *Runtime) Close() {
 		rt.clusterNode.Close()
 		<-rt.clusterDone
 	}
-	rt.Runtime.Close()
+	rt.engine.Close()
 	rt.closeTransport()
 }
 
@@ -472,8 +472,13 @@ func (rt *Runtime) Kill() {
 		rt.clusterNode.Kill()
 		<-rt.clusterDone
 	}
-	rt.Runtime.Kill()
+	rt.engine.Kill()
 	rt.closeTransport()
+}
+
+// Activations returns a sorted snapshot of this runtime's active entities.
+func (rt *Runtime) Activations() []Activation {
+	return rt.engine.Activations()
 }
 
 func (rt *Runtime) Done() <-chan struct{} {
@@ -526,14 +531,14 @@ func (rt *Runtime) watchCluster() {
 	if rt.poller != nil {
 		rt.poller.Close()
 	}
-	rt.Runtime.Close()
+	rt.engine.Close()
 }
 
 func (rt *Runtime) deactivateMovedActivations(view cluster.View) {
-	for _, id := range rt.Runtime.Identities() {
+	for _, id := range rt.engine.Identities() {
 		owner, ok := cluster.Owner(view, store.Identity(id))
 		if !ok || owner != rt.nodeAddr {
-			rt.Runtime.Deactivate(runtimepkg.Identity(id))
+			rt.engine.Deactivate(runtimepkg.Identity(id))
 		}
 	}
 }

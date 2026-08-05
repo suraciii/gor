@@ -98,7 +98,7 @@ func (rt *Runtime) handleInvoke(ctx context.Context, request callRequest) ([]byt
 	}
 
 	// Forwarded requests already crossed the ownership decision; execute them locally.
-	invokeErr := rt.Runtime.Invoke(ctx, runtimepkg.Identity{Type: request.Type, Key: request.Key}, request.Method, args, reply)
+	invokeErr := rt.engine.Invoke(ctx, runtimepkg.Identity{Type: request.Type, Key: request.Key}, request.Method, args, reply)
 	response := callResponse{Error: ""}
 	if invokeErr != nil {
 		response.Error = invokeErr.Error()

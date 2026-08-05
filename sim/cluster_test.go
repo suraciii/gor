@@ -146,8 +146,11 @@ func TestSim_NetworkPartitionCreatesDualActivationAndRecovers(t *testing.T) {
 		if seed.err != nil || seed.value != 2 {
 			t.Fatalf("seed call = (%d, %v), want (2, nil)", seed.value, seed.err)
 		}
-		cluster.nodes[0].rt.Deactivate(local)
+		cluster.advance(3 * simulationStepDuration)
 		synctest.Wait()
+		if activations := cluster.nodes[0].rt.Activations(); len(activations) != 0 {
+			t.Fatalf("activations after idle eviction = %#v, want empty", activations)
+		}
 
 		if err := cluster.partition(map[int]int{0: 0, 1: 1}); err != nil {
 			t.Fatal(err)
