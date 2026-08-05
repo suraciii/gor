@@ -23,19 +23,47 @@ type Activatable interface {
 }
 
 type Deactivatable interface {
-    OnDeactivate(ctx context.Context) error
+    OnDeactivate(ctx context.Context, reason DeactivationReason) error
 }
+
+type DeactivationReason uint8
+
+const (
+    Idle DeactivationReason = iota + 1
+    OwnershipLost
+    RuntimeClosed
+    Faulted
+)
 ```
 
 **用可选接口，不用必填方法。** 大多数实体两个都不需要，让它们写两个空方法是纯粹的仪式；也不用注册期传函数——那会让「这个实体激活时做什么」离实体本身十万八千里。
 
 `OnActivate` 在状态从 store 读回来之后、第一个调用进 mailbox 之前跑。**它返回错误就是激活失败**：触发这次激活的调用拿到这个错误，激活不建立，占位以错误 close，下一个调用重新来过。不给它「半激活」的中间态——一个 `OnActivate` 失败了却在服务的实体，比没有这个钩子更糟。
 
-`OnDeactivate` 在实例即将消失之前跑，mailbox 已经排空。**它返回错误改变不了任何事**：停用不能被拒绝——空闲驱逐、panic 停用、视图变化卸载，三条路径都已经决定了这个实例要走，而且状态本来就在 store 里。所以它的错误没有调用方，跟定时投递失败一样交给运行时的错误出口（见 [timers.md](timers.md)），不做重试。出口那个 `method` 参数写 `"OnDeactivate"`——用户拿到一个错误时得知道它是从哪儿来的，而钩子不是被调用的方法，没有别的名字可写。
+`OnDeactivate` 在实例即将消失之前跑，mailbox 已经排空。它收到首次开始停用的 `DeactivationReason`。原因只有四种：
 
-**`Kill()` 不调 `OnDeactivate`。** 崩溃不给收尾机会，这是 `Kill()` 存在的全部意义。
+| 原因 | 首次停用的触发 | 应用可据此做的事 |
+| --- | --- | --- |
+| `Idle` | 实例空闲超时。 | 不把一次本地回收当成业务对象离线。 |
+| `OwnershipLost` | 当前节点不再拥有身份，或视图没有 active owner。 | 释放节点本地的 lease 或连接，不宣告业务对象消失。 |
+| `RuntimeClosed` | 根运行时开始正常关闭。 | 做进程退出前的收尾。 |
+| `Faulted` | 方法 panic，或实体要求丢弃当前实例。 | 不把不可信实例当作正常告别，并提高告警级别。 |
+
+这是完整的公开集合。一个值必须让应用作出不同决定，才可以加入这个集合；不能因为实现里多一条分支就增加原因。panic 和丢弃都表示当前实例不再可信；迁移和无 owner 都表示当前节点失去责任，所以各自只有一个值。
+
+原因在 `beginDeactivation(reason)` 把 activation 从 `active` 变为 `deactivating` 的同一原子转换中写入。后续调用在 activation 已经停用时不得改写它。比如根运行时已经进入 `closing`，其中一个 activation 可能早已因 `Idle` 开始停用；它的原因仍是 `Idle`。停用原因描述一个 activation 首次为何离场，根状态机描述整个运行时是否接纳调用、怎样等待和以何种停止错误拒绝调用。这是两套概念，不能共用一个枚举。
+
+**它返回错误改变不了任何事**：停用不能被拒绝，而且状态本来就在 store 里。错误没有调用方，跟定时投递失败一样交给运行时的错误出口（见 [timers.md](timers.md)），不做重试。出口的来源带 `Deactivation{Reason: reason}`，不再伪造方法名。
+
+每次正常停用钩子获得新的 `context.Background()`。这个 context 没有 deadline，也不会取消；它不继承任何实体调用者的 context。正常关闭会等待已经开始的钩子返回，因此钩子必须尽快完成。
+
+**`Kill()` 和本节点被判 dead 都不启动 `OnDeactivate`。** 突发停止不给尚未开始的收尾机会。已经开始的钩子不被取消，突发停止也不等待它；给它一个已取消的 context 只会制造一条部分收尾的第三种语义。
 
 这一条要盖住已经在飞的那些停用。空闲驱逐先动手、`Kill()` 后到，钩子还没跑的实例一样不许跑——判断标准是钩子跑之前这个实例有没有被杀，不是这次停用由谁发起。所以「跳过」是记在实例上的一个事实，不是某条停用路径的参数：路径可以有好几条，实例只有一个。
+
+### 迁移
+
+这是计划内的 v0 不兼容变更。已有 `Deactivatable` 实现把停用方法改为接收第二个 `DeactivationReason` 参数。实现不得用默认分支把未知原因当成正常停用；运行时只会传上表四个值。
 
 ## 本地目录
 
@@ -169,5 +197,7 @@ running ── Close ──▶ closing ── 完成优雅停止 ──▶ stopp
 ### 差距
 
 当前根运行时只关闭公开停止信号，再分别关闭轮询器、集群节点、内部执行运行时和传输。公开调用没有根层接纳门，入站 handler 另做一次停止信号检查，二者不是同一条规则。内部执行运行时和集群节点也不能从优雅停止升级到 `Kill`；集群节点最终只留下 `dead` 状态和无原因的完成 channel。这一节尚未实装。
+
+当前 activation 不保存停用原因，`OnDeactivate` 只收到 `context.Background()`，错误出口传 `(Identity, method string, error)`。空闲、根关闭、所有权变化、panic 和丢弃都在停用汇合处丢失原因。当前节点自判 dead 后，根运行时调用普通 `engine.Close()`，所以仍会启动 `OnDeactivate`；这与本篇要求的突发停止不同。上述停用原因、context 和跳过规则均尚未实装。
 
 `Kill()` 的存在理由只有模拟测试——真实进程崩溃不会先礼貌地调一个函数。它不是给用户用的关机接口，用户要停机用 `Close()`。

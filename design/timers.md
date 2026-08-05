@@ -100,18 +100,52 @@ schedule(entity_type, entity_key, name, method, due_at, interval, etag)
 所以配置上要有一个错误出口：
 
 ```go
-OnError func(id Identity, method string, err error)
+type BackgroundError struct {
+    Identity Identity
+    Err      error
+    Source   ErrorSource
+}
+
+type ErrorSource interface {
+    errorSource()
+}
+
+type ScheduledInvocation struct {
+    Method string
+}
+
+func (ScheduledInvocation) errorSource() {}
+
+type Deactivation struct {
+    Reason DeactivationReason
+}
+
+func (Deactivation) errorSource() {}
+
+func OnError(func(BackgroundError)) Option
 ```
 
-一个出口，不是每个定时任务一个，也不是每类事件一个。定时投递不是唯一一件没人在等的事——`OnDeactivate` 返回的错误同样无处可去（见 [runtime.md](runtime.md)）。**运行时凡是要吞掉一个错误，都从这一个口子出去**，`method` 说明它是从哪儿来的。
+`ErrorSource` 的未导出方法把集合封闭在 `gor` 包内；包外代码不能实现新的来源。每个事件都由 `gor` 构造，来源只有两种：已抢占的定时投递用 `ScheduledInvocation{Method: ...}`，停用钩子失败用 `Deactivation{Reason: ...}`。调用方按 `Source` 的具体类型分支，不比较可写字符串；因此定时方法恰好叫 `"OnDeactivate"` 也不会混淆来源。
 
-它不做重试、不做退避、不做告警策略——那些是用户的事，运行时只负责把「这件事失败了」送到用户手上。
+一个出口，不是每个定时任务一个，也不是每类事件一个。它只报告两类没有调用方可接收的**应用回调**失败：已抢占的定时投递和正常停用钩子。直接调用照常把错误返回给调用方。轮询扫描、抢占失败和没有抢到 CAS 不进入这个出口；它们是调度器和存储的运行状态，不是一件已知应用动作的失败。
 
-未配置时错误会被丢掉。**这是运行时唯一一处替用户吞错误的地方，所以它必须在文档里写明，而不是藏在实现里。**
+`Err` 就是该回调得到的错误。它遵循 [errors.md](errors.md)：跨节点后只有稳定 `Code` 可用于 `errors.Is`，事件不另设 `Code` 字段，也不恢复错误类型、字段或包装关系。
+
+它不做重试、不做退避、不做告警策略——那些是用户的事，运行时只负责把「这件事失败了」送到用户手上。事件不携带 schedule 名称、到期时间、间隔、ETag 或尝试次数：抢占后这些字段可能已经过期，ETag 不是应用决策，运行时也没有重试模型。`timer.Invoker` 保持只接收 identity 和 method。
+
+未配置时这两类错误会被丢掉。它们是运行时唯一替用户丢弃的**应用回调**错误，必须在文档里写明，而不是藏在实现里。
 
 **停机途中取消掉的那次投递不算失败。** 运行时关闭时，正在飞的定时调用会带着一个取消错误回来——方法没失败，是运行时不跑了。把它送进 `OnError`，等于每次干净的关闭都要给用户报一次假警，用户只能在自己的回调里反过来把取消错误滤掉。所以轮询器的 context 已经取消时，这次错误不出去。
 
-这不是保护性特判，是一条要有测试盯住的行为：关闭途中的取消不进 `OnError`，其它任何错误都要进。
+这不是保护性特判，是一条要有测试盯住的行为：关闭途中的取消不进 `OnError`，其它符合上述出口边界的回调错误都要进。
+
+### 迁移
+
+这是计划内的 v0 不兼容变更。已有三参数错误处理函数改为接收一个 `BackgroundError`。定时投递读取 `ScheduledInvocation.Method`；停用钩子失败读取 `Deactivation.Reason`。已有按 `method == "OnDeactivate"` 分支的代码必须删除。
+
+### 差距
+
+当前错误出口仍是 `(Identity, method string, error)`，所以两个来源只能靠方法字符串猜测。当前轮询器已经不报告扫描和抢占错误，但本节旧的“凡是要吞掉一个错误”表述比现状宽。封闭来源、错误码语义和本节迁移均尚未实装。
 
 **抢占必须是 CAS，不能是「读出来再更新」。** 两个节点的轮询器会同时扫到同一行，CAS 是唯一让其中一个输掉的东西。这条现在就要做对，不能等到第 6 步——那时候再改，前面所有的测试都要重写。
 
