@@ -174,7 +174,7 @@ func TestScheduledFailureReachesOnError(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		backend := &failingWorkshopStore{Memory: store.NewMemory()}
 		sourceClock := clock.NewFake(time.Unix(0, 0).UTC())
-		errorsSeen := make(chan backgroundError, 1)
+		errorsSeen := make(chan gor.BackgroundError, 1)
 		rt, err := gor.New(
 			gor.WithStore(backend),
 			gor.WithScheduleStore(backend),
@@ -182,8 +182,8 @@ func TestScheduledFailureReachesOnError(t *testing.T) {
 			gor.WithIdleTimeout(0),
 			gor.WithEvictionInterval(0),
 			gor.WithScheduleInterval(time.Second),
-			gor.OnError(func(id gor.Identity, method string, err error) {
-				errorsSeen <- backgroundError{id: id, method: method, err: err}
+			gor.OnError(func(event gor.BackgroundError) {
+				errorsSeen <- event
 			}),
 		)
 		if err != nil {
@@ -205,19 +205,14 @@ func TestScheduledFailureReachesOnError(t *testing.T) {
 		select {
 		case got := <-errorsSeen:
 			wantID := gor.Identity{Type: gor.TypeName[domain.Device](), Key: "device-1"}
-			if got.id != wantID || got.method != "MarkOffline" || !errors.Is(got.err, errWorkshopWrite) {
+			source, ok := got.Source.(gor.ScheduledInvocation)
+			if !ok || got.Identity != wantID || source.Method != "MarkOffline" || !errors.Is(got.Err, errWorkshopWrite) {
 				t.Fatalf("OnError event = %#v, want %v.MarkOffline with %v", got, wantID, errWorkshopWrite)
 			}
 		default:
 			t.Fatal("scheduled failure did not reach OnError")
 		}
 	})
-}
-
-type backgroundError struct {
-	id     gor.Identity
-	method string
-	err    error
 }
 
 var errWorkshopWrite = errors.New("workshop write failed")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -373,7 +374,7 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 		if err := rt.Register("account", Registration{
 			Factory:  func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
 			Dispatch: func(context.Context, any, string, any, any) error { return nil },
-			OnDeactivate: func(context.Context, Identity, any) {
+			OnDeactivate: func(context.Context, Identity, DeactivationReason, any) {
 				hookCalled <- struct{}{}
 			},
 		}); err != nil {
@@ -389,7 +390,7 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 		// mailbox open so Kill can mark the instance before the waiter wakes.
 		rt.mu.Lock()
 		act := rt.activations[id]
-		if !beginDeactivation(act) {
+		if !beginDeactivation(act, Idle) {
 			rt.mu.Unlock()
 			t.Fatal("activation did not enter deactivating state")
 		}
@@ -404,6 +405,69 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 			t.Fatal("OnDeactivate ran after Kill marked the pending deactivation")
 		default:
 		}
+	})
+}
+
+// TestRuntime_DeactivationReasonIsNotRewritten covers the fixed-reason
+// contract at the transition level: the reason is written once when the
+// activation leaves active, and a later graceful stop that finds the
+// activation already deactivating leaves it unchanged.
+func TestRuntime_DeactivationReasonIsNotRewritten(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(0, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		rt := New(Config{
+			Clock:            fakeClock,
+			MailboxCapacity:  1,
+			IdleTimeout:      time.Second,
+			EvictionInterval: time.Second,
+		})
+		releaseHook := make(chan struct{})
+		var releaseOnce sync.Once
+		release := func() {
+			releaseOnce.Do(func() { close(releaseHook) })
+		}
+		defer stopEngine(rt)
+		defer release()
+		if err := rt.Register("account", Registration{
+			Factory:  func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Dispatch: func(context.Context, any, string, any, any) error { return nil },
+			OnDeactivate: func(context.Context, Identity, DeactivationReason, any) {
+				<-releaseHook
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		id := Identity{Type: "account", Key: "alice"}
+		if err := rt.Invoke(context.Background(), id, "Value", nil, nil); err != nil {
+			t.Fatalf("initial Invoke: %v", err)
+		}
+
+		// The eviction tick starts an idle deactivation whose hook is blocked
+		// in flight.
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+		rt.mu.Lock()
+		act := rt.activations[id]
+		reasonBefore := act.reason
+		rt.mu.Unlock()
+		if reasonBefore != Idle {
+			t.Fatalf("reason after idle eviction = %v, want Idle", reasonBefore)
+		}
+
+		rt.BeginClose()
+		synctest.Wait()
+		rt.mu.Lock()
+		reasonAfter := rt.activations[id].reason
+		rt.mu.Unlock()
+		if reasonAfter != Idle {
+			t.Fatalf("reason after BeginClose = %v, want Idle (not rewritten)", reasonAfter)
+		}
+
+		release()
+		synctest.Wait()
+		<-rt.Done()
 	})
 }
 
@@ -436,7 +500,7 @@ func TestRuntime_KillEscalationSkipsPendingDeactivationHook(t *testing.T) {
 				<-release
 				return nil
 			},
-			OnDeactivate: func(context.Context, Identity, any) {
+			OnDeactivate: func(context.Context, Identity, DeactivationReason, any) {
 				hookCalled <- struct{}{}
 			},
 		}); err != nil {
@@ -706,7 +770,7 @@ func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
 
 		rt.mu.Lock()
 		old := rt.activations[id]
-		if !beginDeactivation(old) {
+		if !beginDeactivation(old, OwnershipLost) {
 			rt.mu.Unlock()
 			t.Fatal("activation did not enter deactivating state")
 		}
@@ -890,7 +954,7 @@ func TestRuntime_ActivationsExcludesNonActiveStates(t *testing.T) {
 				return &testEntity{}, nil
 			},
 			Dispatch: func(context.Context, any, string, any, any) error { return nil },
-			OnDeactivate: func(context.Context, Identity, any) {
+			OnDeactivate: func(context.Context, Identity, DeactivationReason, any) {
 				close(deactivating)
 				<-releaseDeactivate
 			},

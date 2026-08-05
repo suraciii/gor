@@ -118,8 +118,8 @@ func (d *device) OnActivate(context.Context) error {
 	return nil
 }
 
-func (d *device) OnDeactivate(context.Context) error {
-	log.Printf("%s deactivated", d.id.Key)
+func (d *device) OnDeactivate(_ context.Context, reason gor.DeactivationReason) error {
+	log.Printf("%s deactivated: %v", d.id.Key, reason)
 	d.emitLifecycle(LifecycleDeactivated)
 	return nil
 }
@@ -166,7 +166,7 @@ func (w *workshop) OnActivate(context.Context) error {
 	return nil
 }
 
-func (w *workshop) OnDeactivate(context.Context) error {
+func (w *workshop) OnDeactivate(_ context.Context, _ gor.DeactivationReason) error {
 	w.emitLifecycle(LifecycleDeactivated)
 	return nil
 }

@@ -202,6 +202,6 @@ running ── Close ──▶ closing ── 完成优雅停止 ──▶ stopp
 
 传输收尾已实装：优雅停止中 `closeTransport` 排在 `<-engine.Done()` 与 `waitDrained()` 之后，所以传输在已接纳的本地调用、入站回复和转发请求（转发请求持根 inflight 直到传输往返返回）都结束后才关闭。根层对转发请求的传输往返靠根 inflight（接纳计数）间接跟踪，未给转发请求单独的往返完成信号；当前两节点假网络已能验证「在途转发请求在其传输往返完成前传输不关闭」，真实传输的连接级打断语义由传输实现承担。
 
-当前 activation 不保存停用原因，`OnDeactivate` 只收到 `context.Background()`，错误出口传 `(Identity, method string, error)`。空闲、根关闭、所有权变化、panic 和丢弃都在停用汇合处丢失原因。上述停用原因、context 均尚未实装。
+停用原因已实装：`activation` 在 `beginDeactivation(reason)` 的同一原子转换中保存原因，`waitForDeactivation` 与 `skipOnDeactivate` 在同一临界区读取后交给钩子；原因只在该次转换中写入，后续事件（包括根运行时已进入 `closing` 后）不改写。四个入口的映射与上表一一对应：闲置驱逐传 `Idle`，`Deactivate`（视图驱逐或无 active owner）传 `OwnershipLost`，`beginStopDeactivationsLocked` 传 `RuntimeClosed`，panic 与 discard 的 `stopActivation` 传 `Faulted`。钩子每次获得新的 `context.Background()`（无 deadline、永不取消，不继承任何调用方 context）；`Kill()` 与判死继续跳过未开始的钩子，已开始的钩子不被取消也不被等待。钩子错误经结构化出口上报，来源为 `Deactivation{Reason: reason}`，见 [timers.md](timers.md)。
 
 `Kill()` 的存在理由只有模拟测试——真实进程崩溃不会先礼貌地调一个函数。它不是给用户用的关机接口，用户要停机用 `Close()`。

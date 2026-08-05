@@ -353,10 +353,16 @@ func TestRuntime_ClusterDeathSkipsOnDeactivate(t *testing.T) {
 			WithViewInterval(time.Hour),
 			WithTransport(network.add("node-a")),
 		)
-		first := mustNew(t, firstOptions...)
+		errorsSeen := make(chan BackgroundError, 1)
+		first := mustNew(t, append(firstOptions,
+			OnError(func(event BackgroundError) {
+				errorsSeen <- event
+			}),
+		)...)
 		deactivateCalls := new(atomic.Int32)
 		installLifecycleAccount(t, first, new(atomic.Int32), func(entity *lifecycleAccountEntity) {
 			entity.deactivateCalls = deactivateCalls
+			entity.deactivateErr = errors.New("deactivate failed")
 		})
 
 		id := Identity{Type: TypeName[lifecycleAccount](), Key: "self-death"}
@@ -380,6 +386,11 @@ func TestRuntime_ClusterDeathSkipsOnDeactivate(t *testing.T) {
 		// External death collapses to sudden stop, so OnDeactivate must not run.
 		if got := deactivateCalls.Load(); got != 0 {
 			t.Fatalf("OnDeactivate calls after cluster death = %d, want 0 (sudden stop)", got)
+		}
+		select {
+		case got := <-errorsSeen:
+			t.Fatalf("OnError received an event after cluster death: %#v", got)
+		default:
 		}
 		first.Close()
 	})
