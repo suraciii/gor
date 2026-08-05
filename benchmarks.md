@@ -21,8 +21,8 @@
 
 ## 复现命令
 
-下面命令不指定 `-benchtime`，因此使用 Go benchmark 的默认值；运行前应确保当前目录或 `GOR_BENCH_DIR` 位于真盘上。
-
 ```sh
-GOR_BENCH_DIR="$PWD" go test . -run '^$' -bench . -count=1
+make bench
 ```
+
+不指定 `-benchtime`，用 Go benchmark 的默认值。工作区在真盘上就直接跑；在 tmpfs 上（比如仓库放在 `/tmp` 下）用 `GOR_BENCH_DIR=/some/real/disk make bench` 指到真盘。
