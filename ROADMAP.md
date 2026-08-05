@@ -68,8 +68,8 @@
 
 - `gor.Now(b)` —— Binder 已经攥着注入的 `Clock`，不交出去用户就会写 `time.Now()`。
 - `gor.Ref[T](b, key)` —— 实体调另一个实体不该要求工厂捕获运行时对象。
-- `OnError` —— 定时投递失败现在被无声丢掉，一整类故障对用户不可见。
-- `OnActivate` / `OnDeactivate` —— 文档和运行时的状态机图上都画着，代码里没有。示例想在驱逐发生时说句话都做不到。
+- `OnError` —— 定时投递失败曾被无声丢掉，现已通过统一错误出口对用户可见。
+- `OnActivate` / `OnDeactivate` —— 生命周期钩子曾经缺失，现已作为可选接口实装；示例可以在激活和驱逐时收到通知。
 
 前两条见 [design/persistence.md](design/persistence.md)，第三条见 [design/timers.md](design/timers.md)，第四条见 [design/runtime.md](design/runtime.md)。
 
@@ -109,9 +109,9 @@
 
 把 6a 的路由决策和 6t 的传输接起来 + 假网络（延迟、丢包、分区）。信封与转发语义见 [design/cluster.md](design/cluster.md) 的「转发」，服务端怎么从字节还原出类型见 [design/codegen.md](design/codegen.md)。
 
-**已实装。** 不在本节点的实体调用会经传输层转发给当前拥有它的节点，和本地调用复用同一条调用路径；假网络可确定性模拟延迟、丢包、分区及恢复。探测与死亡投票仍未实装，当前节点失效仍按过期心跳粗略判断。
+**已实装。** 不在本节点的实体调用会经传输层转发给当前拥有它的节点，和本地调用复用同一条调用路径；假网络当前可确定性模拟分区、丢弃及恢复。延迟和重排注入尚未实装。探测与死亡投票仍未实装，当前节点失效仍按过期心跳粗略判断。
 
-**这一步会改生成物。** `Invoke` 的参数从 `[]any` 变成 `any`，每个方法多一个请求结构体，每个类型多一个 `newAccountCall` 这样的构造函数。跟第 3 步接管 `dispatch` 一样是计划内的破坏性改动。
+**这一步已改动生成物。** `Invoke` 的参数已从 `[]any` 变成 `any`，每个方法有一个请求结构体，每个类型有一个 `newAccountCall` 这样的构造函数。跟第 3 步接管 `dispatch` 一样，这是计划内的破坏性改动。
 
 **验收**：DST 场景覆盖网络分区与分区恢复；分区期间双激活产生的并发写被 ETag 挡住而不是静默覆盖；分区恢复后视图重新收敛；转发调用与本地调用走同一个 `Invoke`，不是第二条执行路径。
 
@@ -129,7 +129,7 @@
 
 - 文档英文化。**放在最后**——文档还在改，早翻一遍等于翻两遍。
 - 公开 API doc comment。第 6c 步完成、公开 API 定型为发布候选后补齐；`v0.1.0` 前必须符合 [design/api-documentation.md](design/api-documentation.md)。
-- ~~一个真实的示例应用，并在第 5.5 步后用新签名复跑~~ **已完成**，见 [examples/shadow/](examples/shadow/)，设计见 [docs/example.md](docs/example.md)。它的产出是 [FINDINGS.md](FINDINGS.md)——六条 API 摩擦，其中四条变成了第 5.5 步，一条（跨实体事务）变成了 README 里明说的非目标，一条（`State[T].Get()` 的共享值语义）变成了文档补充。
+- ~~一个真实的示例应用，并在第 5.5 步后用新签名复跑~~ **已完成**，见 [examples/shadow/](examples/shadow/)，设计见 [docs/example.md](docs/example.md)。它的产出是 [FINDINGS.md](FINDINGS.md)——九条 API 摩擦；前六条分别进入第 5.5 步、README 的非目标或文档补充，后三条记录了当前仍存在的使用摩擦。
 - ~~性能基线数字与跨节点转发基线~~ **已完成**，数字见 [benchmarks.md](benchmarks.md)，跑法是 `make bench`。测什么、不测什么、条件怎么写见 [design/benchmarks.md](design/benchmarks.md)。
 - ~~可观测性~~ **已完成**，见 [design/observability.md](design/observability.md)：运行时提供本节点激活快照和每次调用的完成事件；不做聚合、导出或告警。
 - 版本与发布。使用者能依赖什么见 [docs/compatibility.md](docs/compatibility.md)；版本号、v1 门槛和实际发布清单见 [design/release.md](design/release.md)。
@@ -137,6 +137,8 @@
 ## 风险
 
 只有第 6 步带真正的分布式风险，而它里面**没有共识算法**——Orleans 的 membership 把线性一致性外包给一张支持 CAS 的表，`gor` 同样如此。第 1 到 5 步不含任何分布式不变量，风险是普通工程风险。
+
+- **DST 覆盖风险。** 当前假网络可确定性模拟分区、丢弃和恢复，但不支持延迟或消息重排注入；现有 DST 因此只能覆盖粗粒度网络故障，不能覆盖消息时序变化。
 
 真正的风险不在技术上：
 
