@@ -51,7 +51,7 @@ const (
 
 This is the complete public set. A value may join the set only if it forces the app to make a different decision; a reason must not be added just because the implementation gained a branch. Panic and discard both mean the current instance is no longer trustworthy; migration and no-owner both mean the current node loses ownership — hence one value each.
 
-The reason is written in the same atomic transition where `beginDeactivation(reason)` moves the activation from `active` to `deactivating`. Later calls must not overwrite it once the activation is already deactivating. If the root runtime has entered `closing`, one activation may have already started deactivating for `Idle`; its reason stays `Idle`. A deactivation reason describes why an activation first leaves; the root state machine describes whether the whole runtime admits calls, how it waits, and with which stop error it rejects calls. These are two concepts and must not share one enum.
+The reason is written in the same atomic transition where `beginDeactivation(reason)` moves the activation from `active` to `deactivating`. Later events must not overwrite it once the activation is already deactivating. If the root runtime has entered `closing`, one activation may have already started deactivating for `Idle`; its reason stays `Idle`. A deactivation reason describes why an activation first leaves; the root state machine describes whether the whole runtime admits calls, how it waits, and with which stop error it rejects calls. These are two concepts and must not share one enum.
 
 **Returning an error changes nothing.** Deactivation cannot be rejected, and the state is in the store anyway. The error has no caller; like scheduled delivery failures, it goes to the runtime's error sink (see [timers.md](timers.md)), with no retry. The sink's source carries `Deactivation{Reason: reason}` instead of a fabricated method name.
 
@@ -190,7 +190,7 @@ The root runtime's waiting is expressed only with channels: admitted calls reach
 
 ### Death declared by the cluster
 
-The cluster node must report why it ended; it must not just close a reasonless `Done` channel: an active `Close` also writes the node's membership row as `dead`, which is not the same as the root runtime being declared dead by others. When the root runtime, still in `running`, receives an external declaration of death, it calls `becomeDead`: first closes admission and the public stop signal, then concludes under abrupt stop. A root runtime already in `closing` or `killing` keeps its state.
+The cluster node must report why it ended; it must not just close a bare `Done` channel that carries no reason: an active `Close` also writes the node's membership row as `dead`, which is not the same as the root runtime being declared dead by others. When the root runtime, still in `running`, receives an external declaration of death, it calls `becomeDead`: first closes admission and the public stop signal, then concludes under abrupt stop. A root runtime already in `closing` or `killing` keeps its state.
 
 Thus the inner execution runtime can still drain while `closing`, but it is no longer an externally reachable "stop signal closed, yet still admitting calls" window. That window is now a state with a name, admission rules, and completion conditions — not a gap left behind by goroutine execution order.
 

@@ -190,4 +190,4 @@ Batched delayed persistence is rejected: it introduces a window where memory has
 schedule(entity_type, entity_key, name, method, due_at, interval, etag)
 ```
 
-This table does not go through the `Store` interface — scanning due rows, CAS preemption, and row deletion do not fit into "read and write one state per Identity". It has its own interface; details in [timers.md](timers.md).
+This table does not go through the `Store` interface — scanning due rows, CAS claiming, and row deletion do not fit into "read and write one state per Identity". It has its own interface; details in [timers.md](timers.md).
