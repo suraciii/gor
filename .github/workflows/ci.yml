@@ -7,7 +7,7 @@ on:
   pull_request:
 
 jobs:
-  ci:
+  test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -29,3 +29,14 @@ jobs:
       - name: Run govulncheck
         if: matrix.go-version == 'stable'
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+  ci:
+    if: ${{ always() }}
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify matrix result
+        run: |
+          echo "matrix result: ${{ needs.test.result }}"
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            exit 1
+          fi
