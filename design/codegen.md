@@ -104,17 +104,19 @@ acct := gor.Ref[Account](rt, "alice")     // 代理从登记表里取，返回�
 
 **否决了 `init()` 自动登记。** 它能省掉 `Install(rt)` 这一行，代价是用户必须记得写一个空导入，忘了就是运行时才发现的失败，而且登记表变成进程级全局——第 4 步的模拟测试要在一个进程里跑多个节点。登记表挂在 `rt` 上，`Install` 显式调用，两个问题一起没有。
 
-生成器不硬编码类型名字符串。它产出的是 `gor.InstallType[Account](rt, dispatch, newProxy, newCall)` 这样的泛型调用，名字由 `gor` 自己按跟 `Register` / `Ref` 同一套规则算——三处用同一个函数，就不存在算不到一起的可能。
+生成器不硬编码类型名字符串。它产出的是 `gor.InstallType[Account](rt, dispatchAccount, newAccountProxy, newAccountCall)` 这样的泛型调用，名字由 `gor` 自己按跟 `Register` / `Ref` 同一套规则算——三处用同一个函数，就不存在算不到一起的可能。
 
 ## 服务端怎么从字节还原类型
 
 转发来的调用只有方法名和一段 JSON（信封见 [cluster.md](cluster.md)）。`gor` 不知道 `"Deposit"` 的参数该解成什么，只有生成的代码知道。所以每个类型多产出一个函数：
 
 ```go
-func newCall(method string) (args any, reply any)
+func newAccountCall(method string) (args any, reply any)
 ```
 
 它按方法名造一对空壳，`"Deposit"` 给出 `&accountDepositRequest{}` 和 `&accountDepositReply{}`。认不出的方法名两个都给 nil——版本不一致的节点之间这是真会发生的事。
+
+**名字带类型，跟 `dispatchAccount`、`newAccountProxy` 一样。** 一个包里可以有好几个实体接口，不带类型名的 `newCall` 第二个就编译不过。生成物里凡是每类型一份的东西，名字都带类型，这条没有例外。
 
 接下来一路都是已有的东西：`json.Unmarshal` 填进 args，交给**同一个 `Invoke`**，回来 `json.Marshal(reply)`。转发进来的调用和本地代理发起的调用从这一步起走同一条路，串行、激活、分发都不另开一份。
 
