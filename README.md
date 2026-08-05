@@ -1,67 +1,63 @@
 # gor
 
-**Go 里的持久化有状态运行时。** 单二进制、库形态、可嵌入，从第一天就为确定性模拟测试而设计。
+**A persistent, stateful runtime for Go.** A single binary, library-shaped, embeddable, designed for deterministic simulation testing from day one.
 
-> **状态：单进程功能已实装，可以使用。多节点调用可路由并转发到拥有实体的节点，邻居失效由直接探测与死亡投票判定，错误跨节点携带稳定码。** 详细进度：[ROADMAP.md](ROADMAP.md)
+> **Status:** single-process features are implemented and usable. Multi-node calls can be routed and forwarded to the node that owns the entity; neighbor failure is decided by direct probing and death voting; errors carry stable codes across nodes. Detailed progress: [ROADMAP.md](ROADMAP.md)
 
-## 这是什么
+## What this is
 
-一个 Go 库，让你把「有身份、有状态、单线程执行、崩溃后能恢复」的对象作为编程单元。你写普通的 Go interface 和普通的 struct，`gor` 负责激活、串行化、持久化和定时唤醒；跨节点分布是正在分段实现的可选扩展。
+A Go library that makes objects with an identity, state, single-threaded execution, and crash recovery your programming unit. You write ordinary Go interfaces and ordinary structs; `gor` handles activation, call serialization, persistence, and scheduled wake-ups. Cross-node distribution is an optional extension being implemented in stages.
 
-思想来源是 Microsoft Orleans 的虚拟 actor 模型，但**这不是 Orleans 的移植**。取舍在 [adr 与 design 文档](design/README.md) 里逐条记录，最重要的三条：
+The idea comes from Microsoft Orleans' virtual actor model, but this is not a port of Orleans. The trade-offs are recorded one by one in the [ADR and design documents](design/README.md); the three most important:
 
-- 编程模型是**编译期类型化**的，不是 `any` 进 `any` 出——通过从 Go interface 生成代理实现（[design/codegen.md](design/codegen.md)）。
-- 单节点是**一等公民**，不是集群的退化模式。不需要 sidecar、不需要外部数据库，`import` 进去就能用。
-- 确定性模拟测试是**架构约束**而非事后补的测试手段（[design/testing.md](design/testing.md)）。这是本项目相对同类实现的主要差异点。
+- The programming model is typed at compile time, not `any` in, `any` out — proxies are generated from Go interfaces ([design/codegen.md](design/codegen.md)).
+- Single-node is a first-class citizen, not a degenerate mode of clustering. No sidecar, no external database — `import` it and it works.
+- Deterministic simulation testing is an architectural constraint, not a testing technique retrofitted afterwards ([design/testing.md](design/testing.md)). This is the main difference between this project and comparable implementations.
 
-## 为什么存在
+## Why it exists
 
-Go 生态在这个位置有个空缺。把「有状态、崩溃透明、可嵌入」三个条件放在一起看：
+The Go ecosystem has a gap right in this spot. Put the three conditions — stateful, crash-transparent, embeddable — together:
 
-| | 语言 | 形态 | 单节点可用 |
+| | Language | Form | Usable single-node |
 |---|---|---|---|
-| Temporal | Go | 独立 server + worker | 需要 server 与数据库 |
-| Restate / Rivet | Rust | 单二进制 server | 是，但不是 Go 库 |
-| Dapr | Go | sidecar 进程 | 多一个部署单元 |
-| goakt | Go | 库 | 是，但 API 是 `any`，且维护集中在单人 |
+| Temporal | Go | separate server + workers | needs a server and a database |
+| Restate / Rivet | Rust | single-binary server | yes, but not a Go library |
+| Dapr | Go | sidecar process | adds one deployment unit |
+| goakt | Go | library | yes, but the API is `any`-based, and maintenance is concentrated on a single person |
 
-详细实测见 [research/landscape.md](research/landscape.md)。
+Measured details: [research/landscape.md](research/landscape.md) (in Chinese).
 
-## 不做什么
+## What it does not do
 
-`gor` 明确不追求这些，理由见 [docs/vision.md](docs/vision.md)：
+`gor` explicitly does not pursue these; the reasons are in [docs/vision.md](docs/vision.md):
 
-- 不做 Orleans 的 API 兼容层，也不追求概念一一对应。
-- 不做通用 actor 框架（不提供监督树、mailbox 策略、行为切换这些 Akka 式能力）。
-- 不做工作流 DSL 或编排图。
-- 不追求「无限水平扩展」。目标规模是单机到小集群。
-- 不做跨实体事务。一次调用改了两个实体，中间失败就是中间失败——`gor` 不给回滚，也不给 outbox。要原子性的，把它们做成同一个实体。
+- No Orleans API compatibility layer, and no one-to-one correspondence of concepts.
+- No general-purpose actor framework (no supervision trees, mailbox policies, or behavior switching — the Akka-style capabilities).
+- No workflow DSL or orchestration graphs.
+- No "unbounded horizontal scaling". The target scale is a single machine to a small cluster.
+- No cross-entity transactions. A call that touches two entities and fails halfway fails halfway — `gor` gives no rollback and no outbox. If you need atomicity, make them one entity.
 
-## 文档
+## Documentation
 
-- [docs/vision.md](docs/vision.md) —— 定位、原则、非目标。判断一个改动是否对齐方向时看这里。
-- [docs/programming-model.md](docs/programming-model.md) —— 用户视角的编程模型与 API 形状。
-- [design/](design/README.md) —— 架构、各子系统设计、技术取舍。
-- [research/](research/README.md) —— 支撑上述决策的实测证据（Orleans 源码实测、生态现状、Go 侧能力边界）。
-- [ROADMAP.md](ROADMAP.md) —— MVP 切分与验收标准。
-- [examples/shadow/](examples/shadow/) —— 一个跑得起来的设备影子服务。写它撞出来的 API 摩擦记在 [FINDINGS.md](FINDINGS.md)。
+- [docs/vision.md](docs/vision.md) — positioning, principles, non-goals. Read this when judging whether a change is aligned with the direction.
+- [docs/programming-model.md](docs/programming-model.md) — the user-facing programming model and API shape.
+- [design/](design/README.md) — architecture, subsystem designs, technical trade-offs.
+- [research/](research/README.md) (in Chinese) — the measured evidence behind those decisions (Orleans source-code measurements, ecosystem landscape, Go-side capability boundaries).
+- [ROADMAP.md](ROADMAP.md) — MVP slicing and acceptance criteria.
+- [examples/shadow/](examples/shadow/) — a runnable device-shadow service. The API friction it surfaced is recorded in [FINDINGS.md](FINDINGS.md).
 
-## 开发
+## Development
 
 ```bash
-make test        # 单元测试
-make sim         # 确定性模拟测试
-make gen         # 生成器端到端测试
-make net         # 真 TCP 的传输测试
+make test        # unit tests
+make sim         # deterministic simulation tests
+make gen         # generator end-to-end tests
+make net         # transport tests over real TCP
 make lint        # vet + staticcheck
 ```
 
-需要 Go 1.25 或更高——`testing/synctest` 在 1.25 才 GA，而它是测试策略的地基。
-
-## 语言
-
-当前文档为中文。若将来公开发布，英文化是发布前的必办项之一，见 ROADMAP。
+Requires Go 1.25 or later — `testing/synctest` only became GA in 1.25, and it is the foundation of the testing strategy.
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。
+MIT, see [LICENSE](LICENSE).

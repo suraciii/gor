@@ -1,23 +1,23 @@
 # Findings
 
-两轮把设备影子当作外部用户走过之后，留下的 API 摩擦：
+After two passes over the device shadow as an external user, the API friction that remains:
 
-1. **实体时间：已消除。** 实体从自己的绑定上下文读取运行时的时钟，示例用 `gor.Now(binder)` 写入上报时间。构造函数不再需要额外接收一个时钟，测试也能控制时间。
+1. **Entity time: resolved.** The entity reads the runtime clock from its binder; the example writes report timestamps with `gor.Now(binder)`. Constructors no longer need to receive a clock, and tests control time.
 
-2. **实体间引用：已消除。** 实体用自己的绑定上下文取得另一个实体的类型化引用，示例用 `gor.Ref[Workshop](binder, workshopID)` 通知车间，不需要让工厂闭包捕获运行时。
+2. **Entity-to-entity references: resolved.** An entity gets a typed reference to another entity from its own binder; the example notifies the workshop with `gor.Ref[Workshop](binder, workshopID)`. No factory closure capturing the runtime.
 
-3. **跨实体一致性：仍在，这是明确不做的能力。** 一次上报会依次写设备影子、重置掉线任务、通知车间；后一步失败时，前一步可能已经成功。`gor` 不提供跨实体事务、outbox、补偿或统一重试状态，业务必须接受这个一致性窗口，或者把必须原子完成的状态放进同一个实体。
+3. **Cross-entity consistency: still there, and deliberately not provided.** One report writes the device shadow, resets the offline timer, and notifies the workshop in sequence; when a later step fails, an earlier one may have succeeded. `gor` offers no cross-entity transactions, outbox, compensation, or unified retry state; the business must accept this consistency window, or put the state that must be atomic into one entity.
 
-4. **定时投递失败不可见：已消除，但只解决了可见性。** 定时方法失败现在会从运行时的 `OnError` 出口送出来，示例的两个启动入口都安装了这个出口，并用定时方法失败验证它确实能到达。运行时仍不自动重试；是否重试、退避和告警仍由应用决定。
+4. **Invisible scheduled-delivery failures: resolved, but only the visibility.** A failing scheduled method now comes out of the runtime's `OnError` sink; the example's two entry points both install it and verify, with a failing scheduled method, that it actually arrives. The runtime still does not retry; retrying, backing off, and alerting remain the application's call.
 
-5. **`State[T].Get()` 的共享值语义：API 语义仍在，文档已补清。** map 或 slice 从 `Get()` 拿到的是激活中持有的那一份，修改后仍必须调用 `Set()` 才会持久化；不调用 `Set()`，驱逐后会回到存储里的旧值。这是有意保留的语义，不是第 5.5 步要消除的摩擦。
+5. **`State[T].Get()` shared-value semantics: the API semantics stay; the docs now say it clearly.** A map or slice from `Get()` is the very instance the activation holds; after mutating it you must still call `Set()` for persistence; without `Set()`, eviction reverts to the old value in the store. This is deliberately kept semantics, not a friction step 5.5 removes.
 
-6. **生命周期钩子缺失：已消除。** 实体可以实现 `OnActivate` 和 `OnDeactivate`，示例的负载程序从 `OnDeactivate` 的 channel 信号等待真实闲置驱逐，再调用实体确认状态从 store 恢复；测试也用假时钟验证了自动驱逐、钩子调用和重新激活。钩子错误仍走统一的 `OnError` 出口，见下面的新摩擦。
+6. **Missing lifecycle hooks: resolved.** Entities can implement `OnActivate` and `OnDeactivate`; the example's load generator waits on an `OnDeactivate` channel signal for real idle eviction, then calls the entity to confirm state is restored from the store; tests also use fake clocks to verify automatic eviction, hook calls, and reactivation. Hook errors still go through the unified `OnError` sink — see the new friction below.
 
-本轮新发现：
+New findings this round:
 
-7. **实体必须自己保留 `Binder`。** `gor.Now` 和实体间的 `gor.Ref` 都需要 `Binder`，所以实体要把它存进字段，供后续方法和生命周期钩子使用。这是当前设计，不是实现 bug：它避免实体捕获运行时对象，但也是第一次使用者必须记住的一条规则。
+7. **Entities must keep their `Binder` themselves.** Both `gor.Now` and entity-to-entity `gor.Ref` need the `Binder`, so the entity stores it in a field for later methods and lifecycle hooks. This is the current design, not an implementation bug: it keeps entities from capturing runtime objects, but it is also the first rule a new user must remember.
 
-8. **`OnError` 的来源信息过粗：已消除。** 定时投递失败和 `OnDeactivate` 失败共用一个结构化出口：事件给出实体、原始错误和封闭的来源——定时投递带方法名，停用失败带停用原因。来源是封闭集合，包外不能新增，因此定时方法恰好叫 `"OnDeactivate"` 也不会与停用钩子混淆。它不携带 schedule 元数据或尝试次数，也不报告扫描和抢占失败；这些信息在抢占后可能过期，ETag 不是应用决策，运行时也没有重试模型。关闭途中被取消的那次定时投递同样不上报。
+8. **`OnError`'s source information too coarse: resolved.** Scheduled-delivery failures and `OnDeactivate` failures share one structured sink: the event gives the entity, the original error, and a closed source set — scheduled delivery carries the method name, deactivation failure carries the deactivation reason. The source set is closed; nothing outside the package can add to it, so a scheduled method that happens to be named `"OnDeactivate"` cannot be confused with the deactivation hook. It carries no schedule metadata or attempt counts, and reports no scan or claim failures; that information may be stale after claiming, the ETag is not an application decision, and the runtime has no retry model. The scheduled delivery canceled mid-shutdown is not reported either.
 
-9. **`OnDeactivate` 没有停用原因：已消除。** 停用区分闲置、当前节点失去责任、正常关闭和实例不可信四种应用可行动的情形，原因在第一次离开活跃状态的转换时固定，之后任何事件都不改写它。应用可据此选择回收本地资源、交还节点责任、进程退出前收尾或按故障告警；不会按内部实现分支逐一暴露原因。停用钩子拿到的工作上下文没有截止时间、不会被取消。突发停止不会启动尚未开始的收尾，正常停止等待已开始的收尾返回。
+9. **`OnDeactivate` had no deactivation reason: resolved.** Deactivation distinguishes four application-actionable cases — idle, current node lost ownership, normal shutdown, instance untrusted — and the reason is fixed at the first transition out of the active state; no later event rewrites it. Applications can then choose to reclaim local resources, hand back node ownership, teardown before process exit, or alert on fault; reasons are not exposed one by one per internal implementation branch. The deactivation hook's work context has no deadline and is never canceled. An abrupt stop does not start teardown that has not begun; a graceful stop waits for teardown that has begun to return.

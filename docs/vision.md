@@ -1,61 +1,61 @@
-# 愿景
+# Vision
 
-## 一句话
+## In one sentence
 
-让 Go 程序里的「有身份、有状态、崩溃后能接着跑」的对象，写起来跟写普通 struct 一样。
+Objects in Go programs that have an identity, hold state, and keep running after a crash should be as easy to write as ordinary structs.
 
-## 要解决的问题
+## The problem
 
-写有状态服务的人反复在解同一批问题：这个用户的数据现在谁负责？两个请求同时改怎么办？进程挂了内存里的东西怎么办？定时任务重启后还会不会触发？
+People writing stateful services solve the same batch of problems over and over: who owns this user's data right now? Two requests change it at once — what happens? The process dies — what about everything in memory? A scheduled task — will it still fire after a restart?
 
-现在的答案通常是：把状态推到数据库，每次请求重新读，加锁或加乐观并发，定时任务另起一套。代码里到处是「先读、再判断、再写、再处理冲突」。
+The usual answer: push state into a database, reread it on every request, add locks or optimistic concurrency, and run scheduled tasks as a separate system. The code is full of "read, check, write, handle the conflict".
 
-`gor` 给的答案是：把这些封在运行时里。你声明一个对象类型、给它一个 key，运行时保证同一个 key 上的调用一个接一个执行，保证状态在调用之间还在，保证进程重启后状态还在。你写方法体，不写锁。
+`gor`'s answer: seal all of that inside the runtime. You declare an object type and give it a key; the runtime guarantees calls on the same key execute one after another, state survives between calls, and state survives process restarts. You write method bodies, not locks.
 
-## 三条原则
+## Three principles
 
-### 一、单机能用才算能用
+### 1. Usable single-node, or not usable
 
-绝大多数需要有状态对象的系统，从来不会长到需要几十台机器。但现有方案都要求你先付分布式的代价：装一个 server、配一个数据库、跑一个 sidecar。
+Most systems that need stateful objects never grow to dozens of machines. But the existing options all make you pay the distributed price first: install a server, configure a database, run a sidecar.
 
-`gor` 反过来：`import` 就能用，状态落在嵌入式存储里，一个二进制就是完整的系统。集群是可选的扩展，不是入场门票。
+`gor` is the reverse: `import` it and it works, state lands in an embedded store, and one binary is a complete system. Clustering is an optional extension, not the price of admission.
 
-### 二、类型是给人看的，不是给运行时看的
+### 2. Types are for people, not for the runtime
 
-同类的 Go 实现普遍是 `Ask(target, message any) (any, error)`。这把编译器能查的错误全推到运行时：传错消息类型、忘了处理某个 case、改了字段名——全都要等跑起来才知道。
+Comparable Go implementations are typically `Ask(target, message any) (any, error)`. That pushes every error the compiler could catch to runtime: wrong message type, a forgotten case, a renamed field — all of it only shows up when you run.
 
-`gor` 要求方法签名就是 Go interface，调用点的类型检查跟调本地方法完全一样。为此付出的代价是需要一个代码生成步骤，这个代价我们认了。
+`gor` requires method signatures to be Go interfaces, so type checking at the call site is exactly like calling a local method. The price is a code generation step, and we accept that price.
 
-### 三、正确性靠可复现的测试，不靠祈祷
+### 3. Correctness comes from reproducible tests, not hope
 
-分布式系统的 bug 集中在时序上：这个消息晚到了、这个节点在这一瞬间挂了、这两件事顺序颠倒了。用真实网络和真实时间去测，只能测到运气好时暴露的那部分。
+Distributed system bugs concentrate in timing: this message arrived late, this node died at that instant, these two events happened in the wrong order. Testing with real networks and real time only catches the part that happens to show itself when you are lucky.
 
-`gor` 从第一天就要求：所有 I/O 在接口后面，所有时间可注入，所有组件是显式状态机。这样一次失败能用一个种子精确复现。这个约束会持续影响每一处设计——它比任何单个功能都更决定这个项目值不值得信。
+`gor` has required from day one: all I/O behind interfaces, all time injectable, all components explicit state machines. That way one failure reproduces exactly from one seed. This constraint keeps shaping every design decision — it determines whether this project is worth trusting more than any single feature.
 
-## 不做什么
+## Non-goals
 
-- **不做 Orleans 兼容层。** 思想来源是 Orleans，但 Orleans 的 API 形状带着 .NET 的痕迹（`Task<T>`、`AsyncLocal`、版本容忍序列化），照搬到 Go 是负担。概念对不上就换名字。
-- **不做通用 actor 框架。** 监督树、mailbox 策略、行为切换、actor 层级——这些是 Akka 的地盘。`gor` 只做「按 key 串行执行的持久化对象」这一件事。
-- **不做工作流 DSL。** 不提供编排图、不提供 saga 语法。用户用普通 Go 控制流写业务。
-- **不追求无限扩展。** 目标规模是单机到小集群。超出这个规模的场景请用 Temporal。
+- **No Orleans compatibility layer.** The inspiration is Orleans, but its API shape carries .NET traces (`Task<T>`, `AsyncLocal`, version-tolerant serialization); carrying them into Go is a burden. When concepts do not match, use a different name.
+- **No general-purpose actor framework.** Supervision trees, mailbox policies, behavior switching, actor hierarchies — that is Akka's territory. `gor` does exactly one thing: persistent objects that execute serially by key.
+- **No workflow DSL.** No orchestration graphs, no saga syntax. Users write business logic in ordinary Go control flow.
+- **No unbounded scaling.** The target scale is a single machine to a small cluster. Beyond that, use Temporal.
 
-## 与相邻方案的关系
+## Relationship to adjacent approaches
 
-同一个问题域里，`gor` 的位置是「库」这一格：
+In the same problem space, `gor` occupies the "library" cell:
 
-- **Temporal** 是这个领域最成熟的产品，但它是一套要部署的系统（server + 数据库 + worker）。适合「工作流是业务核心」的团队。
-- **Restate / Rivet** 形态最接近理想（单二进制），但是 Rust 写的 server，Go 侧只是 SDK 客户端。
-- **Dapr** 有虚拟 actor，但它是 sidecar 模型，多一个部署单元和一跳网络。
-- **goakt** 是 Go 里最接近的库，但 API 是 `any` 进 `any` 出，也没有持久化状态的一等支持。
+- **Temporal** is the most mature product in this space, but it is a system to deploy (server + database + workers). It fits teams where workflows are the business core.
+- **Restate / Rivet** are closest in form to the ideal (single binary), but they are Rust servers; the Go side is only an SDK client.
+- **Dapr** has virtual actors, but it is a sidecar model — one more deployment unit and one more network hop.
+- **goakt** is the closest library in Go, but its API is `any` in, `any` out, and it has no first-class support for persistent state.
 
-实测数据见 [../research/landscape.md](../research/landscape.md)。
+Measured data: [../research/landscape.md](../research/landscape.md) (in Chinese).
 
-## 思想来源与分歧
+## Inspiration and divergence
 
-Orleans 的虚拟 actor 模型解决了一个真问题：不需要显式创建和销毁，用 key 引用就够了，运行时负责激活。这个模型值得继承。
+Orleans' virtual actor model solves a real problem: no explicit create or destroy — a key reference is enough, and the runtime handles activation. This model deserves to be carried over.
 
-但要诚实记录两件事：
+But two things deserve honest record:
 
-**Orleans 自己在往别处走。** Orleans 10 加了 journaling 与 durable jobs，创始人已经去了 Temporal 并且公开不再用 "actor" 这个词。整个市场共识从「虚拟 actor」漂移到了「持久化执行」。`gor` 的定位跟着这个共识走——卖点是「崩溃后接着跑」，不是「actor 模型」。
+**Orleans itself is moving elsewhere.** Orleans 10 added journaling and durable jobs; its founder has moved to Temporal and publicly stopped using the word "actor". The market consensus has drifted from "virtual actors" to "durable execution". `gor` follows that consensus — the selling point is "keeps running after a crash", not "actor model".
 
-**这个位置的项目死过。** Orbit 是 EA 做的 JVM 虚拟 actor 实现，Orleans 启发，1724 stars，用 Kotlin 重写过，2021 年停更。技术上没输给谁，是生态上没起来。这提醒我们：差异化定位比功能完备更重要。
+**Projects in this spot have died.** Orbit is EA's JVM virtual-actor implementation, inspired by Orleans: 1724 stars, rewritten in Kotlin once, abandoned in 2021. It lost to no one technically; it lost in the ecosystem. Reminder: differentiated positioning matters more than feature completeness.

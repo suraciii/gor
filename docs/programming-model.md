@@ -1,20 +1,20 @@
-# 编程模型
+# Programming model
 
-> 本文描述目标 API。实现进度见 [../ROADMAP.md](../ROADMAP.md)。
+> This document describes the target API. Implementation progress: [../ROADMAP.md](../ROADMAP.md).
 
-## 核心概念
+## Core concepts
 
-只有三个。
+Only three.
 
-**实体（Entity）** —— 有身份、有状态的对象。你写一个 Go struct 加一组方法。运行时保证同一个身份上的调用串行执行。
+**Entity** — an object with an identity and state. You write a Go struct plus a set of methods. The runtime guarantees calls on the same identity execute serially.
 
-**身份（Identity）** —— 类型 + key。`Account("alice")` 和 `Account("bob")` 是两个不同的实体，`Account("alice")` 永远指向同一个。不需要创建，也不需要销毁：第一次调用它就存在了，闲置够久了它就从内存里消失，状态留在存储里，下次调用再回来。
+**Identity** — type + key. `Account("alice")` and `Account("bob")` are two different entities; `Account("alice")` always refers to the same one. No creation, no destruction: it exists from the first call, disappears from memory after enough idleness, state stays in the store, and the next call brings it back.
 
-**调用（Call）** —— 通过接口调方法。调用方不知道也不关心目标在本进程还是在别的节点上。
+**Call** — calling a method through an interface. The caller does not know and does not care whether the target is in this process or on another node.
 
-## 声明一个实体
+## Declaring an entity
 
-先写接口：
+Write the interface first:
 
 ```go
 //gor:entity
@@ -24,15 +24,15 @@ type Account interface {
 }
 ```
 
-接口方法的第一个参数必须是 `context.Context`，最后一个返回值必须是 `error`。中间的参数和返回值随便写几个。不合规矩的方法在生成时报错，指出行号。
+The first parameter of an interface method must be `context.Context`; the last return value must be `error`. Parameters and return values in between are free-form. A method that does not comply is a generation-time error that names the line.
 
-### 生成的前置步骤
+### Generation prerequisite
 
-`//gor:entity` 标记表示这个接口要生成类型化调用。新建或修改带标记的接口后，构建前要显式运行生成；可以交给 `go generate`，也可以单独执行。命令、生成文件的位置和检查方式见 [../design/codegen.md](../design/codegen.md)。
+The `//gor:entity` marker says this interface gets typed calls generated for it. After creating or modifying a marked interface, run generation explicitly before building; `go generate` works, and so does running it directly. The command, where generated files land, and how to check them: [../design/codegen.md](../design/codegen.md).
 
-每个运行时启动时都要安装这次生成的结果，随后才能注册实体或取得实体引用。下面的启动示例给出了安装的位置。
+Every runtime must install the generated output at startup before entities can be registered or references obtained. The startup example below shows where installation happens.
 
-再写实现：
+Then write the implementation:
 
 ```go
 type account struct {
@@ -55,7 +55,7 @@ func (a *account) Balance(ctx context.Context) (int64, error) {
 }
 ```
 
-注册：
+Register:
 
 ```go
 gor.Register[Account](rt, func(b *gor.Binder) Account {
@@ -63,11 +63,11 @@ gor.Register[Account](rt, func(b *gor.Binder) Account {
 })
 ```
 
-`b` 是运行时递进来的，用来把状态格子接到存储上。除此之外工厂就是一个普通的构造函数。
+`b` is handed in by the runtime; it connects the state cells to the store. Apart from that, the factory is an ordinary constructor.
 
-方法体里没有锁，因为不需要——同一个 key 上不会有第二个调用同时在跑。
+No locks in method bodies, because none are needed — a second call on the same key is never running at the same time.
 
-## 实体知道自己是谁
+## The entity knows who it is
 
 ```go
 type account struct {
@@ -83,13 +83,13 @@ gor.Register[Account](rt, func(b *gor.Binder) Account {
 })
 ```
 
-要打日志、要把 key 当业务数据用（`Account("alice")` 里的 `alice` 就是用户名）、要调另一个实体并告诉它自己是谁，都需要这个。
+This is needed for logging, for using the key as business data (the `alice` in `Account("alice")` is a username), and for calling another entity and telling it who you are.
 
-**身份不是状态。** 它不进存储，不会因为实体被驱逐又重新激活而变，也不会因为写冲突而回滚。同一个身份在两个节点上同时激活时，两份激活的 `id` 也是同一个值。
+An identity is not state. It never enters the store, does not change when the entity is evicted and reactivated, and does not roll back on write conflicts. When the same identity is active on two nodes at once, both activations' `id` is the same value.
 
-## 实体读时间
+## The entity reads time
 
-`Binder` 只在激活时交给工厂一次。方法体里要用到它，就在工厂里把它留下来：
+The `Binder` is given to the factory once, at activation. If method bodies need it, keep it in the factory:
 
 ```go
 type device struct {
@@ -108,74 +108,74 @@ func (d *device) Report(ctx context.Context, value float64) error {
 }
 ```
 
-不要用 `time.Now()`。实体读到的时间必须来自运行时——测试要控制它，模拟测试里每个节点的时钟还可以带不同的偏移。这跟库自己的规矩是同一条。
+Do not use `time.Now()`. Time read by an entity must come from the runtime — tests need to control it, and in simulation each node's clock can carry a different offset. This is the same rule the library itself follows.
 
-## 实体调另一个实体
+## One entity calls another
 
-跟从外面调是同一个函数，换一个第一参数：
+The same function as calling from outside, with a different first argument:
 
 ```go
 gor.Ref[Workshop](d.b, workshopID).DeviceOnline(ctx, deviceID)
 ```
 
-外面拿运行时，里面拿 `Binder`。**实体不需要为了调别人去捕获运行时对象**——工厂的签名就是 `func(b *gor.Binder) T`，那一个参数够用。
+Outside, you hold the runtime; inside, the `Binder`. An entity does not capture a runtime object to call others — the factory signature is `func(b *gor.Binder) T`, and that one parameter is enough.
 
-跨实体调用是虚拟实体最常做的事。它得跟本地方法调用一样顺手，否则用户会把逻辑堆进一个巨大的实体里来躲开它。
+Cross-entity calls are the most common thing virtual entities do. They must be as easy as local method calls, or users will pile logic into one giant entity to avoid them.
 
-## 调用一个实体
+## Calling an entity
 
 ```go
 acct := gor.Ref[Account](rt, "alice")
 balance, err := acct.Deposit(ctx, 100)
 ```
 
-`acct` 的类型是 `Account`。写错参数类型、调不存在的方法，都是编译错误。这是与 `any`-based API 的关键区别，代价是需要跑一次代码生成，见 [../design/codegen.md](../design/codegen.md)。
+`acct` has type `Account`. A wrong argument type or a nonexistent method is a compile error. This is the key difference from `any`-based APIs; the price is running code generation once, see [../design/codegen.md](../design/codegen.md).
 
-### 集群调用与部署的限制
+### Cluster calls and deployment limits
 
-调用的写法不变，但集群里有三件事要知道：
+Call syntax does not change, but three things matter in a cluster:
 
-**可分支的错误必须有稳定错误码。** 已声明码在本地和跨节点时都能用 `errors.Is` 检查。未声明码跨节点后只剩可展示的文本，不能据文本、类型或字段分支。完整契约见 [errors.md](errors.md)。
+**Branchable errors must have stable error codes.** Declared codes are checkable with `errors.Is` both locally and across nodes. Undeclared codes leave only displayable text across nodes — no branching on text, type, or fields. Full contract: [errors.md](errors.md).
 
-**取消不跨节点。** 本地调用时 `ctx` 取消，方法体里的 `ctx` 也会取消。跨节点时调用方先拿到自己的 `ctx.Err()`，对面的方法继续使用自己的上下文并可能跑完。完整边界见 [errors.md](errors.md)。
+**Cancellation does not cross nodes.** In a local call, canceling `ctx` cancels the method body's `ctx` too. Across nodes, the caller gets its own `ctx.Err()` first, and the method on the other side keeps its own context and may run to completion. Full boundary: [errors.md](errors.md).
 
-参数和返回值跨节点时要过一遍 JSON，所以它们必须是 JSON 编得动的类型。本地调用不过这一遍——同一个方法本地跑得通、跨节点炸掉，来源通常就是这里。
+Arguments and return values go through JSON across nodes, so they must be JSON-encodable types. Local calls skip this pass — when the same method works locally and blows up cross-node, this is usually where it comes from.
 
-**同一集群不能靠不停机滚动升级来承载不兼容的改动。** 集群里的节点要使用彼此兼容的应用版本。方法签名或状态格式不兼容时，停机发布还是应用自己安排双写，由应用决定。
+**An incompatible change cannot ride on a rolling, no-downtime upgrade within one cluster.** Nodes in a cluster must run mutually compatible application versions. When method signatures or state formats are incompatible, the application decides between a release with downtime and arranging dual writes itself.
 
-## 调用的结局与顺序
+## Call outcomes and ordering
 
-同一个实体会排队处理调用。队列满时，新调用会直接因过载被拒绝，方法没有开始执行，状态不会因此改变。
+One entity processes calls in a queue. When the queue is full, new calls are rejected for overload outright: the method never starts, and state does not change.
 
-超时或取消只表示调用方不再等结果。方法可能已经开始，甚至已经改了状态；跨节点调用遇到发送后的网络错误也是这样，调用方不能从这个错误判断方法有没有执行。不要把这两类结局当成过载拒绝来重试。
+Timeout or cancellation only means the caller stopped waiting. The method may have started, may even have changed state; a cross-node call hitting a post-send network error is the same. Callers cannot tell from this error whether the method ran. Do not retry these two outcomes as if they were overload rejections.
 
-方法 panic 会让这次调用返回错误，当前实例随即被丢弃。已经排队但还没开始的调用也会以错误结束，不会交给新实例重跑。下一次调用会从持久状态重新建立实例。
+A method panic makes the call return an error and discards the current instance. Calls already queued but not started also end in error; they are not rerun on a fresh instance. The next call rebuilds the instance from persistent state.
 
-实体处理调用时不会接着处理第二个调用。A 调 B、B 又调回 A 这样的调用环会失败，不能靠等待解开。运行时不自动重试：是否可以重试、怎样避免重复业务动作，只能由调用方判断。
+While an entity handles one call, it does not start a second. Call cycles like A calling B and B calling A back fail; waiting does not resolve them. The runtime does not retry automatically: whether retrying is safe and how to avoid duplicate business actions is the caller's judgment.
 
-同一调用方在本地连续发给同一实体的调用，按发起顺序执行。跨节点不保证这个顺序；有先后依赖的操作要由业务数据表达依赖，不能依赖网络到达顺序。
+Calls from one caller to one entity, sent locally in sequence, execute in issue order. Cross-node, that order is not guaranteed; operations with ordering dependencies must express the dependency in business data, not rely on network arrival order.
 
-## 状态
+## State
 
-`gor.State[T]` 是状态的载体。`Get()` 读内存里的当前值，`Set()` 写并持久化。
+`gor.State[T]` carries state. `Get()` reads the current in-memory value; `Set()` writes and persists it.
 
-一个实体可以有多个格子，名字用来区分它们。它们一起存成一条记录，所以任何一个格子写入都会更新整个实体的版本。
+An entity can have several cells, distinguished by name. They are stored as one record, so any cell write updates the whole entity's version.
 
-**格子里放 map 或 slice 时，`Get()` 拿到的就是那一份，不是复制品。** 改完必须 `Set()` 回去才算数——只改不写，值在内存里变了，存储里没变，实体被驱逐再回来就退回旧值。要不要先复制一份再改是风格问题，落盘与否只看有没有 `Set()`。
+**When a cell holds a map or slice, `Get()` returns that very instance, not a copy.** Mutating it only counts after `Set()` — mutate without writing, and the value changes in memory but not in the store; after eviction and return, the entity reverts to the old value. Copy-before-mutate is a style choice; persistence depends only on `Set()`.
 
-每次 `Set()` 都会立即尝试持久化。成功后才成为当前持久值；失败时保留上一次确认的值，并丢弃当前实例。错误返回后不要再假定这个实例可继续使用，下一次调用会重新读回状态。
+Every `Set()` tries to persist immediately. Only success makes the value the current persisted value; on failure the last confirmed value is kept and the current instance is discarded. After an error, do not assume the instance is still usable; the next call reads state back.
 
-一个方法里的多次 `Set()` 不是一次事务。前面的写可能已经成功，后面的写仍可能失败；需要原子业务结果时，要由业务自己把相关数据组织成一次状态更新。
+Multiple `Set()` calls in one method are not a transaction. An earlier write may have succeeded while a later one fails; when the business result must be atomic, the business must organize the related data into one state update.
 
-状态必须能用 JSON 编码。运行时不替应用兼容状态结构的演进；字段增删或格式变更由应用负责读旧格式、写新格式。
+State must be JSON-encodable. The runtime does not carry applications through state-structure evolution; field additions, removals, or format changes are the application's job — read old formats, write new ones.
 
-**并发语义要说清楚**：在集群模式下，运行时**不保证**同一时刻全世界只有一个 `Account("alice")` 在跑。节点故障与网络分区期间存在双激活窗口。因此 `Set()` 带乐观并发检查，冲突时返回错误而不是静默覆盖。
+Concurrency semantics, stated plainly: in cluster mode, the runtime does not guarantee that only one `Account("alice")` runs in the whole world at any moment. A double-activation window exists during node failures and network partitions. So `Set()` carries an optimistic-concurrency check: on conflict it returns an error instead of silently overwriting.
 
-这不是实现偷懒——Orleans 的默认目录也是这个语义，而且官方文档就是这么写的（见 [../research/orleans-internals.md](../research/orleans-internals.md)）。单节点模式下不存在这个窗口。
+This is not implementation laziness — Orleans' default directory has the same semantics, and its official docs say so (see [../research/orleans-internals.md](../research/orleans-internals.md) (in Chinese)). In single-node mode this window does not exist.
 
-## 定时唤醒
+## Scheduled wake-up
 
-状态用 `gor.State[T]` 接到存储上，定时任务同样从 `b` 拿一个格子：
+State connects to the store via `gor.State[T]`; scheduled tasks take a cell from `b` the same way:
 
 ```go
 type account struct {
@@ -190,55 +190,55 @@ func (a *account) Open(ctx context.Context) error {
 func (a *account) ApplyInterest(ctx context.Context) error { ... }
 ```
 
-定时任务是持久的：进程崩溃后到期仍会触发。到期时对象不在内存里，就把它唤醒。
+Scheduled tasks are persistent: after a process crash, a task that has come due still fires. If the object is not in memory when the task comes due, it is woken up.
 
-到期打的是**方法名**，不是函数值——崩溃之后没人能把一个闭包恢复回来，能存下来的只有名字。被打的方法只收 `ctx`、只回 `error`。
+What comes due is a method name, not a function value — after a crash nobody can restore a closure; only the name can be stored. The invoked method takes only `ctx` and returns only `error`.
 
-它不是 `time.AfterFunc`：别指望毫秒级精度，也别指望停机期间错过的次数会补回来（回来只打一次，然后接着往下走）。
+It is not `time.AfterFunc`: do not expect millisecond precision, and do not expect missed firings during downtime to be made up (it fires once on return, then moves on).
 
-同名的任务一个对象上只有一份，再 `Set` 一次是改期。
+One object has at most one task per name; setting the same name again reschedules it.
 
-任务可以是一次性的，也可以周期触发；取消后不再保留。一次性任务到期后只投递一次，然后消失。
+Tasks can be one-shot or periodic; after cancellation they are not kept. A one-shot task is delivered at most once when due, then disappears.
 
-定时唤醒承诺的是**至多一次投递**，不是方法恰好执行一次。系统会先确认这次到期已被取走，再投递方法；若在两者之间崩溃，这次触发可能漏掉。方法失败后也不会自动重试，错误仍走下面的错误出口。
+Scheduled wake-up promises at-most-once delivery, not exactly-once method execution. The system confirms that the due time was claimed, then delivers the method; a crash between the two can miss this firing. Failed methods are not retried automatically either; the error still goes to the error sink below.
 
-状态变更与设置、改期或取消定时任务不是一个原子业务操作。它们可能只有一边成功；需要一起成立的业务语义，要由应用处理这个窗口。
+A state change and setting, rescheduling, or canceling a scheduled task are not one atomic business operation. Either side can succeed alone; business semantics that need both must handle this window in the application.
 
-## 实体的开始与离开
+## How an entity starts and leaves
 
-实体开始服务后可以做初始化；初始化失败时，这次调用失败，下一次调用会重新建立实体。
+An entity can initialize after it starts serving; when initialization fails, that call fails and the next call rebuilds the entity.
 
-实体离开前也可以做最后的收尾。它会知道这次离开是因为闲置、当前节点不再负责、正常停止，还是实例已经不可信。应用可以据此区分“回收本地资源”“交还节点责任”“进程退出前收尾”和“按故障处理”。
+An entity can do final teardown before leaving. It learns whether this leave is due to idleness, the current node no longer owning it, a graceful stop, or the instance no longer being trusted. The application can then tell apart "reclaim local resources", "hand back node ownership", "teardown before process exit", and "handle as a fault".
 
-离开前的收尾不能阻止实体离开。正常停止会等待已经开始的收尾返回；收尾应尽快完成。它得到的是新的工作上下文，没有截止时间，也不会被取消。崩溃式停止或节点被判死时，尚未开始的收尾不会执行；已经开始的收尾不会被强制中止。
+Teardown cannot prevent the entity from leaving. A graceful stop waits for teardown that has already started to return; teardown should finish promptly. The hook gets a fresh work context with no deadline that is never canceled. Under an abrupt stop or when the node is declared dead, teardown that has not started does not run; teardown that has started is not force-aborted.
 
-## 没人在等的失败
+## Failures nobody is waiting for
 
-有两种应用动作失败时，没有调用方在等结果：已经取走的定时投递失败，或实体离开前的收尾失败。可以给运行时配置一个后台失败出口。
+Two application actions can fail with no caller waiting for the result: a claimed scheduled delivery fails, or teardown before the entity leaves fails. The runtime can be configured with a background error sink.
 
-每个事件都给出实体身份、原始错误和清楚的来源。定时投递会给出被投递的动作名；收尾失败会给出实体离开的原因。来源不是应用自己约定的文字，因此动作名碰巧与收尾同名也不会混淆。
+Each event gives the entity identity, the original error, and a clear source. A scheduled delivery gives the delivered action's name; a teardown failure gives the reason the entity left. Sources are not application-conventioned text, so an action name that happens to equal the teardown name cannot be confused with it.
 
-错误仍按 [错误](errors.md) 一节处理。跨节点后，只有声明过的稳定错误码可用于业务分支；错误文字用于展示和记录。
+Errors still follow the [Errors and cancellation](errors.md) section. Across nodes, only declared stable codes are usable for business branching; error text is for display and logging.
 
-这个出口不替应用重试、退避或告警。定时投递本来就是至多一次；应用若要重试，必须自行设计幂等性和状态。调度器扫描和抢占的失败也不从这里报告。
+The sink does not retry, back off, or alert for the application. Scheduled delivery is at-most-once by design; an application that retries must design idempotency and state itself. Poller scan and claim failures are not reported here either.
 
-升级现有应用时，把原先接收身份、动作名和错误的处理函数改为接收一个事件，再按来源读取动作名或离开原因。不要再用动作名猜来源。
+When migrating an existing application, change the handler that used to receive identity, action name, and error to receive an event, then read the action name or the leave reason from the source. Stop guessing the source from the action name.
 
-### 差距
+### Gap
 
-后台失败出口已实装：每个事件给出实体、原始错误和封闭的来源；定时投递带被投递的动作名，收尾失败带实体离开的原因，按来源的类型分支而不是比较文字，来源集合在运行时之外不能扩展。停用原因已实装：实体离开时会收到闲置、当前节点失去责任、正常停止或实例不可信四种原因之一，原因在离开开始时固定，不会被后续事件改写；离开时得到的工作上下文没有截止时间，也不会被取消。正常停止等待已开始的收尾返回；突发停止和节点被判死跳过尚未开始的收尾，也不等待已开始的收尾。调度器扫描和抢占的失败不从这个出口报告；关闭途中被取消的那次定时投递也不报告。本节描述的其余行为均已实装。
+The background error sink is implemented: each event gives the entity, the original error, and a closed set of sources; scheduled delivery carries the delivered action's name, teardown failure carries the entity's leave reason, sources branch by type instead of text comparison, and the source set cannot grow outside the runtime. Deactivation reasons are implemented: when an entity leaves, it receives one of four reasons — idle, current node lost ownership, graceful stop, or instance untrusted; the reason is fixed when the leave begins and later events never rewrite it; the work context given at leave has no deadline and is never canceled. A graceful stop waits for teardown that has started; abrupt stops and declared-dead nodes skip teardown that has not started and do not wait for teardown that has. Poller scan and claim failures are not reported from this sink; the delivery canceled mid-shutdown is not reported either. Everything else in this section is implemented.
 
-## 运行时观测
+## Runtime observability
 
-运行时交给应用两类事实。第一类是本节点当前激活的快照：哪些实体正在服务，以及每个实体有多少已排队、尚未开始的调用。它只观察本节点，不替集群汇总。
+The runtime hands the application two kinds of facts. First, a snapshot of this node's current activations: which entities are serving, and how many queued, not-yet-started calls each has. It observes only this node; it does not aggregate for the cluster.
 
-第二类是每次调用完成的事件。事件给出调用方看见的结果、耗时和目标的类型与方法。调用方取消时，事件照样记录取消这个结果；即使方法后来继续完成，也不会再有第二个事件。跨节点调用只在始发节点记录一次，不在接收节点重复记录。
+Second, an event per completed call. The event gives the result the caller saw, the duration, and the target's type and method. When the caller cancels, the event records the cancellation as the result; even if the method later runs to completion, there is no second event. A cross-node call is recorded once, at the initiating node; the receiving node does not record it again.
 
-完成事件的回调与调用方同步执行。回调不能阻塞或做 I/O，否则延迟的就是调用方自己的结果。运行时不做监控数据的聚合、导出或告警，这些由应用接到已有系统。
+Completion-event callbacks run synchronously with the caller. A callback must not block or do I/O — the delay would land on the caller's own result. The runtime does no aggregation, export, or alerting of monitoring data; applications wire it into existing systems.
 
-## 运行时启动
+## Runtime startup
 
-单节点，状态落在本地文件：
+Single node, state in a local file:
 
 ```go
 database, err := store.OpenSQLite("data/gor.db")
@@ -252,9 +252,9 @@ defer rt.Close()
 gorgen.Install(rt)
 ```
 
-`Install` 把生成的代理和分发函数交给运行时。少这一行，`Register` 和 `Ref` 会在启动时报错——不会拖到第一次调用。
+`Install` hands the generated proxies and dispatch functions to the runtime. Without this line, `Register` and `Ref` fail at startup — not at the first call.
 
-集群要明确交给运行时状态存储、共享成员表、本节点地址、这次启动的 generation 和传输：
+A cluster must explicitly hand the runtime the state store, the shared membership table, this node's address, this startup's generation, and the transport:
 
 ```go
 nodeTransport, err := transport.New(":7373")
@@ -274,37 +274,37 @@ if err != nil {
 defer rt.Close()
 ```
 
-`memberStore` 由所有节点共享；`generation` 在同一地址的每次重新加入时都要换新值。`Runtime.Close` 会关闭配置的传输。单节点到集群的差别是配置，不是业务代码。
+All nodes share `memberStore`; `generation` must be a fresh value on every rejoin at the same address. `Runtime.Close` closes the configured transport. The difference between single-node and cluster is configuration, not business code.
 
-## 运行时可能自己停下来
+## The runtime can stop itself
 
-集群里，一个节点可能被别人判死。判死之后它不再服务任何实体——继续用一个全世界都认为已经死了的身份提供服务，只会写出别人看不见的数据。
+In a cluster, a node can be declared dead by others. After that it serves no entity — serving with an identity the whole world believes dead only writes data nobody will ever see.
 
-所以运行时给一个信号：
+So the runtime provides a signal:
 
 ```go
-<-rt.Done()   // 关掉了，或者被判死了
+<-rt.Done()   // closed, or declared dead
 ```
 
-它关闭时，运行时同时停止接纳新实体调用。此后发起的调用，无论来自本进程还是另一节点，都会得到可靠识别的停止错误。正常停止和崩溃式停止使用同一种停止错误。节点被集群判死时，错误说明该节点已停止服务。错误码和检查方式见 [errors.md](errors.md)。
+When it closes, the runtime also stops admitting new entity calls. Calls issued after that — from this process or another node — get a reliably identifiable stop error. Graceful stops and abrupt stops use the same stop error. When the cluster declares the node dead, the error says the node stopped serving. Codes and how to check them: [errors.md](errors.md).
 
-停止信号不改写此前已经接纳的结果。正常停止让已经开始的方法做完，拒绝尚未开始的排队调用，并等待方法和停用结束。崩溃式停止和被判死会取消已经开始的方法并拒绝队列，但不能强制中止不响应取消的用户代码。已接纳调用仍可能在信号关闭后结束；信号关闭后才发起的调用不可能成功执行。
+The stop signal does not rewrite results admitted earlier. A graceful stop lets started methods finish, rejects queued calls that have not started, and waits for methods and deactivations to end. An abrupt stop and a death declaration cancel started methods and reject the queue, but cannot force-abort user code that ignores cancellation. An admitted call may still finish after the signal closes; a call issued after the signal closes cannot succeed.
 
-你的进程应退出，或者建一个新的运行时重新加入。不监听这个信号不会静默出错，但服务不应继续对外宣称可用。
+Your process should exit, or build a new runtime and rejoin. Ignoring the signal does not silently break anything, but the service should not keep advertising itself as available.
 
-### 差距
+### Gap
 
-这一节的接纳边界已实装：停止转换是接纳的线性化点，此后无论来自本进程还是另一节点的调用都得到对应的稳定停止错误（`gor.runtime_closed` 或 `gor.node_dead`）。「停止信号不再改写此前已接纳的结果」只对优雅停止成立；`Kill` 和判死会取消已接纳的调用，其结果变成取消错误。
+This section's admission boundary is implemented: the stop transition is the linearization point of admission; after it, calls from this process or another node get the corresponding stable stop error (`gor.runtime_closed` or `gor.node_dead`). "The stop signal does not rewrite previously admitted results" holds only for graceful stops; `Kill` and death declarations cancel admitted calls, and their results become cancellation errors.
 
-## 心智模型对照
+## Mental model comparison
 
-如果你用过其他系统：
+If you have used other systems:
 
-| 概念 | Orleans | Temporal | Restate | gor |
+| Concept | Orleans | Temporal | Restate | gor |
 |---|---|---|---|---|
-| 有身份的状态对象 | Grain | —— | Virtual Object | Entity |
-| 身份 | GrainId | WorkflowId | Object Key | Identity |
-| 持久状态 | `[PersistentState]` | Workflow 变量 | 内建 K/V | `State[T]` |
-| 定时唤醒 | Reminder | Timer | —— | Schedule |
+| Stateful object with an identity | Grain | — | Virtual Object | Entity |
+| Identity | GrainId | WorkflowId | Object Key | Identity |
+| Persistent state | `[PersistentState]` | Workflow variables | built-in K/V | `State[T]` |
+| Scheduled wake-up | Reminder | Timer | — | Schedule |
 
-对照表只帮你建立直觉。语义不完全等价，尤其是 Temporal 的 workflow 有确定性重放约束，`gor` 没有——`gor` 靠持久化状态而不是重放事件日志来恢复。
+The table only builds intuition. Semantics are not fully equivalent; notably, Temporal workflows have a deterministic-replay constraint that `gor` does not — `gor` recovers from persisted state, not by replaying an event log.

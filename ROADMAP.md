@@ -1,153 +1,153 @@
 # Roadmap
 
-**当前状态：第 1 到 5.5 步、第 6a 步（成员表与环）、第 6t 步（传输层）、第 6b 步（跨节点转发）与第 6c 步（探测与死亡投票）已实装。**
+**Current status:** steps 1 through 5.5, step 6a (membership table and ring), step 6t (transport), step 6b (cross-node forwarding), and step 6c (probing and death voting) are implemented.
 
-切分原则：每一步都能独立跑起来、独立验收、独立提供价值。不允许出现「要等第 6 步才能验证第 1 步」的依赖。
+Slicing principle: every step runs, is accepted, and delivers value on its own. Dependencies of the form "step 1 cannot be verified until step 6" are not allowed.
 
-## 步骤
+## Steps
 
-### 1. 单进程运行时
+### 1. Single-process runtime
 
-按 key 的 mailbox（一个 goroutine + 一个 channel）+ 激活缓存 + 空闲驱逐。没有网络，没有持久化，没有集群。
+A per-key mailbox (one goroutine + one channel), an activation cache, and idle eviction. No network, no persistence, no cluster.
 
-预估 1500 行左右。设计见 [design/runtime.md](design/runtime.md)、[design/scheduling.md](design/scheduling.md)。
+Estimated around 1500 lines. Design: [design/runtime.md](design/runtime.md), [design/scheduling.md](design/scheduling.md).
 
-**注入式 `Clock` 属于这一步**，虽然 DST 骨架排在第 4 步。空闲驱逐要在不碰墙钟的前提下验收，这就已经要求时间是注入的了。第 4 步是补齐假网络与故障注入，不是从这里开始引入假时钟。
+The injectable `Clock` belongs to this step, even though the DST skeleton is step 4. Idle eviction must be accepted without touching the wall clock, and that already requires time to be injected. Step 4 completes the fake network and fault injection; it does not start introducing the fake clock here.
 
-方法分发这一步**手写**。`Register` 除了工厂还收一个分发函数，把方法名和参数还原成对实现类型的直接调用——正是 [design/codegen.md](design/codegen.md) 里生成器要产出的那个东西。第 3 步用生成物顶掉手写的，接缝不变。这一步不用反射做分发：反射版到第 3 步会被整个删掉，而手写版只是暂时由人来充当生成器。
+Method dispatch is handwritten in this step. Besides the factory, `Register` takes a dispatch function that turns method names and arguments back into direct calls on the implementation type — exactly what the generator in [design/codegen.md](design/codegen.md) will produce. Step 3 replaces the handwritten version with the generated one; the seam does not change. This step does not use reflection for dispatch: the reflection version would be deleted wholesale in step 3, while the handwritten version is just a human standing in for the generator.
 
-**验收**：同一 key 的并发调用严格串行；不同 key 并发执行；空闲超时后对象被驱逐且下次调用重新激活；全部用单元测试覆盖，不依赖墙钟。
+**Acceptance:** concurrent calls to the same key are strictly serialized; different keys run concurrently; after the idle timeout the object is evicted and the next call reactivates it; all covered by unit tests that do not depend on the wall clock.
 
-### 2. 持久化状态
+### 2. Persistent state
 
-对象状态读写 + 一张带 CAS 的表。存储后端走嵌入式（SQLite / bbolt / pebble 之一，选型见 [design/persistence.md](design/persistence.md)）。
+State read/write for objects, plus one table with CAS. The storage backend is embedded (one of SQLite / bbolt / pebble; the choice is in [design/persistence.md](design/persistence.md)).
 
-注册工厂的签名在这一步从 `func() T` 变成 `func(*gor.Binder) T`。第 1 步没有存储，不提前放一个空壳 `Binder` 进去。这是计划内的一次破坏性改动，不是疏漏。
+The registration factory signature changes from `func() T` to `func(*gor.Binder) T` in this step. Step 1 has no storage, so no placeholder `Binder` is added early. This is a planned breaking change, not an oversight.
 
-**验收**：进程重启后状态恢复；并发写冲突被 CAS 拒绝而不是静默覆盖。
+**Acceptance:** state is restored after a process restart; concurrent write conflicts are rejected by CAS instead of silently overwritten.
 
-### 3. 类型化代理代码生成
+### 3. Typed proxy code generation
 
-从用户写的 Go interface 生成代理实现，替掉 `any` 进 `any` 出。设计与先例见 [design/codegen.md](design/codegen.md)。
+Generate proxy implementations from user-written Go interfaces, replacing `any` in, `any` out. Design and precedent: [design/codegen.md](design/codegen.md).
 
-`gor.Register` 的签名在这一步从 `(rt, factory, dispatch)` 变成 `(rt, factory)`——第 1 步手写的分发函数由生成器接管。同时补上 `gor.Ref`。跟第 2 步的工厂签名一样，这是计划内的破坏性改动。
+The `gor.Register` signature changes from `(rt, factory, dispatch)` to `(rt, factory)` in this step — the generator takes over the handwritten dispatch function from step 1. `gor.Ref` is added at the same time. Like the step 2 factory signature, this is a planned breaking change.
 
-**验收**：用户代码里调用远程对象的方法签名与本地 interface 完全一致，错用参数类型是编译错误而不是运行时 panic。
+**Acceptance:** calling a remote object's method from user code uses exactly the local interface's signature; a wrong argument type is a compile error, not a runtime panic.
 
-### 4. 确定性模拟测试骨架
+### 4. Deterministic simulation test skeleton
 
-种子驱动的故障注入 + `testing/synctest` 假时钟 + porcupine 做线性一致性检查。设计见 [design/simulation.md](design/simulation.md)。
+Seed-driven fault injection, `testing/synctest` fake clocks, and porcupine for linearizability checking. Design: [design/simulation.md](design/simulation.md).
 
-**这一步必须排在集群之前。** DST 不能事后加装——它要求所有 I/O 在接口后面、所有组件是显式状态机、没有任何地方直接读墙钟。等第 6 步写完再想补，等于重写第 6 步。理由见 [design/testing.md](design/testing.md)。
+This step must come before the cluster. DST cannot be retrofitted — it requires all I/O behind interfaces, all components as explicit state machines, and no direct wall-clock reads anywhere. Adding it after step 6 would mean rewriting step 6. Reasons: [design/testing.md](design/testing.md).
 
-假网络**不在这一步**。现在没有跨节点调用，没有东西可注入；第 6 步是往这一步搭好的骨架上挂一个新故障源。骨架本身要在这里建完：种子、假存储的故障注入、节点崩溃与重启、事件日志、不变量断言。
+The fake network is not in this step. There are no cross-node calls yet, so there is nothing to inject; step 6 hangs a new fault source on the skeleton built here. The skeleton itself must be completed here: seeds, fault injection on the fake store, node crash and restart, event log, invariant assertions.
 
-节点崩溃要求 `runtime` 多一条不排空的停止路径。这是计划内的新增，不是破坏性改动。
+Node crashes require `runtime` to gain a stop path that does not drain. This is a planned addition, not a breaking change.
 
-**验收**：能用一个固定种子复现一串注入的存储故障与节点崩溃，重跑得到逐字节相同的决定序列；这些故障之下不变量不破；两个节点共用一个 store 造出的双激活，写冲突被 ETag 挡住而不是静默覆盖。
+**Acceptance:** a fixed seed reproduces a sequence of injected store faults and node crashes, and a rerun yields a byte-identical decision sequence; invariants hold under those faults; a double activation created by two nodes sharing one store is blocked by the ETag on write conflict instead of being silently overwritten.
 
-复现的是**注入的决定**，不是整个执行。故障会停用激活，之后连实体的值都取决于调度——见 [design/simulation.md](design/simulation.md)。
+What is reproduced is the injected decisions, not the whole execution. A fault deactivates the activation, and from then on even the entity's value depends on scheduling — see [design/simulation.md](design/simulation.md).
 
-### 5. 定时任务
+### 5. Scheduled tasks
 
-一张表 + 一个轮询器。设计见 [design/timers.md](design/timers.md)。
+One table plus one poller. Design: [design/timers.md](design/timers.md).
 
-**明确不重复 Orleans Reminders v1 的设计**——内存缓存 + 环形分区那套是 Orleans 自己在 v2（`Orleans.DurableJobs`）里换掉的东西。直接从表 + 轮询开始。
+Deliberately not repeating Orleans Reminders v1's design — the in-memory cache plus ring-partitioning scheme is what Orleans itself replaced in v2 (`Orleans.DurableJobs`). Start directly with a table plus a poller.
 
-定时任务的表不走 `store.Store`，是一个新接口。它同时是第 4 步骨架上的**新故障源**——这一步要把它挂上去，不能等到第 6 步。
+The scheduled-task table does not go through `store.Store`; it is a new interface. It is also a new fault source on the step-4 skeleton — it must be hooked up in this step, not deferred to step 6.
 
-**抢占用 CAS 这条现在就要做对。** 第 6 步两个节点的轮询器会同时扫到同一行，那时候再改，前面的测试全要重写。
+Claiming via CAS must be done right now. In step 6, two nodes' pollers can scan the same row at the same time; fixing it then would mean rewriting all the earlier tests.
 
-**验收**：进程崩溃后到期任务仍会触发；同一次到期只投递一次，且这条要作为模拟测试的不变量，在注入的抢占故障与节点崩溃下都不破。
+**Acceptance:** a task that has come due still fires after a process crash; the same due time is delivered at most once, and this must hold as a simulation-test invariant under injected claim faults and node crashes.
 
-### 5.5 示例反馈回来的 API 修补
+### 5.5 API fixes from the example
 
-**已实装。** 示例的工厂现在只收 `*gor.Binder`；负载程序不再叙述驱逐，它先断言本地目录空了再读回状态，驱逐关掉时这条断言会失败。
+Implemented. The example's factory now takes only `*gor.Binder`; the load generator no longer narrates eviction — it first asserts the local activation directory is empty, then reads state back, and that assertion fails when eviction is off.
 
-写第一个真实示例时撞出来的摩擦，都不大，但都在主路径上：
+The friction from writing the first real example was minor, but all of it sat on the main path:
 
-- `gor.Now(b)` —— Binder 已经攥着注入的 `Clock`，不交出去用户就会写 `time.Now()`。
-- `gor.Ref[T](b, key)` —— 实体调另一个实体不该要求工厂捕获运行时对象。
-- `OnError` —— 定时投递失败曾被无声丢掉，现已通过统一错误出口对用户可见。
-- `OnActivate` / `OnDeactivate` —— 生命周期钩子曾经缺失，现已作为可选接口实装；示例可以在激活和驱逐时收到通知。
+- `gor.Now(b)` — the Binder already holds the injected `Clock`; without it, users would write `time.Now()`.
+- `gor.Ref[T](b, key)` — an entity calling another entity should not require the factory to capture a runtime object.
+- `OnError` — scheduled delivery failures used to be dropped silently; they are now visible to users through the unified error sink.
+- `OnActivate` / `OnDeactivate` — the lifecycle hooks used to be missing; they are now implemented as optional interfaces, so the example can be notified on activation and eviction.
 
-前两条见 [design/persistence.md](design/persistence.md)，第三条见 [design/timers.md](design/timers.md)，第四条见 [design/runtime.md](design/runtime.md)。
+The first two are in [design/persistence.md](design/persistence.md), the third in [design/timers.md](design/timers.md), the fourth in [design/runtime.md](design/runtime.md).
 
-**排在第 6 步之前，因为它改的是公开 API。** API 改动越晚越贵，而且示例应用正等着用新签名把 README 写对。
+Placed before step 6 because it changes the public API. API changes get more expensive the later they come, and the example app is waiting on the new signatures to get the README right.
 
-### 6. 多节点
+### 6. Multiple nodes
 
-一致性哈希环 + 共享表 membership + 死亡投票。设计见 [design/cluster.md](design/cluster.md)。
+A consistent-hash ring, shared-table membership, and death voting. Design: [design/cluster.md](design/cluster.md).
 
-**这一步要在文档和 API 上都明说：目录是最终一致的，集群不稳期间存在双激活窗口，所以状态必须带 ETag。** Orleans 自己就是这个语义（见 [research/orleans-internals.md](research/orleans-internals.md)），不要假装能做得更强。
+This step must state plainly, in both docs and API: the directory is eventually consistent, a double-activation window exists while the cluster is unstable, and state must therefore carry an ETag. Orleans itself has this semantics (see [research/orleans-internals.md](research/orleans-internals.md) (in Chinese)); do not pretend to do better.
 
-太大，切成四段。切分点选在「要不要网络」上——分界是传输，然后是探测。
+Too big; sliced into four segments. The split points are chosen on "does it need the network" — the dividing line is transport, then probing.
 
-其中 6t 不依赖前面任何一段，可以跟 6a 并行做：它只跟操作系统的 socket 打交道，不认识实体、身份、成员表。
+6t depends on none of the earlier segments and can run in parallel with 6a: it only deals with operating-system sockets and knows nothing of entities, identities, or the membership table.
 
-#### 6a. 成员表与环
+#### 6a. Membership table and ring
 
-成员表 + 节点状态机（joining / active / dead）+ 视图轮询 + 哈希环 + 本地路由决策。**没有传输**：算出目标不是自己，就返回一个带着owner 地址的错误。
+A membership table, a node state machine (joining / active / dead), view polling, a hash ring, and local routing decisions. No transport: if the computed target is not this node, return an error carrying the owner's address.
 
-一张新表、一个新故障源，形状跟第 5 步的定时任务表一样——这是有意的，第 5 步刚把这条路走通。
+A new table and a new fault source, shaped like step 5's scheduled-task table — deliberately so; step 5 just blazed this trail.
 
-6a 的成员表与环阶段只定义成员状态与视图，判死证据由后续 6c 的探测投票补齐。
+6a's membership-table-and-ring stage only defines member states and the view; the evidence for declaring death is completed by 6c's probe voting.
 
-**已实装。** 判死的两条边界写进了 [design/cluster.md](design/cluster.md)：读表失败不算任何人死了，判死要等 CAS 落地才进视图。被判死的节点会卸掉全部激活并关掉 `Done()`。
+Implemented. The two boundaries of declaring death are written into [design/cluster.md](design/cluster.md): a failed table read does not make anyone dead, and a death declaration enters the view only after its CAS lands. A node declared dead drops all its activations and closes `Done()`.
 
-**验收**：节点加入后其他节点看得见它；节点崩溃后被判死并从环上摘掉；同一个 key 在视图收敛后只落一个节点；视图变化时不再属于自己的激活被卸掉。这些都要在模拟测试里，且在成员表故障注入下不破。
+**Acceptance:** after a node joins, other nodes can see it; after a crash it is declared dead and removed from the ring; after the view converges, the same key lands on exactly one node; when the view changes, activations the node no longer owns are dropped. All of this must live in the simulation tests and hold under membership-table fault injection.
 
-#### 6t. 传输层
+#### 6t. Transport
 
-一个自己写的薄传输层：长连接、多路复用、帧、懒拨号。设计见 [design/transport.md](design/transport.md)。
+A thin, self-written transport: long-lived connections, multiplexing, frames, lazy dialing. Design: [design/transport.md](design/transport.md).
 
-不认识实体、身份、成员表——它搬字节。因此不依赖 6a，可以并行做。**已实装。**
+It knows nothing of entities, identities, or the membership table — it moves bytes. So it does not depend on 6a and can proceed in parallel. Implemented.
 
-**验收**：乱序响应能对上号；超时后迟到的响应被丢掉而不是串给下一个请求；连接断开时在飞的请求全部以错误返回，没有 goroutine 泄漏；超长帧不会让对面按帧头分配内存。
+**Acceptance:** out-of-order responses match their requests; a response that arrives after a timeout is dropped, not handed to the next request; when a connection breaks, every in-flight request returns with an error and no goroutine leaks; an oversized frame does not make the peer allocate memory based on the frame header.
 
-#### 6b. 转发
+#### 6b. Forwarding
 
-把 6a 的路由决策和 6t 的传输接起来 + 假网络（延迟、丢包、分区）。信封与转发语义见 [design/cluster.md](design/cluster.md) 的「转发」，服务端怎么从字节还原出类型见 [design/codegen.md](design/codegen.md)。
+Wire 6a's routing decisions to 6t's transport, plus a fake network (delay, packet loss, partition). Envelope and forwarding semantics: the "Forwarding" section of [design/cluster.md](design/cluster.md); how the server side recovers types from bytes: [design/codegen.md](design/codegen.md).
 
-**已实装。** 不在本节点的实体调用会经传输层转发给当前拥有它的节点，和本地调用复用同一条调用路径；假网络当前可确定性模拟分区、丢弃及恢复。延迟和重排注入尚未实装；探测与死亡投票见 6c。
+Implemented. Calls to entities not on this node are forwarded through the transport to the node that currently owns them, sharing the same call path as local calls; the fake network currently simulates partitions, drops, and recovery deterministically. Delay and reorder injection are not implemented yet; probing and death voting are 6c.
 
-**这一步已改动生成物。** `Invoke` 的参数已从 `[]any` 变成 `any`，每个方法有一个请求结构体，每个类型有一个 `newAccountCall` 这样的构造函数。跟第 3 步接管 `dispatch` 一样，这是计划内的破坏性改动。
+This step already changed the generated artifacts. `Invoke`'s argument went from `[]any` to `any`; each method has one request struct, and each type has one constructor like `newAccountCall`. Like step 3 taking over `dispatch`, this is a planned breaking change.
 
-**验收**：DST 场景覆盖网络分区与分区恢复；分区期间双激活产生的并发写被 ETag 挡住而不是静默覆盖；分区恢复后视图重新收敛；转发调用与本地调用走同一个 `Invoke`，不是第二条执行路径。
+**Acceptance:** DST scenarios cover network partitions and partition recovery; concurrent writes from the double activation during a partition are blocked by the ETag instead of silently overwritten; the view reconverges after the partition heals; forwarded calls and local calls go through the same `Invoke`, not a second execution path.
 
-#### 6c. 探测与死亡投票
+#### 6c. Probing and death voting
 
-直接探测环上的邻居 + 带过期的死亡票 + 节点自我健康检查。
+Direct probing of ring neighbors, death votes with expiry, and a node's self health check.
 
-替掉 6a 里「只看 `iam_alive_at`」的粗判死。表里的 `suspect_votes` 列到这一步才有人写。设计已写完，见 [design/cluster.md](design/cluster.md)：单点探测环、`Prober` 接口、参数表、票的 CAS 合并与过期、`min(2, n-1)` 判死阈值、自体检失败就放弃投票权。信封的 `kind` 字段也在这一步引入。
+Replaces 6a's coarse death decision of only looking at `iam_alive_at`. The `suspect_votes` column in the table starts being written only in this step. The design is complete, in [design/cluster.md](design/cluster.md): a single-point probe ring, the `Prober` interface, the parameter table, CAS merging and expiry of votes, the `min(2, n-1)` threshold for declaring death, and giving up the voting right when the self-check fails. The envelope's `kind` field is also introduced in this step.
 
-**已实装。** 节点通过直接探测环判断邻居健康，使用带过期的邻居死亡票并以成员表 CAS 落地判死；自检失败的节点放弃投票权，陈旧心跳、读表失败和缺失心跳不再是判死证据。
+Implemented. Nodes judge neighbor health by directly probing the ring, using neighbor death votes with expiry and landing death declarations in the membership table via CAS; a node whose self-check fails gives up its voting right, and stale heartbeats, failed table reads, and missing heartbeats are no longer evidence of death.
 
-边界是分区两侧可能互相投死，甚至全体停止服务；恢复需要以新的 generation 重新加入成员表，不会自动复活旧行。
+The boundary: the two sides of a partition can vote each other dead, even to the point where every node stops serving; recovery requires rejoining the membership table with a new generation — old rows do not resurrect themselves.
 
-**验收**：一个被网络隔离但进程健康的节点会被投票判死；抖动留下的旧票过期后不会误杀健康节点。
+**Acceptance:** a node that is network-isolated but process-healthy is voted dead; old votes left behind by flapping do not wrongly kill a healthy node once they expire.
 
-## 发布前的必办项
+## Required before release
 
-不属于上述任何一步，但公开发布前必须完成：
+Not part of any step above, but must be completed before a public release:
 
-- 文档英文化。**放在最后**——文档还在改，早翻一遍等于翻两遍。
-- ~~公开 API doc comment。第 6c 步完成、公开 API 定型为发布候选后补齐；`v0.1.0` 前必须符合 [design/api-documentation.md](design/api-documentation.md)。~~ **已完成**。
-- ~~错误与取消契约。`v0.1.0` 前必须实现稳定错误码和跨节点取消边界。~~ **已完成**，规格见 [docs/errors.md](docs/errors.md) 和 [design/errors.md](design/errors.md)。稳定码是唯一的跨节点错误身份，取消边界按规格实装。规格此前有一处自相矛盾（合并错误本地匹配、跨节点不匹配），已裁定为「错误码按错误树唯一可达取值」并修齐实装。
-- ~~根运行时关闭契约。规格已完成，见 [design/runtime.md](design/runtime.md)、[design/cluster.md](design/cluster.md) 和 [docs/programming-model.md](docs/programming-model.md)；实装尚未开始。`v0.1.0` 前必须停止关闭窗口内对新调用的接纳。~~ **已完成**。根运行时的停止状态机与唯一接纳门已实装：四个转换函数、原子 `admit`/release，公开 `Invoke`/入站 handler/定时投递共用同一个门且在归属判断与转发之前；`closing→killing` 是升级不是 no-op；集群节点经 `DeclaredDead()` 显式报告结束原因；停止协调只用接收 channel。传输收尾晚于已接纳转发请求与入站回复。顺带修了判死节点误发空视图触发优雅卸载的真 bug。
-- ~~生命周期钩子的停用原因与后台失败出口。规格已完成，见 [design/runtime.md](design/runtime.md)、[design/timers.md](design/timers.md) 和 [docs/programming-model.md](docs/programming-model.md)；钩子本体已实装，停用原因（`DeactivationReason`）与结构化后台失败出口（`BackgroundError`）尚未实装，两者都伴随公开 API 破坏性变更。`v0.1.0` 前必须交出这两项。~~ **已完成**。`OnDeactivate` 接收停用原因（闲置、失去责任、正常关闭、实例不可信），原因在首次离开活跃状态的转换时固定，钩子获得无截止时间、永不取消的工作上下文；后台失败出口改为事件，来源是封闭集合——定时投递带方法名，停用钩子失败带停用原因，包外不能新增，也不再按方法名猜来源。轮询器扫描与抢占失败、关闭途中被取消的投递不进出口。两条公开 API 迁移（`OnDeactivate` 增参、`OnError` 改收事件）随本项一起交付。
-- ~~一个真实的示例应用，并在第 5.5 步后用新签名复跑~~ **已完成**，见 [examples/shadow/](examples/shadow/)，设计见 [docs/example.md](docs/example.md)。它的产出是 [FINDINGS.md](FINDINGS.md)——九条 API 摩擦；前六条分别进入第 5.5 步、README 的非目标或文档补充，后三条记录了当前仍存在的使用摩擦。
-- ~~性能基线数字与跨节点转发基线~~ **已完成**，数字见 [benchmarks.md](benchmarks.md)，跑法是 `make bench`。测什么、不测什么、条件怎么写见 [design/benchmarks.md](design/benchmarks.md)。
-- ~~可观测性~~ **已完成**，见 [design/observability.md](design/observability.md)：运行时提供本节点激活快照和每次调用的完成事件；不做聚合、导出或告警。
-- 版本与发布。使用者能依赖什么见 [docs/compatibility.md](docs/compatibility.md)；版本号、v1 门槛和实际发布清单见 [design/release.md](design/release.md)。
+- English documentation. Done last — the docs are still changing; translating early means translating twice.
+- ~~Public API doc comments. To be completed after step 6c, once the public API is finalized as a release candidate; must meet [design/api-documentation.md](design/api-documentation.md) before `v0.1.0`.~~ **Done.**
+- ~~Error and cancellation contract. Stable error codes and the cross-node cancellation boundary must be implemented before `v0.1.0`.~~ **Done.** Spec: [docs/errors.md](docs/errors.md) and [design/errors.md](design/errors.md). The stable code is the only cross-node identity of an error; the cancellation boundary is implemented per spec. The spec previously had one self-contradiction (merged errors matched locally but not across nodes); it was ruled that "the error code is the unique reachable value in the error tree", and the implementation was brought in line.
+- ~~Root runtime shutdown contract. The spec is complete, see [design/runtime.md](design/runtime.md), [design/cluster.md](design/cluster.md), and [docs/programming-model.md](docs/programming-model.md); implementation had not started. Before `v0.1.0`, new calls must stop being admitted during the shutdown window.~~ **Done.** The root runtime's stop state machine and single admission gate are implemented: four transition functions, atomic `admit`/release; the public `Invoke` / inbound handler / scheduled delivery share one gate that sits before the ownership decision and forwarding; `closing→killing` is an escalation, not a no-op; cluster nodes explicitly report their end reason via `DeclaredDead()`; stop coordination uses receive channels only. Transport teardown comes after admitted forwarded requests and inbound replies. Also fixed a real bug where a declared-dead node sent an empty view and triggered a graceful deactivation.
+- ~~Deactivation reasons and the background error sink for lifecycle hooks. The spec is complete, see [design/runtime.md](design/runtime.md), [design/timers.md](design/timers.md), and [docs/programming-model.md](docs/programming-model.md); the hooks themselves were implemented, but the deactivation reasons (`DeactivationReason`) and the structured background error sink (`BackgroundError`) were not — both are public API breaking changes. These two must be delivered before `v0.1.0`.~~ **Done.** `OnDeactivate` receives the deactivation reason (idle, ownership lost, normal shutdown, instance untrusted); the reason is fixed at the first transition out of the active state, and the hook gets a work context with no deadline that is never canceled; the background error sink now emits events whose sources are a closed set — scheduled delivery carries the method name, deactivation hook failure carries the deactivation reason, nothing outside the package can add sources, and sources are no longer guessed from method names. Poller scan and claim failures and deliveries canceled mid-shutdown do not enter the sink. Two public API migrations ship with this item (`OnDeactivate` gains a parameter, `OnError` takes an event).
+- ~~A real example application, rerun with the new signatures after step 5.5~~ **Done.** See [examples/shadow/](examples/shadow/); design: [docs/example.md](docs/example.md). Its output is [FINDINGS.md](FINDINGS.md) — nine API frictions; the first six went into step 5.5, the README's non-goals, or doc additions; the last three record frictions that still exist.
+- ~~Performance baseline numbers and the cross-node forwarding baseline~~ **Done.** Numbers: [benchmarks.md](benchmarks.md); run with `make bench`. What is measured, what is not, and how conditions are written: [design/benchmarks.md](design/benchmarks.md).
+- ~~Observability~~ **Done.** See [design/observability.md](design/observability.md): the runtime provides a snapshot of this node's activations and a completion event per call; no aggregation, export, or alerting.
+- Versioning and release. What users can rely on: [docs/compatibility.md](docs/compatibility.md); version numbers, the v1 bar, and the concrete release checklist: [design/release.md](design/release.md).
 
-## 风险
+## Risks
 
-只有第 6 步带真正的分布式风险，而它里面**没有共识算法**——Orleans 的 membership 把线性一致性外包给一张支持 CAS 的表，`gor` 同样如此。第 1 到 5 步不含任何分布式不变量，风险是普通工程风险。
+Only step 6 carries real distributed risk, and it contains no consensus algorithm — Orleans' membership outsources linearizability to a CAS-capable table, and so does `gor`. Steps 1 through 5 contain no distributed invariants; their risk is ordinary engineering risk.
 
-- **DST 覆盖风险。** 当前假网络可确定性模拟分区、丢弃和恢复，但不支持延迟或消息重排注入；现有 DST 因此只能覆盖粗粒度网络故障，不能覆盖消息时序变化。
+- **DST coverage risk.** The current fake network deterministically simulates partitions, drops, and recovery, but does not support delay or message-reorder injection; existing DST scenarios can therefore cover coarse-grained network faults but not changes in message timing.
 
-真正的风险不在技术上：
+The real risks are not technical:
 
-- **生态风险。** Orbit（EA 的 JVM 虚拟 actor 实现，Orleans 启发）拿到 1724 stars、用 Kotlin 重写过一轮，2021-06 后彻底停更。这个位置的项目死过。
-- **单人维护。** goakt 的处境说明了这条对可信度的杀伤力。
+- **Ecosystem risk.** Orbit (EA's JVM virtual-actor implementation, inspired by Orleans) reached 1724 stars and was rewritten in Kotlin once, then was completely abandoned after 2021-06. Projects in this spot have died.
+- **Single-person maintenance.** goakt's situation shows how much this hurts credibility.

@@ -1,19 +1,19 @@
-# docs —— 产品 spec
+# docs — product spec
 
-这一层描述 **`gor` 该满足什么**：用户需求、API 面、心智模型、责任边界。
+This layer describes what `gor` must satisfy: user needs, the API surface, the mental model, the boundaries of responsibility.
 
-用产品语言和领域语言写，面向使用者，假设读者不读源码。实现术语（goroutine 调度、代码生成机制、存储表结构）归 [`design/`](../design/README.md)。
+Written in product and domain language, for users, assuming the reader does not read the source. Implementation terms (goroutine scheduling, code generation mechanics, storage table structure) belong to [`design/`](../design/README.md).
 
-## 标注惯例
+## Annotation conventions
 
-`docs/` 描述的是目标状态，不是现状。实现进度见 [../ROADMAP.md](../ROADMAP.md)——不在每篇文档里重复标注 WIP。
+`docs/` describes the target state, not the current state. Implementation progress lives in [../ROADMAP.md](../ROADMAP.md) — WIP is not marked per document.
 
-当某篇文档与实现出现显著差距时，在文内单列「差距」小节说明现状。**正文是 spec，差距是脚注。**
+When a document and the implementation diverge significantly, the document gets a "Gap" section stating the current state. The body is the spec; the Gap is the footnote.
 
-## 篇目
+## Documents
 
-- [vision.md](vision.md) —— 定位、三条原则、非目标、与相邻方案的关系。
-- [programming-model.md](programming-model.md) —— 编程模型与 API 形状。
-- [errors.md](errors.md) —— 调用错误、稳定错误码、取消与跨节点边界。
-- [example.md](example.md) —— 设备影子示例把实体、状态、定时任务与跨实体调用放进同一条可运行的使用路径。
-- [compatibility.md](compatibility.md) —— v0 与 v1 的使用者兼容性承诺、升级边界与已知限制。
+- [vision.md](vision.md) — positioning, three principles, non-goals, relationship to adjacent approaches.
+- [programming-model.md](programming-model.md) — the programming model and API shape.
+- [errors.md](errors.md) — call errors, stable error codes, cancellation, and the cross-node boundary.
+- [example.md](example.md) — the device-shadow example puts entities, state, scheduled tasks, and cross-entity calls on one runnable usage path.
+- [compatibility.md](compatibility.md) — v0 and v1 compatibility promises to users, upgrade boundaries, and known limits.
