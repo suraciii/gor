@@ -14,5 +14,6 @@
 
 - [vision.md](vision.md) —— 定位、三条原则、非目标、与相邻方案的关系。
 - [programming-model.md](programming-model.md) —— 编程模型与 API 形状。
+- [errors.md](errors.md) —— 调用错误、稳定错误码、取消与跨节点边界。
 - [example.md](example.md) —— 设备影子示例把实体、状态、定时任务与跨实体调用放进同一条可运行的使用路径。
 - [compatibility.md](compatibility.md) —— v0 与 v1 的使用者兼容性承诺、升级边界与已知限制。
