@@ -295,6 +295,12 @@ func clusterRuntimeOptions(backend store.Store, members store.MemberStore, sourc
 		WithHeartbeatInterval(time.Hour),
 		WithViewInterval(time.Second),
 		WithDeadAfter(time.Hour),
+		WithProbeInterval(time.Second),
+		WithProbeTimeout(500 * time.Millisecond),
+		WithProbeFailures(3),
+		WithVoteTTL(6 * time.Second),
+		WithMaxTickGap(2 * time.Second),
+		WithMaxTableLatency(500 * time.Millisecond),
 		WithIdleTimeout(0),
 		WithEvictionInterval(0),
 	}
@@ -306,16 +312,16 @@ func clusterRuntimeOptions(backend store.Store, members store.MemberStore, sourc
 
 func findClusterMember(t *testing.T, backend store.MemberStore, nodeAddr, generation string) store.Member {
 	t.Helper()
-	members, err := backend.ListMembers(context.Background())
+	snapshot, err := backend.ListMembers(context.Background())
 	if err != nil {
 		t.Fatalf("ListMembers: %v", err)
 	}
-	for _, member := range members {
+	for _, member := range snapshot.Members {
 		if member.NodeAddr == nodeAddr && member.Generation == generation {
 			return member
 		}
 	}
-	t.Fatalf("member %s/%s not found in %#v", nodeAddr, generation, members)
+	t.Fatalf("member %s/%s not found in %#v", nodeAddr, generation, snapshot.Members)
 	return store.Member{}
 }
 
@@ -325,6 +331,6 @@ func (failingMemberStore) WriteMember(context.Context, store.Member) (store.ETag
 	return 0, errors.New("member store unavailable")
 }
 
-func (failingMemberStore) ListMembers(context.Context) ([]store.Member, error) {
-	return nil, errors.New("member store unavailable")
+func (failingMemberStore) ListMembers(context.Context) (store.MemberSnapshot, error) {
+	return store.MemberSnapshot{}, errors.New("member store unavailable")
 }

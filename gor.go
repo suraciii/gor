@@ -80,6 +80,10 @@ type Config struct {
 	DeadAfter         time.Duration
 	ProbeInterval     time.Duration
 	ProbeTimeout      time.Duration
+	ProbeFailures     int
+	VoteTTL           time.Duration
+	MaxTickGap        time.Duration
+	MaxTableLatency   time.Duration
 }
 
 type Invoker interface {
@@ -117,8 +121,6 @@ func New(options ...Option) (*Runtime, error) {
 		HeartbeatInterval: time.Second,
 		ViewInterval:      time.Second,
 		DeadAfter:         3 * time.Second,
-		ProbeInterval:     time.Second,
-		ProbeTimeout:      500 * time.Millisecond,
 	}
 	for _, option := range options {
 		option(&config)
@@ -148,6 +150,10 @@ func New(options ...Option) (*Runtime, error) {
 			DeadAfter:         config.DeadAfter,
 			ProbeInterval:     config.ProbeInterval,
 			ProbeTimeout:      config.ProbeTimeout,
+			ProbeFailures:     config.ProbeFailures,
+			VoteTTL:           config.VoteTTL,
+			MaxTickGap:        config.MaxTickGap,
+			MaxTableLatency:   config.MaxTableLatency,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("start cluster node: %w", err)
@@ -290,6 +296,30 @@ func WithProbeInterval(value time.Duration) Option {
 func WithProbeTimeout(value time.Duration) Option {
 	return func(config *Config) {
 		config.ProbeTimeout = value
+	}
+}
+
+func WithProbeFailures(value int) Option {
+	return func(config *Config) {
+		config.ProbeFailures = value
+	}
+}
+
+func WithVoteTTL(value time.Duration) Option {
+	return func(config *Config) {
+		config.VoteTTL = value
+	}
+}
+
+func WithMaxTickGap(value time.Duration) Option {
+	return func(config *Config) {
+		config.MaxTickGap = value
+	}
+}
+
+func WithMaxTableLatency(value time.Duration) Option {
+	return func(config *Config) {
+		config.MaxTableLatency = value
 	}
 }
 

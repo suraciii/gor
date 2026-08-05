@@ -165,7 +165,7 @@ func (s *probeMemberStore) WriteMember(ctx context.Context, member store.Member)
 	return s.backend.WriteMember(ctx, member)
 }
 
-func (s *probeMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+func (s *probeMemberStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
 	s.operations++
 	return s.backend.ListMembers(ctx)
 }

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/suraciii/gor/clock"
 )
 
 type Identity struct {
@@ -35,21 +37,27 @@ func timeFromValue(value int64) time.Time {
 }
 
 type Memory struct {
-	mu        sync.RWMutex
-	records   map[Identity]Record
-	schedules map[scheduleKey]Schedule
-	members   map[memberKey]Member
+	mu          sync.RWMutex
+	records     map[Identity]Record
+	schedules   map[scheduleKey]Schedule
+	members     map[memberKey]Member
+	memberClock clock.Clock
 }
 
 var _ Store = (*Memory)(nil)
 var _ ScheduleStore = (*Memory)(nil)
 var _ MemberStore = (*Memory)(nil)
 
-func NewMemory() *Memory {
+func NewMemory(memberClocks ...clock.Clock) *Memory {
+	memberClock := clock.Clock(clock.Real{})
+	if len(memberClocks) > 0 {
+		memberClock = memberClocks[0]
+	}
 	return &Memory{
-		records:   make(map[Identity]Record),
-		schedules: make(map[scheduleKey]Schedule),
-		members:   make(map[memberKey]Member),
+		records:     make(map[Identity]Record),
+		schedules:   make(map[scheduleKey]Schedule),
+		members:     make(map[memberKey]Member),
+		memberClock: memberClock,
 	}
 }
 

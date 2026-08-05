@@ -184,6 +184,10 @@ func TestNodeProbeStateMachineTracksNeighborsAndExactReplies(t *testing.T) {
 			DeadAfter:         time.Hour,
 			ProbeInterval:     time.Second,
 			ProbeTimeout:      500 * time.Millisecond,
+			ProbeFailures:     3,
+			VoteTTL:           6 * time.Second,
+			MaxTickGap:        2 * time.Second,
+			MaxTableLatency:   500 * time.Millisecond,
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)

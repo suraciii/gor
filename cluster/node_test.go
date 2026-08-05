@@ -394,7 +394,7 @@ func (s *appliedConflictMemberStore) WriteMember(ctx context.Context, member sto
 	return s.backend.WriteMember(ctx, member)
 }
 
-func (s *appliedConflictMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+func (s *appliedConflictMemberStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
 	return s.backend.ListMembers(ctx)
 }
 
@@ -402,9 +402,9 @@ func (s *failingListMemberStore) WriteMember(ctx context.Context, member store.M
 	return s.backend.WriteMember(ctx, member)
 }
 
-func (s *failingListMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+func (s *failingListMemberStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
 	if s.failNext.CompareAndSwap(true, false) {
-		return nil, errors.New("member list unavailable")
+		return store.MemberSnapshot{}, errors.New("member list unavailable")
 	}
 	return s.backend.ListMembers(ctx)
 }
@@ -416,7 +416,7 @@ func (s *failingDeadWriteMemberStore) WriteMember(ctx context.Context, member st
 	return s.backend.WriteMember(ctx, member)
 }
 
-func (s *failingDeadWriteMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+func (s *failingDeadWriteMemberStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
 	return s.backend.ListMembers(ctx)
 }
 
@@ -425,7 +425,7 @@ func (s *recordingMemberStore) WriteMember(ctx context.Context, member store.Mem
 	return s.backend.WriteMember(ctx, member)
 }
 
-func (s *recordingMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+func (s *recordingMemberStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
 	s.operations = append(s.operations, "list")
 	return s.backend.ListMembers(ctx)
 }
@@ -442,6 +442,10 @@ func testNodeConfig(table store.MemberStore, sourceClock clock.Clock, nodeAddr, 
 		DeadAfter:         testDeadAfter,
 		ProbeInterval:     time.Hour,
 		ProbeTimeout:      time.Second,
+		ProbeFailures:     3,
+		VoteTTL:           6 * time.Second,
+		MaxTickGap:        2 * time.Hour,
+		MaxTableLatency:   500 * time.Millisecond,
 	}
 }
 
@@ -455,16 +459,16 @@ func (testProber) Probe(_ context.Context, target MemberID) <-chan ProbeResult {
 
 func findTestMember(t *testing.T, backend store.MemberStore, nodeAddr, generation string) store.Member {
 	t.Helper()
-	members, err := backend.ListMembers(context.Background())
+	snapshot, err := backend.ListMembers(context.Background())
 	if err != nil {
 		t.Fatalf("ListMembers: %v", err)
 	}
-	for _, member := range members {
+	for _, member := range snapshot.Members {
 		if member.NodeAddr == nodeAddr && member.Generation == generation {
 			return member
 		}
 	}
-	t.Fatalf("member %s/%s not found in %#v", nodeAddr, generation, members)
+	t.Fatalf("member %s/%s not found in %#v", nodeAddr, generation, snapshot.Members)
 	return store.Member{}
 }
 

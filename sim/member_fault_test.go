@@ -65,12 +65,12 @@ func runDelayedMemberWriteScenario(t *testing.T) memberStats {
 			t.Fatalf("delayed write error = %v, want ErrConflict", err)
 		}
 		stats = backend.memberStatsSnapshot()
-		members, err := backend.ListMembers(context.Background())
+		snapshot, err := backend.ListMembers(context.Background())
 		if err != nil {
 			t.Fatalf("list members: %v", err)
 		}
-		if len(members) != 1 || members[0].Status != store.MemberDead {
-			t.Fatalf("member after delayed write = %#v, want one dead row", members)
+		if len(snapshot.Members) != 1 || snapshot.Members[0].Status != store.MemberDead {
+			t.Fatalf("member after delayed write = %#v, want one dead row", snapshot.Members)
 		}
 	})
 	return stats

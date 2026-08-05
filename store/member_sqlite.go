@@ -10,23 +10,29 @@ func (s *SQLite) WriteMember(ctx context.Context, member Member) (ETag, error) {
 		result sql.Result
 		err    error
 	)
+	votes, err := encodeSuspectVotes(member.SuspectVotes)
+	if err != nil {
+		return 0, err
+	}
 	if member.ETag == 0 {
 		result, err = s.writeDB.ExecContext(ctx, `
-INSERT INTO member (node_addr, generation, status, iam_alive_at, etag)
-VALUES (?, ?, ?, ?, 1)
+INSERT INTO member (node_addr, generation, status, iam_alive_at, suspect_votes, etag)
+VALUES (?, ?, ?, ?, ?, 1)
 ON CONFLICT (node_addr, generation) DO NOTHING`,
 			member.NodeAddr,
 			member.Generation,
 			string(member.Status),
 			timeValue(member.IamAliveAt),
+			string(votes),
 		)
 	} else {
 		result, err = s.writeDB.ExecContext(ctx, `
 UPDATE member
-SET status = ?, iam_alive_at = ?, etag = etag + 1
+SET status = ?, iam_alive_at = ?, suspect_votes = ?, etag = etag + 1
 WHERE node_addr = ? AND generation = ? AND etag = ?`,
 			string(member.Status),
 			timeValue(member.IamAliveAt),
+			string(votes),
 			member.NodeAddr,
 			member.Generation,
 			int64(member.ETag),
@@ -46,38 +52,44 @@ WHERE node_addr = ? AND generation = ? AND etag = ?`,
 	return member.ETag + 1, nil
 }
 
-func (s *SQLite) ListMembers(ctx context.Context) ([]Member, error) {
+func (s *SQLite) ListMembers(ctx context.Context) (MemberSnapshot, error) {
 	rows, err := s.readDB.QueryContext(ctx, `
-SELECT node_addr, generation, status, iam_alive_at, etag
+SELECT node_addr, generation, status, iam_alive_at, suspect_votes, etag
 FROM member
 ORDER BY node_addr, generation`)
 	if err != nil {
-		return nil, err
+		return MemberSnapshot{}, err
 	}
 	defer rows.Close()
 
 	result := make([]Member, 0)
 	for rows.Next() {
 		var (
-			nodeAddr   string
-			generation string
-			status     string
-			iamAliveAt int64
-			etag       int64
+			nodeAddr     string
+			generation   string
+			status       string
+			iamAliveAt   int64
+			suspectVotes []byte
+			etag         int64
 		)
-		if err := rows.Scan(&nodeAddr, &generation, &status, &iamAliveAt, &etag); err != nil {
-			return nil, err
+		if err := rows.Scan(&nodeAddr, &generation, &status, &iamAliveAt, &suspectVotes, &etag); err != nil {
+			return MemberSnapshot{}, err
+		}
+		votes, err := decodeSuspectVotes(suspectVotes)
+		if err != nil {
+			return MemberSnapshot{}, err
 		}
 		result = append(result, Member{
-			NodeAddr:   nodeAddr,
-			Generation: generation,
-			Status:     MemberStatus(status),
-			IamAliveAt: timeFromValue(iamAliveAt),
-			ETag:       ETag(etag),
+			NodeAddr:     nodeAddr,
+			Generation:   generation,
+			Status:       MemberStatus(status),
+			IamAliveAt:   timeFromValue(iamAliveAt),
+			SuspectVotes: votes,
+			ETag:         ETag(etag),
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return MemberSnapshot{}, err
 	}
-	return result, nil
+	return MemberSnapshot{Members: result, TableNow: s.memberClock.Now()}, nil
 }

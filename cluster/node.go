@@ -11,8 +11,10 @@ import (
 )
 
 var (
-	ErrNodeDead       = errors.New("cluster node is dead")
-	ErrProberRequired = errors.New("cluster prober is required")
+	ErrNodeDead           = errors.New("cluster node is dead")
+	ErrProberRequired     = errors.New("cluster prober is required")
+	ErrInvalidConfig      = errors.New("cluster config is invalid")
+	errMemberCheckTimeout = errors.New("cluster member check timed out")
 )
 
 type State uint8
@@ -23,10 +25,14 @@ const (
 	StateDead
 )
 
-type MemberID struct {
-	NodeAddr   string `json:"node_addr"`
-	Generation string `json:"generation"`
-}
+type healthState uint8
+
+const (
+	healthy healthState = iota
+	unhealthy
+)
+
+type MemberID = store.MemberID
 
 type Config struct {
 	Table             store.MemberStore
@@ -39,6 +45,10 @@ type Config struct {
 	DeadAfter         time.Duration
 	ProbeInterval     time.Duration
 	ProbeTimeout      time.Duration
+	ProbeFailures     int
+	VoteTTL           time.Duration
+	MaxTickGap        time.Duration
+	MaxTableLatency   time.Duration
 }
 
 type Node struct {
@@ -52,6 +62,10 @@ type Node struct {
 	deadAfter         time.Duration
 	probeInterval     time.Duration
 	probeTimeout      time.Duration
+	probeFailureLimit int
+	voteTTL           time.Duration
+	maxTickGap        time.Duration
+	maxTableLatency   time.Duration
 
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -59,11 +73,17 @@ type Node struct {
 	views         chan View
 	state         atomic.Uint32
 	probeFailures map[MemberID]int
+	health        healthState
+	healthyTicks  int
+	lastProbeAt   time.Time
 }
 
 func New(config Config) (*Node, error) {
 	if config.Prober == nil {
 		return nil, ErrProberRequired
+	}
+	if config.ProbeInterval <= 0 || config.ProbeTimeout <= 0 || config.ProbeFailures <= 0 || config.VoteTTL <= 0 || config.MaxTickGap <= 0 || config.MaxTableLatency <= 0 {
+		return nil, ErrInvalidConfig
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	node := &Node{
@@ -77,6 +97,10 @@ func New(config Config) (*Node, error) {
 		deadAfter:         config.DeadAfter,
 		probeInterval:     config.ProbeInterval,
 		probeTimeout:      config.ProbeTimeout,
+		probeFailureLimit: config.ProbeFailures,
+		voteTTL:           config.VoteTTL,
+		maxTickGap:        config.MaxTickGap,
+		maxTableLatency:   config.MaxTableLatency,
 		ctx:               ctx,
 		cancel:            cancel,
 		done:              make(chan struct{}),
@@ -144,10 +168,11 @@ func (n *Node) join() (store.Member, []store.Member, error) {
 		return store.Member{}, nil, err
 	}
 
-	members, err := n.table.ListMembers(context.Background())
+	snapshot, err := n.table.ListMembers(context.Background())
 	if err != nil {
 		return store.Member{}, nil, err
 	}
+	members := snapshot.Members
 	index := memberIndex(members, self)
 	if index < 0 || members[index].Status != store.MemberJoining {
 		return store.Member{}, nil, ErrNodeDead
@@ -206,7 +231,17 @@ func (n *Node) run(self store.Member, view View, heartbeat, viewTicker, probeTic
 			if !alive {
 				return
 			}
-		case <-probeTick:
+		case probeAt := <-probeTick:
+			updated, updatedView, alive, checkOK := n.selfCheck(self, view, probeAt)
+			self = updated
+			if !sameView(view, updatedView) {
+				view = updatedView
+				n.notify(view)
+			}
+			if !alive {
+				return
+			}
+			n.updateHealth(checkOK)
 			targets := probeTargets(view.members, selfID)
 			reconcileProbeState(targets, probeTasks, n.probeFailures)
 			for _, target := range targets {
@@ -221,7 +256,7 @@ func (n *Node) run(self store.Member, view View, heartbeat, viewTicker, probeTic
 				}
 			}
 		case event := <-probeEvents:
-			recordProbeEvent(event, probeTasks, n.probeFailures)
+			n.handleProbeEvent(event, probeTasks, selfID)
 		case <-n.ctx.Done():
 			n.leave(self)
 			return
@@ -242,16 +277,162 @@ func (n *Node) startProbe(target MemberID, token uint64, events chan<- probeEven
 	return cancel
 }
 
-func (n *Node) heartbeat(self store.Member) (store.Member, View, bool) {
+func (n *Node) selfCheck(self store.Member, current View, probeAt time.Time) (store.Member, View, bool, bool) {
+	checkOK := n.checkProbeInterval(probeAt)
+
+	listStarted := n.clock.Now()
+	snapshot, listErr := n.listMembersForCheck()
+	listElapsed := n.clock.Now().Sub(listStarted)
+	if listErr != nil || listElapsed < 0 || listElapsed > n.maxTableLatency {
+		checkOK = false
+	} else {
+		members := snapshot.Members
+		index := memberIndex(members, self)
+		if index < 0 || members[index].Status == store.MemberDead {
+			n.state.Store(uint32(StateDead))
+			return self, NewView(members), false, false
+		}
+		self = members[index]
+		current = NewView(members)
+	}
+
 	updated := self
 	updated.IamAliveAt = n.clock.Now()
+	if listErr == nil {
+		updated.SuspectVotes = activeSuspectVotes(updated.SuspectVotes, snapshot.TableNow)
+	}
+	writeStarted := n.clock.Now()
+	etag, writeErr := n.writeMemberForCheck(updated)
+	writeElapsed := n.clock.Now().Sub(writeStarted)
+	if writeElapsed < 0 || writeElapsed > n.maxTableLatency {
+		checkOK = false
+	}
+	switch {
+	case writeErr == nil:
+		updated.ETag = etag
+		self = updated
+	case errors.Is(writeErr, store.ErrConflict):
+		refreshStarted := n.clock.Now()
+		refreshed, refreshErr := n.listMembersForCheck()
+		if refreshErr != nil {
+			checkOK = false
+			break
+		}
+		refreshElapsed := n.clock.Now().Sub(refreshStarted)
+		if refreshElapsed < 0 || refreshElapsed > n.maxTableLatency {
+			checkOK = false
+		}
+		members := refreshed.Members
+		index := memberIndex(members, self)
+		if index < 0 || members[index].Status == store.MemberDead {
+			n.state.Store(uint32(StateDead))
+			return self, NewView(members), false, false
+		}
+		self = members[index]
+		current = NewView(members)
+	default:
+		checkOK = false
+	}
+	return self, current, true, checkOK
+}
+
+func (n *Node) listMembersForCheck() (store.MemberSnapshot, error) {
+	result := make(chan struct {
+		snapshot store.MemberSnapshot
+		err      error
+	}, 1)
+	go func() {
+		snapshot, err := n.table.ListMembers(n.ctx)
+		result <- struct {
+			snapshot store.MemberSnapshot
+			err      error
+		}{snapshot: snapshot, err: err}
+	}()
+	timer := n.clock.NewTicker(n.maxTableLatency)
+	defer timer.Stop()
+	select {
+	case completed := <-result:
+		return completed.snapshot, completed.err
+	case <-timer.C():
+		return store.MemberSnapshot{}, errMemberCheckTimeout
+	case <-n.ctx.Done():
+		return store.MemberSnapshot{}, n.ctx.Err()
+	}
+}
+
+func (n *Node) writeMemberForCheck(member store.Member) (store.ETag, error) {
+	result := make(chan struct {
+		etag store.ETag
+		err  error
+	}, 1)
+	go func() {
+		etag, err := n.table.WriteMember(n.ctx, member)
+		result <- struct {
+			etag store.ETag
+			err  error
+		}{etag: etag, err: err}
+	}()
+	timer := n.clock.NewTicker(n.maxTableLatency)
+	defer timer.Stop()
+	select {
+	case completed := <-result:
+		return completed.etag, completed.err
+	case <-timer.C():
+		return 0, errMemberCheckTimeout
+	case <-n.ctx.Done():
+		return 0, n.ctx.Err()
+	}
+}
+
+func (n *Node) checkProbeInterval(probeAt time.Time) bool {
+	previous := n.lastProbeAt
+	n.lastProbeAt = probeAt
+	if previous.IsZero() {
+		return true
+	}
+	delta := probeAt.Sub(previous)
+	return delta > 0 && delta <= n.maxTickGap
+}
+
+func (n *Node) updateHealth(checkOK bool) {
+	if !checkOK {
+		n.health = unhealthy
+		n.healthyTicks = 0
+		clear(n.probeFailures)
+		return
+	}
+	if n.health != unhealthy {
+		return
+	}
+	n.healthyTicks++
+	if n.healthyTicks == 3 {
+		n.health = healthy
+	}
+}
+
+func (n *Node) heartbeat(self store.Member) (store.Member, View, bool) {
+	snapshot, err := n.table.ListMembers(n.ctx)
+	if err != nil {
+		return self, View{}, true
+	}
+	members := snapshot.Members
+	index := memberIndex(members, self)
+	if index < 0 || members[index].Status == store.MemberDead {
+		n.state.Store(uint32(StateDead))
+		return self, NewView(members), false
+	}
+	self = members[index]
+	updated := self
+	updated.IamAliveAt = n.clock.Now()
+	updated.SuspectVotes = activeSuspectVotes(updated.SuspectVotes, snapshot.TableNow)
 	etag, err := n.table.WriteMember(n.ctx, updated)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			members, listErr := n.table.ListMembers(n.ctx)
+			snapshot, listErr := n.table.ListMembers(n.ctx)
 			if listErr != nil {
 				return self, View{}, true
 			}
+			members := snapshot.Members
 			index := memberIndex(members, self)
 			if index < 0 || members[index].Status == store.MemberDead {
 				n.state.Store(uint32(StateDead))
@@ -270,7 +451,7 @@ func (n *Node) pollView(self store.Member, current View) (View, bool) {
 	if err != nil {
 		return current, true
 	}
-	members := append([]store.Member(nil), snapshot...)
+	members := append([]store.Member(nil), snapshot.Members...)
 	now := n.clock.Now()
 	for index := range members {
 		member := members[index]

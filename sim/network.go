@@ -69,7 +69,7 @@ func (n *simulationNetwork) partition(groups map[string]int) error {
 	}
 	n.mu.Unlock()
 	for _, members := range stores {
-		members.partition(snapshot)
+		members.partition(snapshot.Members)
 	}
 
 	n.mu.Lock()
@@ -245,9 +245,9 @@ func (s *partitionedMemberStore) WriteMember(ctx context.Context, member store.M
 	return member.ETag, nil
 }
 
-func (s *partitionedMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+func (s *partitionedMemberStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return store.MemberSnapshot{}, err
 	}
 	s.mu.Lock()
 	if !s.partitioned {
@@ -265,5 +265,5 @@ func (s *partitionedMemberStore) ListMembers(ctx context.Context) ([]store.Membe
 		}
 		return members[i].Generation < members[j].Generation
 	})
-	return members, nil
+	return store.MemberSnapshot{Members: members, TableNow: s.backend.memberTableNow()}, nil
 }

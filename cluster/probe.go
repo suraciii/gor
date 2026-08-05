@@ -116,17 +116,18 @@ func reconcileProbeState(targets []MemberID, tasks map[MemberID]probeTask, failu
 	}
 }
 
-func recordProbeEvent(event probeEvent, tasks map[MemberID]probeTask, failures map[MemberID]int) {
+func recordProbeEvent(event probeEvent, tasks map[MemberID]probeTask, failures map[MemberID]int) bool {
 	task, ok := tasks[event.target]
 	if !ok || task.token != event.token {
-		return
+		return false
 	}
 	delete(tasks, event.target)
 	if event.result.Err == nil && event.result.ID == event.target {
 		failures[event.target] = 0
-		return
+		return true
 	}
 	failures[event.target]++
+	return false
 }
 
 func waitForProbe(ctx context.Context, sourceClock clock.Clock, prober Prober, target MemberID, timeout time.Duration) ProbeResult {
