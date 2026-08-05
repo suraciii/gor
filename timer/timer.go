@@ -40,7 +40,7 @@ func New(table Table, clock clock.Clock, interval time.Duration, invoker Invoker
 		cancel:   cancel,
 		done:     make(chan struct{}),
 	}
-	go poller.run()
+	go poller.run(poller.clock.NewTicker(poller.interval))
 	return poller
 }
 
@@ -49,8 +49,7 @@ func (p *Poller) Close() {
 	<-p.done
 }
 
-func (p *Poller) run() {
-	ticker := p.clock.NewTicker(p.interval)
+func (p *Poller) run(ticker clock.Ticker) {
 	defer func() {
 		ticker.Stop()
 		close(p.done)

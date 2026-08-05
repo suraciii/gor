@@ -71,7 +71,7 @@ func New(config Config) (*Node, error) {
 	node.state.Store(uint32(StateActive))
 	view := NewView(members)
 	node.notify(view)
-	go node.run(self, view)
+	go node.run(self, view, node.clock.NewTicker(node.heartbeatInterval), node.clock.NewTicker(node.viewInterval))
 	return node, nil
 }
 
@@ -133,9 +133,7 @@ func (n *Node) join() (store.Member, []store.Member, error) {
 	return self, members, nil
 }
 
-func (n *Node) run(self store.Member, view View) {
-	heartbeat := n.clock.NewTicker(n.heartbeatInterval)
-	viewTicker := n.clock.NewTicker(n.viewInterval)
+func (n *Node) run(self store.Member, view View, heartbeat, viewTicker clock.Ticker) {
 	defer heartbeat.Stop()
 	defer viewTicker.Stop()
 	defer close(n.views)
