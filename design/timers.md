@@ -1,10 +1,10 @@
-# 定时任务
+# Scheduled tasks
 
-一张表 + 一个轮询器。轮询器发现到期的行，投递一个普通调用给目标实体。
+One table plus one poller. The poller finds rows that have come due and delivers an ordinary call to the target entity.
 
-实体那边看不出区别：到期调用跟别的调用走同一个 mailbox，同样串行。
+The entity sees no difference: a due call goes through the same mailbox as any other call, equally serialized.
 
-## 打的是方法名，不是函数值
+## The method name, not a function value
 
 ```go
 type account struct {
@@ -26,78 +26,78 @@ func (a *account) Open(ctx context.Context) error {
 func (a *account) ApplyInterest(ctx context.Context) error { ... }
 ```
 
-**表里只能存名字。** 进程崩了之后没人能把一个闭包反序列化回来，所以定时任务记的是方法名，轮询器照着名字发一次普通调用。
+**Only names can be stored in the table.** After a process crash, nobody can deserialize a closure back; so the scheduled task records the method name, and the poller sends an ordinary call by that name.
 
-被打的方法只收 `ctx`、只回 `error`，而且**必须写在实体的 interface 里**——分发表是生成器从 interface 产出的，不在里面的方法投递时找不到。名字对不上，投递就返回错误——不为这件事加一条注册期校验，错了当场看得见。
+The called method only takes `ctx` and only returns `error`, and it must be in the entity's interface — the dispatch table is produced by the generator from the interface, and a method not in it cannot be found at delivery time. A name that does not match makes delivery return an error — no registration-time check for this; a mistake is visible on the spot.
 
-**否决了「一个统一入口」。** Orleans 是让实体实现 `ReceiveReminder(name)`，然后自己 switch 名字。那等于把第 3 步刚删掉的手写分发器请回来，还是在用户代码里。`gor` 的卖点是编译期类型化，不该在这里开一个字符串分发的口子。
+"One unified entry point" is rejected. Orleans has entities implement `ReceiveReminder(name)` and switch on the name themselves — that is bringing back the hand-written dispatcher deleted at step 3, and in user code of all places. gor's selling point is compile-time typing; it must not open a string-dispatch loophole here.
 
-方法名现在还是字符串，这是个缺口。堵它要生成器产出带类型的方法句柄——那是生成器的活，不在这一步。
+The method name is still a string; that is a gap. Closing it requires the generator to emit typed method handles — the generator's job, not this step.
 
-## 句柄从 Binder 拿
+## The handle comes from the Binder
 
-跟 `State` 一样：`gor.NewSchedule(b)` 在构造实体时绑好身份和存储，之后方法里直接用。
+Like `State`: `gor.NewSchedule(b)` binds identity and storage at entity construction, and the methods use it directly afterwards.
 
-**不从 ctx 里摸。** 把运行时能力藏进 `context.Value` 会让「这段代码需要什么」变得看不见，也让测试要先造一个对的 ctx 才能跑。构造函数的参数是显式的，ctx 不是。
+Not fished out of `ctx`. Hiding runtime capabilities in `context.Value` makes "what this code needs" invisible and forces tests to build the right ctx before they can run. Constructor parameters are explicit; ctx is not.
 
-## 什么时候到期
+## When it comes due
 
-两个构造器，够了：
+Two constructors, enough:
 
 ```go
-gor.After(d)   // 一次性，d 之后打一次
-gor.Every(d)   // 周期，每 d 打一次
+gor.After(d)   // one-shot, fires once after d
+gor.Every(d)   // periodic, fires every d
 ```
 
-`Set` 用名字覆盖：同一个实体上同名的任务只有一份，重复 `Set` 是改期不是加一条。`Cancel(ctx, name)` 删掉它。
+`Set` overwrites by name: only one task per name on the same entity; setting again reschedules rather than adding another. `Cancel(ctx, name)` deletes it.
 
-**错过的窗口不补。** 进程停了三个周期，回来只打一次，然后追到下一个未来的时刻。补打三次是个陷阱——用户想要的几乎从来不是「把攒下的都跑一遍」，而且攒多久取决于停机时长，行为不可预测。真要补，用户自己在方法里按上次执行时间算。
+**Missed windows are not made up.** If the process is down for three periods, it fires once on return and then tracks to the next future time. Making up three firings is a trap — what users want is almost never "run everything that piled up", and how much piles up depends on the downtime, making the behavior unpredictable. If catch-up is truly wanted, users compute it in the method from the last execution time.
 
-**精度就是轮询间隔。** 持久化的定时任务本来就不该承诺毫秒级。
+**Precision is the polling interval.** Persisted scheduled tasks should never promise milliseconds.
 
-## 表
+## The table
 
 ```
 schedule(entity_type, entity_key, name, method, due_at, interval, etag)
 ```
 
-`interval` 为零表示一次性。
+A zero `interval` means one-shot.
 
-主键是 (entity_type, entity_key, name)。`name` 是这条任务的标识，`method` 是到期要打的方法——两个都要，因为同一个方法可以挂好几条不同周期的任务。
+The primary key is (entity_type, entity_key, name). `name` identifies the task; `method` is the method to call when due — both are needed, because the same method can back several tasks with different periods.
 
-## 表的接口
+## The table's interface
 
-四件事，对着轮询器和用户各自要做的来：
+Four operations, aligned with what the poller and the user each need to do:
 
-- **列出到期的**——`due_at <= now` 的行，`now` 从参数进来。
-- **抢占一行**——带着这一行的 etag 做 CAS，把 `due_at` 推到给定的下一个时刻；给的时刻是零值就删掉这一行。**恰好一个抢占者能赢。**
-- **写一行**——无条件覆盖，用户 `Set` 走这里。
-- **删一行**——无条件，用户 `Cancel` 走这里。
+- **List due** — rows with `due_at <= now`; `now` comes in as a parameter.
+- **Preempt one row** — CAS with the row's etag, pushing `due_at` to the given next time; a zero time deletes the row. Exactly one preemptor wins.
+- **Write one row** — unconditional overwrite; the user's `Set` goes here.
+- **Delete one row** — unconditional; the user's `Cancel` goes here.
 
-**etag 只为抢占存在。** 用户的 `Set` / `Cancel` 不带 etag：他手里本来就没有，而且这是他显式改期或取消，该赢。被覆盖掉的那次抢占只是少投递一次，at-most-once 依然成立。
+**The etag exists only for preemption.** The user's `Set` / `Cancel` carries no etag: the user does not have one anyway, and an explicit reschedule or cancel is his to win. The preemption that got overwritten simply delivered one fewer time; at-most-once still holds.
 
-**下一个到期时刻由轮询器算，表不算。** 「错过的不补」是策略，表只负责把 CAS 做对。一次性任务用零值时刻表示「没有下一次」——跟 `interval` 为零是同一个约定。
+**The next due time is computed by the poller, not the table.** "No catch-up for missed" is policy; the table is only responsible for getting the CAS right. One-shot tasks use the zero time for "no next" — the same convention as a zero `interval`.
 
-不给「列出到期的」加条数上限。真需要的时候再加，现在加是替一个还不存在的规模做决定。
+No row-count limit on "list due". Add it when it is actually needed; adding it now decides for a scale that does not exist yet.
 
-## 先抢占，再投递
+## Preempt first, then deliver
 
-轮询器扫出 `due_at <= now` 的行，对每一行：
+The poller scans rows with `due_at <= now` and, for each row:
 
-1. **抢占**——用 CAS 把 `due_at` 推到下一个周期（一次性任务则删掉这一行）。
-2. 抢到了才投递调用。
+1. **Preempt** — CAS to push `due_at` to the next period (delete the row for one-shot tasks).
+2. Deliver the call only after winning the preemption.
 
-**推到第一个还在未来的时刻**，不是 `due_at + interval`。停机三个周期之后，加一个 interval 得到的还是过去，下一轮扫描又会命中同一行，「错过的不补」就变成了补。
+**Push to the first time still in the future**, not `due_at + interval`. After three periods of downtime, adding one interval still lands in the past; the next scan hits the same row again, and "no catch-up" becomes catch-up.
 
-顺序反过来会在崩溃时重复触发。抢到了但投递前崩溃，则漏一次——这是有意的取舍：
+The reverse order causes repeated firing on a crash. Crash after preemption but before delivery misses one firing — a deliberate trade-off:
 
-**`gor` 承诺 at-most-once 的投递，不承诺 exactly-once 的执行。**
+**gor promises at-most-once delivery, not exactly-once execution.**
 
-投递失败不重试。重试是不是安全只有用户知道，运行时不替他决定——跟 `State.Set()` 冲突时的立场一样。
+Delivery failures are not retried. Only the user knows whether retrying is safe; the runtime does not decide for him — the same stance as on `State.Set()` conflicts.
 
-**但不重试不等于不吭声。** 定时投递没有调用方在等，方法返回的 error 由运行时送到配置的错误出口；未配置出口时才会丢掉。运行时不替用户重试，是否告警仍由用户决定。
+**But no retry does not mean silence.** A scheduled delivery has no caller waiting; the error returned by the method is sent by the runtime to the configured error sink, and dropped only when no sink is configured. The runtime does not retry for the user; whether to alert remains the user's decision.
 
-所以配置上要有一个错误出口：
+So the configuration needs an error sink:
 
 ```go
 type BackgroundError struct {
@@ -125,74 +125,74 @@ func (Deactivation) errorSource() {}
 func OnError(func(BackgroundError)) Option
 ```
 
-`ErrorSource` 的未导出方法把集合封闭在 `gor` 包内；包外代码不能实现新的来源。每个事件都由 `gor` 构造，来源只有两种：已抢占的定时投递用 `ScheduledInvocation{Method: ...}`，停用钩子失败用 `Deactivation{Reason: ...}`。调用方按 `Source` 的具体类型分支，不比较可写字符串；因此定时方法恰好叫 `"OnDeactivate"` 也不会混淆来源。
+`ErrorSource`'s unexported method seals the set inside the `gor` package; code outside the package cannot implement new sources. Every event is constructed by `gor`, and there are only two sources: preempted scheduled deliveries use `ScheduledInvocation{Method: ...}`, deactivation hook failures use `Deactivation{Reason: ...}`. Callers branch on the concrete type of `Source`, not on comparing writable strings; so a scheduled method exactly named `"OnDeactivate"` cannot be confused with a deactivation source.
 
-一个出口，不是每个定时任务一个，也不是每类事件一个。它只报告两类没有调用方可接收的**应用回调**失败：已抢占的定时投递和正常停用钩子。直接调用照常把错误返回给调用方。轮询扫描、抢占失败和没有抢到 CAS 不进入这个出口；它们是调度器和存储的运行状态，不是一件已知应用动作的失败。
+**One sink, not one per scheduled task, not one per event kind.** It only reports the two kinds of application callback failures with no caller to receive them: preempted scheduled deliveries and normal deactivation hooks. Direct calls return errors to the caller as usual. Polling scans, preemption failures, and lost CAS races do not enter the sink — they are operational states of the scheduler and storage, not failures of a known application action.
 
-`Err` 就是该回调得到的错误。它遵循 [errors.md](errors.md)：跨节点后只有稳定 `Code` 可用于 `errors.Is`，事件不另设 `Code` 字段，也不恢复错误类型、字段或包装关系。
+`Err` is exactly the error the callback got. It follows [errors.md](errors.md): across nodes, only the stable `Code` is usable with `errors.Is`; the event does not add its own `Code` field, nor does it restore error types, fields, or wrapping.
 
-它不做重试、不做退避、不做告警策略——那些是用户的事，运行时只负责把「这件事失败了」送到用户手上。事件不携带 schedule 名称、到期时间、间隔、ETag 或尝试次数：抢占后这些字段可能已经过期，ETag 不是应用决策，运行时也没有重试模型。`timer.Invoker` 保持只接收 identity 和 method。
+It does no retry, no backoff, no alerting policy — those are the user's business; the runtime only delivers "this failed" into the user's hands. The event carries no schedule name, due time, interval, ETag, or attempt count: after preemption these fields may already be stale, the ETag is not an application decision, and the runtime has no retry model. `timer.Invoker` keeps receiving only identity and method.
 
-未配置时这两类错误会被丢掉。它们是运行时唯一替用户丢弃的**应用回调**错误，必须在文档里写明，而不是藏在实现里。
+When unconfigured, these two kinds of errors are dropped. They are the only application callback errors the runtime drops on the user's behalf, and must be written in the docs, not hidden in the implementation.
 
-**停机途中取消掉的那次投递不算失败。** 运行时关闭时，正在飞的定时调用会带着一个取消错误回来——方法没失败，是运行时不跑了。把它送进 `OnError`，等于每次干净的关闭都要给用户报一次假警，用户只能在自己的回调里反过来把取消错误滤掉。所以轮询器的 context 已经取消时，这次错误不出去。
+**A delivery canceled mid-shutdown is not a failure.** At runtime shutdown, in-flight scheduled calls come back with a cancellation error — the method did not fail; the runtime stopped running. Sending it to `OnError` would report a false alarm to the user on every clean shutdown, and users would have to filter cancellation errors out in their own callbacks. So when the poller's context is already canceled, this error does not go out.
 
-这不是保护性特判，是一条要有测试盯住的行为：关闭途中的取消不进 `OnError`，其它符合上述出口边界的回调错误都要进。
+This is not defensive special-casing; it is behavior a test must watch: cancellations during shutdown do not enter `OnError`; other callback errors matching the sink boundary above must enter.
 
-### 迁移
+### Migration
 
-这是计划内的 v0 不兼容变更。已有三参数错误处理函数改为接收一个 `BackgroundError`。定时投递读取 `ScheduledInvocation.Method`；停用钩子失败读取 `Deactivation.Reason`。已有按 `method == "OnDeactivate"` 分支的代码必须删除。
+This is a planned v0 breaking change. Existing three-parameter error handlers change to receive one `BackgroundError`. Scheduled deliveries read `ScheduledInvocation.Method`; deactivation hook failures read `Deactivation.Reason`. Existing code branching on `method == "OnDeactivate"` must be deleted.
 
-### 差距
+### Gap
 
-错误出口已实装：`OnError` 接收 `BackgroundError`（实体、原始错误、来源），来源是封闭集合——`ScheduledInvocation` 带方法名，`Deactivation` 带停用原因，未导出方法阻止包外新增。`Err` 即回调得到的错误，事件不另设 `Code` 字段，也不恢复错误类型、字段或包装关系；跨节点稳定码契约由 [errors.md](errors.md) 管辖，事件本身不跨节点。轮询器不报告扫描、抢占和未抢到 CAS 的错误；轮询器 context 已取消时，那次定时投递的取消错误不上报（判据是 context 状态，不是错误形状）。本节迁移已完成：旧三参数处理函数已删除，生产代码不再有按 `method == "OnDeactivate"` 分支的错误分类（测试 fixture 的分发器按方法名分发投递是投递调度，不是错误分类）。
+The error sink is implemented: `OnError` receives a `BackgroundError` (entity, original error, source), and the source is a sealed set — `ScheduledInvocation` carries the method name, `Deactivation` carries the deactivation reason, and the unexported method prevents additions outside the package. `Err` is the error the callback got; the event has no separate `Code` field and does not restore error types, fields, or wrapping. The cross-node stable-code contract is governed by [errors.md](errors.md); the event itself never crosses nodes. The poller does not report scan, preemption, or lost-CAS errors; when the poller's context is canceled, that delivery's cancellation error is not reported (the criterion is context state, not error shape). This section's migration is complete: the old three-parameter handlers are deleted, and production code no longer classifies errors by `method == "OnDeactivate"` (test fixtures' dispatchers dispatching deliveries by method name is delivery scheduling, not error classification).
 
-**抢占必须是 CAS，不能是「读出来再更新」。** 两个节点的轮询器会同时扫到同一行，CAS 是唯一让其中一个输掉的东西。这条现在就要做对，不能等到第 6 步——那时候再改，前面所有的测试都要重写。
+**Preemption must be CAS, not "read then update".** The pollers of two nodes can scan the same row at the same time; CAS is the only thing that makes one of them lose. This must be right now, not deferred until step 6 — by then, every earlier test would need rewriting.
 
-## 不是自己的行不抢
+## Don't preempt rows that are not yours
 
-集群里每个节点的轮询器都扫全表，但一行的目标实体只归一个节点。**抢一行之前先问它归不归自己，不归就跳过。**
+In a cluster, every node's poller scans the whole table, but a row's target entity belongs to exactly one node. Before preempting a row, ask whether it is yours; if not, skip.
 
-不问的后果是丢投递，不是多投递：非属主抢赢了，`due_at` 已经被推走（一次性任务那一行已经删了），然后调用被路由拒绝——这一次到期就永远消失了。属主的轮询器下一轮扫不到它。
+Not asking loses deliveries, not duplicates them: when a non-owner wins the preemption, `due_at` has already been pushed (the row is deleted for one-shot tasks), and then the call is rejected by routing — that due time is gone forever, and the owner's poller will not see it next round.
 
-所以轮询器要问的东西多了一件：不只是「打这个方法」，还有「这个身份归不归我」。单节点的答案恒为真，那不是假实现——单节点确实什么都归自己。
+So the poller must ask one more thing: not just "call this method", but "do I own this identity". In a single node the answer is always yes — that is not a fake implementation; a single node indeed owns everything.
 
-视图不一致时两个节点可能都觉得自己是属主，CAS 让一个输掉，at-most-once 不破；都觉得不是自己的，这次到期推迟到视图收敛之后，也不破。
+With an inconsistent view, two nodes may both believe they are the owner; CAS makes one lose, and at-most-once holds. If both believe it is not theirs, this due time is deferred until the view converges; at-most-once still holds.
 
-## 到期会把实体激活
+## Coming due activates the entity
 
-目标实体不在内存里，投递会把它激活。这就是持久化定时任务存在的意义：没有它，一个被驱逐的实体永远等不到自己的下一次唤醒。
+If the target entity is not in memory, delivery activates it. This is the point of persisted scheduled tasks: without it, an evicted entity would never see its next wake-up.
 
-## 轮询器
+## The poller
 
-一个 goroutine，按注入的 `Clock` 走。`Runtime` 无论走 `Close()` 还是 `Kill()`，都要让它退出——`sim` 里留一个不退出的 goroutine 会让整个 bubble 判死锁。
+One goroutine, driven by the injected `Clock`. `Runtime` must make it exit whether `Close()` or `Kill()` is taken — in `sim`, a goroutine that does not exit makes the whole bubble judged deadlocked.
 
-轮询器自己只有「在跑」和「停了」，不为它编一套状态枚举：两个状态的状态机是仪式，不是设计。它也不区分排空和不排空的停止——身上没有用户状态，投递到一半被取消仍然落在 at-most-once 的承诺里。
+The poller itself has only "running" and "stopped"; no state enum is invented for it: a two-state state machine is ceremony, not design. It does not distinguish draining from non-draining stops either — it carries no user state, and a delivery canceled halfway still falls within the at-most-once promise.
 
-它自己一个包。`runtime` 不能装它——轮询器要读表，而 `runtime` 不导入 `store`。`gor` 也不该装——那一层只做配置组装，不放算法。所以轮询器跟 `mail` 一样是一个小包：拿一个表的接口、一个 `Clock`、一个「能发起调用」的接口，`gor` 负责把三样接上。
+It gets its own package. `runtime` cannot host it — the poller reads tables, and `runtime` does not import `store`. `gor` should not host it either — that layer only assembles configuration; it does not hold algorithms. So the poller, like `mail`, is a small package: it takes a table interface, a `Clock`, and an interface for initiating calls; `gor` wires the three together.
 
-## 新的 I/O 接口
+## A new I/O interface
 
-定时任务的表不走 `store.Store`。那个接口是「按 Identity 读写一份状态」，扫描到期行、CAS 推进、删行都塞不进去。
+The scheduled task table does not go through `store.Store`. That interface is "read and write one state per Identity"; scanning due rows, CAS advancement, and row deletion do not fit.
 
-新开一个接口，形状照着轮询器真正要做的事来：列出到期的、抢占一行、写一行、删一行。
+A new interface, shaped by what the poller actually does: list due, preempt one row, write one row, delete one row.
 
-它是第 4 步骨架上的**新故障源**：假实现按种子注入扫描失败、抢占失败、抢占成功但回复丢了。第三种最要紧——抢占落了但轮询器不知道，正是重复投递最可能出现的地方。
+It is a new fault source on the step-4 skeleton: the fake implementation injects by seed — scan failures, preemption failures, and preemption succeeded but the reply was lost. The third is the most important: the preemption landed but the poller does not know — exactly where duplicate delivery is most likely.
 
-## 定时任务的写不和状态的写同事务
+## Scheduled task writes share no transaction with state writes
 
-`schedule.Set()` 写的是另一张表，跟 `State.Set()` 不是一个事务。所以存在「任务设上了、状态没落盘」的窗口。
+`schedule.Set()` writes to a different table, not the same transaction as `State.Set()`. So there is a window where the task is set but the state is not persisted.
 
-不把两张表绑进一个事务，是为了不把后端绑死——协调表将来要能放在 Postgres 上，状态表可能在别处。代价写在这里，用户自己判断要不要在意。
+The two tables are not bound into one transaction so that backends are not tied together — coordination tables must be able to live on Postgres in the future, while the state table may live elsewhere. The cost is written here; users decide whether it matters.
 
-## 不变量
+## Invariants
 
-第 4 步的骨架接住这一条：
+The step-4 skeleton must hold this one:
 
-- **同一次到期只投递一次。** 同一个 (实体, 名字) 的同一个 `due_at`，历史里最多出现一条投递。
+- **One delivery per due time.** For the same (entity, name) and the same `due_at`, history contains at most one delivery.
 
-崩溃、抢占失败、两个轮询器同时扫到——这些都不能把它破掉。
+Crashes, preemption failures, two pollers scanning at the same time — none of these may break it.
 
-## 差距
+## Gap
 
-方法名是字符串。生成器还没有产出带类型的方法句柄。
+The method name is a string. The generator does not yet produce typed method handles.

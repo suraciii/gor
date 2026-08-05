@@ -1,12 +1,12 @@
-# 调度
+# Scheduling
 
-## 目标
+## Goal
 
-同一实体上的调用严格串行；不同实体之间完全并行。
+Calls on the same entity are strictly serialized; calls on different entities are fully parallel.
 
-## 实现
+## Implementation
 
-一个实体一个 mailbox：一个 goroutine 从一个 channel 读，循环执行。
+One mailbox per entity: one goroutine reads from a channel and executes in a loop.
 
 ```go
 type Box struct {
@@ -16,7 +16,7 @@ type Box struct {
 
 type call struct {
     fn    func(ctx context.Context) (any, error)
-    reply chan result   // 容量 1
+    reply chan result   // capacity 1
     ctx   context.Context
 }
 
@@ -29,44 +29,44 @@ func (b *Box) run() {
 }
 ```
 
-串行性由「只有一个 goroutine 在跑循环体」直接给出。没有锁，没有自定义调度器。
+Serialization falls out directly from the fact that only one goroutine runs the loop body. No locks, no custom scheduler.
 
-**`reply` 必须有容量 1。** 调用方超时后就不再读这个 channel 了（[runtime.md](runtime.md)：超时意味着调用方不再等待，不意味着实体停止执行）。如果 `reply` 无缓冲，这次发送会永远挂住 —— 不是挂住一个调用，是挂住整个 mailbox 的循环，这个实体从此死了。容量 1 让发送永不阻塞，结果没人取就随 channel 一起被回收。
+**`reply` must have capacity 1.** After the caller times out it stops reading this channel ([runtime.md](runtime.md): a timeout means the caller is no longer waiting, not that the entity stops executing). With an unbuffered `reply`, the send would hang forever — not one call, but the whole mailbox loop; the entity would be dead from then on. Capacity 1 makes the send never block, and an unclaimed result is reclaimed together with the channel.
 
-不用 `select` 加 `ctx.Done()` 代替：那样每次回复都要多写一个分支，而它要防的事情用一个缓冲位就防住了。
+Not replaced by `select` with `ctx.Done()`: that would add a branch to every reply, and the thing it guards against is prevented by a single buffer slot.
 
-预估整个 `mail` 包在 100 行量级。对比：Orleans 的 `Scheduler/` 实测 823 行，其中 `WorkItemGroup` 336 行——因为 .NET 需要实现一个自定义 `TaskScheduler` 来保证 `await` 之后回到同一个逻辑执行上下文。Go 里 goroutine 天然是执行上下文，这个问题不存在。
+The whole `mail` package is estimated at around 100 lines. For comparison: Orleans' `Scheduler/` measures 823 lines, of which `WorkItemGroup` is 336 — because .NET needs a custom `TaskScheduler` to guarantee returning to the same logical execution context after `await`. In Go, a goroutine is naturally an execution context; the problem does not exist.
 
-## channel 容量
+## Channel capacity
 
-用无缓冲还是有缓冲，直接影响背压语义：
+Buffered or unbuffered directly changes the backpressure semantics:
 
-- **无缓冲**：调用方阻塞到实体开始处理。背压自动传导，但一个慢实体会把调用方全部挂住。
-- **有缓冲**：吸收突发，但缓冲满了以后行为要定义清楚——阻塞还是拒绝。
+- **Unbuffered**: the caller blocks until the entity starts processing. Backpressure propagates automatically, but one slow entity hangs all its callers.
+- **Buffered**: absorbs bursts, but behavior at a full buffer must be defined — block or reject.
 
-选择：**有界缓冲，满了拒绝**（返回一个明确的过载错误）。理由是无界队列会把内存问题伪装成延迟问题，而阻塞会让一个热点实体拖垮整个进程。容量可配置。
+The choice: bounded buffer, reject when full (returning a clear overload error). An unbounded queue disguises a memory problem as a latency problem, and blocking lets one hot entity drag down the whole process. Capacity is configurable.
 
-## 请求顺序
+## Request order
 
-同一调用方对同一实体的连续调用，按发起顺序执行——channel 是 FIFO，本地场景下天然成立。
+Consecutive calls from the same caller to the same entity execute in the order they were initiated — the channel is FIFO, which holds naturally in the local case.
 
-**跨节点不保证顺序。** 网络重排 + 重连会破坏它，而为此加序号和重排缓冲的复杂度不值得。文档要明说这条，不要让用户以为有顺序保证。
+**No order guarantee across nodes.** Network reordering plus reconnection breaks it, and the complexity of sequence numbers and reorder buffers is not worth it. The docs must state this explicitly; users must not be led to assume an order guarantee.
 
-## 与 synctest 的关系
+## Relationship with synctest
 
-这个设计能被 `testing/synctest` 完整观测，这不是巧合而是选择的理由：
+That this design is fully observable by `testing/synctest` is not a coincidence but the reason for the choice:
 
-- goroutine 阻塞在 channel 上算 "durably blocked"，`synctest.Wait()` 能判定系统静止。
-- 如果改用 mutex + 条件变量实现串行化，`synctest` **无法**判定静止（mutex 阻塞不算 durably blocking），整个测试策略就塌了。
+- A goroutine blocked on a channel counts as "durably blocked"; `synctest.Wait()` can determine that the system is quiescent.
+- If serialization were done with mutexes plus condition variables, `synctest` could not determine quiescence (mutex blocking is not durably blocking), and the whole testing strategy collapses.
 
-所以 `mail` 包里禁止出现 `sync.Mutex` 用于跨调用的等待。纯粹保护一个 map 的短临界区是可以的，但不能用它来「等」。
+So `sync.Mutex` must not appear in the `mail` package for cross-call waiting. A short critical section that merely protects a map is fine; using it to "wait" is not.
 
-## 与定时任务的关系
+## Relationship with scheduled tasks
 
-持久化的定时任务（`Schedule`）不走 mailbox 的时钟。它是「一张表 + 一个轮询器」：轮询器发现到期项，就构造一个普通调用投递给目标实体的 mailbox。
+Persisted scheduled tasks (`Schedule`) do not run on the mailbox's clock. They are "a table plus a poller": the poller finds due items and constructs an ordinary call delivered to the target entity's mailbox.
 
-也就是说定时任务在实体看来跟普通方法调用没有区别，同样享受串行保证。
+So to the entity, a scheduled task is indistinguishable from an ordinary method call and enjoys the same serialization guarantee.
 
-**明确不重复 Orleans Reminders v1 的设计**——那套是内存缓存 + 环形分区 + 复杂的所有权转移，Orleans 自己在 `Orleans.DurableJobs`（v2，实测 5278 行，仍是 preview）里换掉了。表 + 轮询更笨但更容易验证，精度也够——持久化定时任务本来就不该承诺毫秒级。
+**Explicitly not a repeat of Orleans Reminders v1** — an in-memory cache plus ring partitioning plus complex ownership transfer, which Orleans itself replaced with `Orleans.DurableJobs` (v2, measured at 5278 lines, still preview). Table plus polling is dumber but easier to verify, and accurate enough — persisted scheduled tasks should never promise millisecond precision.
 
-细节见 [timers.md](timers.md)。
+Details in [timers.md](timers.md).

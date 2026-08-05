@@ -1,15 +1,15 @@
-# 持久化
+# Persistence
 
-## 两个职责
+## Two responsibilities
 
-`store` 包干两件不同的事，别混：
+The `store` package does two different things; don't mix them:
 
-1. **实体状态** —— 按 Identity 读写一份状态，带乐观并发。
-2. **集群协调表** —— membership 与定时任务需要的共享表，要求支持 CAS。
+1. **Entity state** — read and write one state per Identity, with optimistic concurrency.
+2. **Cluster coordination tables** — the shared tables membership and scheduled tasks need, with CAS required.
 
-第 2 项是 `cluster` 正确性的地基（见 [cluster.md](cluster.md)），第 1 项只服务业务。
+Item 2 is the foundation of `cluster` correctness (see [cluster.md](cluster.md)); item 1 only serves business logic.
 
-## 接口
+## Interface
 
 ```go
 type Store interface {
@@ -23,52 +23,52 @@ type Record struct {
 }
 ```
 
-`Write` 在 `expect` 与存储中当前 ETag 不符时返回 `ErrConflict`。**不做重试，不做合并。** 冲突是业务语义问题，运行时无权替用户决定。
+`Write` returns `ErrConflict` when `expect` does not match the current ETag in storage. No retries, no merging. A conflict is a business-semantics problem; the runtime has no right to decide for the user.
 
-空记录（首次访问）用零值 ETag 表示，`Write` 时传零值 ETag 意为「要求这条记录当前不存在」。
+An empty record (first access) is represented by the zero ETag; passing the zero ETag to `Write` means "require that this record currently does not exist".
 
-**记录不存在不是错误。** `Read` 读一条没有的记录，返回零值 `Record` 和 `nil` 错误。「不存在」和「存在但是空的」在这里是同一件事——实体第一次被激活时状态本来就是零值，没必要让每个调用点都去分辨这两种情况。
+**A missing record is not an error.** `Read` on a record that does not exist returns the zero `Record` and a nil error. "Does not exist" and "exists but is empty" are the same thing here — an entity's state is the zero value at first activation anyway, so call sites need not distinguish the two.
 
-## ETag 不是可选的
+## ETag is not optional
 
-在集群模式下，目录是最终一致的——节点故障与网络分区期间，同一个 key 可能在两个节点上各有一个激活（详见 [cluster.md](cluster.md)）。此时唯一阻止状态互相覆盖的东西就是 ETag。
+In cluster mode, the directory is eventually consistent: during node failures and network partitions, the same key may have one activation on each of two nodes (see [cluster.md](cluster.md)). The only thing preventing the states from overwriting each other is the ETag.
 
-所以 ETag 不是「高级功能」，是**这个架构下正确性的必要条件**。API 上不提供绕过它的写入路径。
+So the ETag is not an "advanced feature"; it is a necessary condition for correctness under this architecture. The API offers no write path that bypasses it.
 
-这与 Orleans 的立场一致：官方文档在讲到默认目录的最终一致性时，推荐的缓解手段正是存储层的 ETag 乐观并发。
+This matches Orleans' stance: when the official docs discuss the eventual consistency of the default directory, the recommended mitigation is exactly ETag optimistic concurrency at the storage layer.
 
-## 后端
+## Backends
 
-目标是两个：
+Two goals:
 
-**嵌入式** —— 单节点默认。候选 SQLite（`modernc.org/sqlite`，纯 Go，无 CGO）、bbolt、pebble。
+**Embedded** — the single-node default. Candidates: SQLite (`modernc.org/sqlite`, pure Go, no CGO), bbolt, pebble.
 
-倾向 SQLite：它同时能满足状态存储和协调表两个需求（协调表需要事务 + CAS，bbolt 的单写者模型也能做，但 SQL 表达 membership 那种多行条件更新更直接），而且运维可观测性最好——出问题能用 `sqlite3` 直接看。代价是比 bbolt/pebble 慢，纯 Go 版 SQLite 更慢。**选型在实现第 2 步时用实测数字定，现在不预先拍板。**
+Leaning toward SQLite: it satisfies both state storage and coordination tables (coordination needs transactions plus CAS; bbolt's single-writer model can do it too, but SQL expresses multi-row conditional updates like membership more directly), and it has the best operational observability — when something goes wrong, you can look directly with `sqlite3`. The cost is being slower than bbolt/pebble, and the pure-Go SQLite is slower still. The choice will be settled by measured numbers at implementation step 2; it is not decided in advance now.
 
-要测的就是 `Store` 这两个方法在真实访问形态下的样子，不是通用读写吞吐：
+What to measure is how these two `Store` methods behave under real access patterns, not generic read/write throughput:
 
-- 按 key 点读一条记录。
-- CAS 写一条记录（读改写，带 ETag 校验），单条即提交——因为 `Set()` 不批量。
-- 多个 key 并发写。这条最能分开三个候选：bbolt 是单写者，pebble 和 SQLite 不是。
-- 冷启动打开一个已有几万条记录的库要多久。
+- Point-read one record by key.
+- CAS-write one record (read-modify-write with ETag check); a single record commits on its own — because `Set()` does not batch.
+- Concurrent writes across multiple keys. This one best separates the three candidates: bbolt is single-writer; pebble and SQLite are not.
+- How long a cold start takes to open a database with tens of thousands of existing records.
 
-记录时要带上条件：记录大小、并发度、机器、是否开 WAL。**没有条件的数字不算数字。**
+Record the conditions with the numbers: record size, concurrency, machine, WAL on or off. Numbers without conditions are not numbers.
 
-**Postgres** —— 集群模式。理由是它是唯一能同时满足「多节点共享」「支持条件更新做 CAS」「运维团队已经有」三条的选择。
+**Postgres** — cluster mode. It is the only choice that satisfies all three: shared across multiple nodes, conditional updates for CAS, and the ops team already has it.
 
-不做 Redis 后端：membership 表需要的原子条件更新在 Redis 上要靠 Lua 脚本，而且 Redis 的持久化语义会让「死亡投票丢了」这类故障难以推理。
+No Redis backend: the atomic conditional updates the membership table needs would rely on Lua scripts on Redis, and Redis' persistence semantics make failures like "lost death votes" hard to reason about.
 
-不做云厂商专有存储（DynamoDB / Azure Tables 那类）。Orleans 花在这上面的代码实测约 2.6 万行，是它体积的重要来源，收益对本项目不成立。
+No cloud-proprietary storage (DynamoDB / Azure Tables and the like). The code Orleans spends on this measures about 26k lines — a major source of its bulk — and the benefit does not hold for this project.
 
-## 差距
+## Gap
 
-当前代码只提供内存和 SQLite 两个后端。bbolt、pebble、Postgres 等后端仍是目标或候选，不是当前可用实现。
+The current code provides only the in-memory and SQLite backends. bbolt, pebble, Postgres, and others remain goals or candidates, not currently available implementations.
 
-## State 怎么跟运行时接上
+## How State connects to the runtime
 
-`gor.State[T]` 要知道自己属于哪个 Identity、写哪个 store、当前 ETag 是多少。用户写的 struct 里它只是一个字段，工厂函数 `func() Account { return &account{} }` 没有地方把这些交给它。
+`gor.State[T]` needs to know which Identity it belongs to, which store to write, and what the current ETag is. In the user's struct it is just a field, and the factory `func() Account { return &account{} }` has nowhere to hand these to it.
 
-解法是工厂多收一个参数：
+The solution is for the factory to take one more parameter:
 
 ```go
 gor.Register[Account](rt, func(b *gor.Binder) Account {
@@ -76,49 +76,49 @@ gor.Register[Account](rt, func(b *gor.Binder) Account {
 })
 ```
 
-`NewState` 把这个格子登记到 binder 上，运行时激活实体时按登记表读一次 store、把值分发到各个格子。
+`NewState` registers the cell on the binder; when the runtime activates an entity, it reads the store once according to the registrations and distributes the values to the cells.
 
-身份也从这里拿：
+Identity comes from here too:
 
 ```go
 func Self(b *Binder) Identity
 ```
 
-Binder 本来就攥着 Identity——`State` 要用它定位存储行，`Schedule` 要用它写表。`Self` 只是把它交给用户，不新增任何东西。
+The binder already holds the Identity — `State` needs it to locate the storage row, and `Schedule` needs it to write the table. `Self` just hands it to the user; it adds nothing.
 
-**它必须是 Binder 上的一个值，不能是实体状态。** 用状态存自己的 key 会跟着写冲突一起回滚，也会在双激活窗口里出现一份读到旧值的激活——那时候实体会认错自己。
+**It must be a value on the Binder, not entity state.** Storing its own key in state rolls back together with write conflicts, and in a double-activation window an activation would read a stale value — the entity would mistake its own identity.
 
-**否决了反射扫结构体字段回填。** 它能让工厂保持 `func() Account`，用户少写一行，但代价是要用 `unsafe` 去写未导出字段，而且用户看不出这个字段是怎么活过来的。少写的那一行不值这个价。
+**Reflection-based struct field scanning and backfilling is rejected.** It would keep the factory as `func() Account` and save users one line, but at the cost of `unsafe` to write unexported fields — and users could not see how the field came alive. The saved line is not worth that price.
 
-### Binder 上还有两样东西
+### Two more things on the Binder
 
-时间：
+Time:
 
 ```go
 func Now(b *Binder) time.Time
 ```
 
-Binder 已经攥着注入的 `Clock`——`Schedule` 算到期时刻要用它。`Now` 只是把它交出去。不交的后果是用户在实体里写 `time.Now()`，而那正是整个项目第一条不许做的事。
+The binder already holds the injected `Clock` — `Schedule` needs it to compute due times. `Now` just hands it out. If it were not handed out, users would write `time.Now()` in their entities — and that is the very first thing this project forbids.
 
-调别人：
+Calling others:
 
 ```go
-type Scope interface{ /* 密封：只有 *Runtime 和 *Binder 实现 */ }
+type Scope interface{ /* sealed: only *Runtime and *Binder implement it */ }
 
 func Ref[T any](scope Scope, key string) T
 ```
 
-`Ref` 原本只收 `*Runtime`，于是实体想调另一个实体，就得让工厂闭包额外捕获运行时对象，工厂签名从 `func(b *Binder) T` 变成 `func(rt *Runtime, b *Binder) T`。**跨实体调用是虚拟实体最常做的事，它不该是签名上最重的那个参数。**
+`Ref` originally took only a `*Runtime`, so an entity wanting to call another entity would need the factory closure to capture the runtime object as well, changing the factory signature from `func(b *Binder) T` to `func(rt *Runtime, b *Binder) T`. Cross-entity calls are the most common thing virtual entities do; it should not be the heaviest parameter on the signature.
 
-所以 Binder 攥着运行时，`Ref` 收一个密封接口，两边同名。密封（接口里放一个未导出方法）是为了不让用户实现它——它不是扩展点，它只是「一个能解析实体的地方」的两种形态。
+So the binder holds the runtime, `Ref` takes a sealed interface, and both sides share the name. Sealing — an unexported method in the interface — stops users from implementing it: it is not an extension point, just two shapes of "a place that can resolve entities".
 
-不给 Binder 加第三样东西。它是实体和运行时之间的那道缝，缝里塞什么都得先回答「不塞会怎样」。
+**No third thing on the Binder.** It is the seam between entity and runtime; anything stuffed into the seam must first answer "what happens if it is not stuffed".
 
-## runtime 不导入 store
+## runtime does not import store
 
-`runtime` 和 `store` 在架构图里是兄弟，谁也不导入谁。但 `Binder` 要同时够到两边：Identity 只有 `runtime` 在激活时才知道，`Store` 是 `gor` 组装配置时注入的。
+`runtime` and `store` are siblings in the architecture diagram; neither imports the other. But the `Binder` must reach both sides: only `runtime` knows the Identity at activation time, and `Store` is injected when `gor` assembles the configuration.
 
-解法是工厂由 `runtime` 调用、由 `gor` 提供：
+The solution: the factory is called by `runtime` and provided by `gor`:
 
 ```go
 type Registration struct {
@@ -127,67 +127,67 @@ type Registration struct {
 }
 ```
 
-`runtime` 把 Identity 交出去，拿回一个不透明的实例。它不知道实例里挂着一个 Binder，也不知道构造过程读了一次存储。`gor` 是唯一同时看得见 `runtime` 和 `store` 的包，两个 Identity 类型的转换就发生在这一处。
+`runtime` hands out the Identity and gets back an opaque instance. It does not know the instance carries a Binder, nor that construction read storage once. `gor` is the only package that sees both `runtime` and `store`; the conversion between the two Identity types happens in exactly this one place.
 
-工厂现在能返回错误——激活时读存储可能失败。这跟工厂 panic 合并成同一条路径：激活没建成，错误返回给调用方。
+The factory can now return an error — reading storage during activation can fail. This merges with factory panic into the same path: the activation is not established, and the error returns to the caller.
 
-## 冲突怎么传回运行时
+## How conflicts get back to the runtime
 
-`Set()` 撞 `ErrConflict` 时要停用激活，但 `runtime` 不认识 `ErrConflict`，也不该认识。
+When `Set()` hits `ErrConflict`, the activation must be deactivated — but `runtime` does not know `ErrConflict` and should not.
 
-不能靠错误往上冒。用户的方法完全可以吞掉这个错误返回 nil，而那时缓存的 ETag 已经过期了。停用必须与用户代码怎么处理错误无关。
+The error cannot be relied on to propagate up. User methods can perfectly well swallow it and return nil, by which time the cached ETag is stale. Deactivation must be independent of how user code handles the error.
 
-所以 `Set()` 立刻在 Binder 上打一个标记，`gor` 的分发包装在每次调用结束后检查它，把结果包成 `runtime` 认得的形状：
+So `Set()` immediately sets a flag on the Binder; `gor`'s dispatch wrapper checks it after every call and wraps the result into a shape `runtime` recognizes:
 
 ```go
 type Discard struct{ Err error }
 ```
 
-`runtime` 看到 `Discard` 就停用这个激活，并把 `Err` 原样返回给调用方。它只知道「实体说自己不能再用了」，不知道为什么。这跟 panic 后停用走同一条路径。
+When `runtime` sees `Discard`, it deactivates the activation and returns `Err` unchanged to the caller. It only knows "the entity says it can no longer be used", not why. This shares the path with post-panic deactivation.
 
-## 一个实体一条记录
+## One record per entity
 
-`Store.Read` 按 Identity 返回一条记录，所以一个实体的所有 `State` 格子合起来编码成一条记录：一个 JSON 对象，key 是 `NewState` 时给的名字。
+`Store.Read` returns one record per Identity, so all of an entity's `State` cells together encode into one record: a JSON object whose keys are the names given at `NewState`.
 
-这就是名字存在的理由——只有一个格子时它确实是多余的，但有第二个格子时就必须有东西区分它们，而为「只有一个格子」开一条免名字的特例只会让两种形态在存储里长得不一样。
+This is why the names exist — with one cell the name is indeed redundant, but with a second cell something must distinguish them; a name-free special case for "only one cell" would only make the two shapes look different in storage.
 
-任何一个格子 `Set()` 都重写整条记录。于是 **ETag 是实体级的**，不是字段级的——这正是双激活防护需要的粒度：两个激活改的哪怕是不同字段，也必须有一个撞冲突。
+Any cell's `Set()` rewrites the whole record. So the ETag is entity-level, not field-level — exactly the granularity double-activation protection needs: even if two activations modify different fields, one must hit a conflict.
 
-## 序列化实体状态
+## Encoding entity state
 
-用户状态怎么变成 `[]byte`：JSON，不可替换。
+How user state becomes `[]byte`: JSON, not replaceable.
 
-理由不是 JSON 快，是**可读**——出问题时能直接看存储里是什么。
+The reason is not that JSON is fast; it is readable — when something goes wrong, you can look directly at what is in storage.
 
-否决了让用户注入 `Codec`。一个实体的状态是多个格子合成的一条记录，外层容器和格子里的值必须用同一套编码。做成可插拔只有两种落法：外层永远是 JSON、只有格子走 codec——那 codec 是假的，非 JSON 的字节塞进 JSON 容器不成立；或者外层是 `map[string][]byte`——那 JSON 会把每个值 base64 掉，可读性没了，而可读性正是选 JSON 的全部理由。为一个还没人要的旋钮付这个价不值。
+User-injected `Codec` is rejected. An entity's state is one record assembled from multiple cells; the outer container and the values inside the cells must use the same encoding. Making it pluggable has only two outcomes: either the outer layer is always JSON and only the cells go through the codec — a fake codec, since non-JSON bytes cannot fit into a JSON container — or the outer layer is `map[string][]byte`, and then JSON base64-encodes every value, killing readability, which was the entire reason for choosing JSON. Not worth paying that price for a knob nobody asked for.
 
-节点间传输的编码是另一件事，见 [architecture.md](architecture.md)，第 6 步再定。
+Encoding for transport between nodes is a separate matter; it will be decided at step 6, see [architecture.md](architecture.md).
 
-不做版本容忍序列化（字段增删自动兼容）。Orleans 为此付了 3 万行代码，`gor` 的立场是：状态结构演进由用户在应用层处理（读旧格式、写新格式），运行时不介入。
+No version-tolerant encoding (automatic compatibility when fields are added or removed). Orleans paid 30k lines for it. gor's stance: state structure evolution is handled by users at the application layer — read the old format, write the new one; the runtime does not intervene.
 
-## 写失败之后
+## After a failed write
 
-`Set()` 的写返回任何错误时，做两件事：
+When `Set()`'s write returns any error, two things happen:
 
-1. **内存里的值不变。** 写没确认成功，格子就不能装作写成功了，否则内存和存储从此对不上，而且用户读到的是一个存储里可能根本不存在的值。
-2. **停用这个激活。** 下次调用重新从 store 读，拿到新的 ETag 再继续。
+1. **The in-memory value stays unchanged.** Without confirmation of the write, a cell must not pretend the write succeeded — otherwise memory and storage diverge from then on, and the user reads a value that may not exist in storage at all.
+2. **Deactivate the activation.** The next call reads from the store again, gets a fresh ETag, and continues.
 
-这跟 panic 的处理是同一条思路（[runtime.md](runtime.md)）：实例的内存状态已经不可信了，就别接着用它，重建比修复便宜。
+This is the same line of thinking as panic handling ([runtime.md](runtime.md)): once the instance's in-memory state is untrustworthy, don't keep using it — rebuilding is cheaper than repairing.
 
-**不区分冲突和其他写错误。** 撞 `ErrConflict` 说明 ETag 确定已经过期；其他错误说明这次写的结局不明——存储可能已经改了，只是回复没送到。两种情况下这个激活手里的 ETag 都不可信，处理方式就该一样。分开处理要多一条规则，换来的只是「有时候还能凑合再用一会儿」。
+**Conflicts and other write errors are not distinguished.** Hitting `ErrConflict` means the ETag is definitely stale; other errors mean the outcome of this write is unknown — storage may have changed, only the reply did not arrive. In both cases the ETag held by this activation is untrustworthy, so the handling should be the same. Separate handling adds a rule and buys nothing but "sometimes it can still muddle through a while longer".
 
-错误照常返回给调用方，运行时不替他重试——重试是不是安全，只有他知道。
+The error is returned to the caller as usual; the runtime does not retry for him — only he knows whether retrying is safe.
 
-## 写入时机
+## When to write
 
-`State.Set()` 立即写存储，同步等待完成。
+`State.Set()` writes to storage immediately and waits synchronously for completion.
 
-否决了「批量延迟落盘」：它引入一个「内存已改、存储未改」的窗口，崩溃时丢数据，而且这个窗口会让 DST 里的不变量断言变得极其难写。性能不够就让用户减少 `Set` 次数（在一个方法里算完再写一次），而不是让运行时偷偷缓冲。
+Batched delayed persistence is rejected: it introduces a window where memory has changed but storage has not — crashes lose data, and the window makes invariant assertions in DST extremely hard to write. If performance is insufficient, users reduce their `Set` count — compute everything in a method, write once — rather than the runtime silently buffering.
 
-## 定时任务表
+## The scheduled task table
 
 ```
 schedule(entity_type, entity_key, name, method, due_at, interval, etag)
 ```
 
-这张表不走 `Store` 接口——扫描到期行、CAS 抢占、删行都塞不进「按 Identity 读写一份状态」里。它自己一个接口，细节见 [timers.md](timers.md)。
+This table does not go through the `Store` interface — scanning due rows, CAS preemption, and row deletion do not fit into "read and write one state per Identity". It has its own interface; details in [timers.md](timers.md).
