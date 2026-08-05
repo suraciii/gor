@@ -16,13 +16,16 @@ import (
 
 func TestHTTPReportsConfiguresAndReadsShadow(t *testing.T) {
 	sourceClock := clock.NewFake(time.Unix(0, 0).UTC())
-	rt := gor.New(
+	rt, err := gor.New(
 		gor.WithStore(store.NewMemory()),
 		gor.WithClock(sourceClock),
 		gor.WithIdleTimeout(0),
 		gor.WithEvictionInterval(0),
 		gor.WithScheduleInterval(time.Second),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := shadow.Register(rt, sourceClock); err != nil {
 		rt.Close()
 		t.Fatal(err)
@@ -75,7 +78,10 @@ func TestHTTPReportsConfiguresAndReadsShadow(t *testing.T) {
 
 func TestHTTPRejectsMalformedJSON(t *testing.T) {
 	sourceClock := clock.NewFake(time.Unix(0, 0).UTC())
-	rt := gor.New(gor.WithStore(store.NewMemory()), gor.WithClock(sourceClock), gor.WithScheduleInterval(time.Second), gor.WithIdleTimeout(0), gor.WithEvictionInterval(0))
+	rt, err := gor.New(gor.WithStore(store.NewMemory()), gor.WithClock(sourceClock), gor.WithScheduleInterval(time.Second), gor.WithIdleTimeout(0), gor.WithEvictionInterval(0))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := shadow.Register(rt, sourceClock); err != nil {
 		rt.Close()
 		t.Fatal(err)

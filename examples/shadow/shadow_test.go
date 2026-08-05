@@ -19,13 +19,16 @@ func TestDeviceShadowTracksReportsAndWorkshopPresence(t *testing.T) {
 		start := time.Unix(0, 0).UTC()
 		sourceClock := clock.NewFake(start)
 		backend := store.NewMemory()
-		rt := gor.New(
+		rt, err := gor.New(
 			gor.WithStore(backend),
 			gor.WithClock(sourceClock),
 			gor.WithIdleTimeout(0),
 			gor.WithEvictionInterval(0),
 			gor.WithScheduleInterval(time.Second),
 		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := shadow.Register(rt, sourceClock); err != nil {
 			rt.Close()
 			t.Fatal(err)

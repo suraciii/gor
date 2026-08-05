@@ -63,13 +63,16 @@ func run(ctx context.Context, args []string) (runErr error) {
 	}()
 
 	sourceClock := clock.Real{}
-	rt := gor.New(
+	rt, err := gor.New(
 		gor.WithStore(database),
 		gor.WithClock(sourceClock),
 		gor.WithIdleTimeout(idleTimeout),
 		gor.WithEvictionInterval(evictionInterval),
 		gor.WithScheduleInterval(time.Second),
 	)
+	if err != nil {
+		return fmt.Errorf("create runtime: %w", err)
+	}
 	defer rt.Close()
 	if err := shadow.Register(rt, sourceClock); err != nil {
 		return fmt.Errorf("register shadow entities: %w", err)
