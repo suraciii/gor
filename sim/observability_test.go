@@ -28,7 +28,12 @@ func TestSim_ForwardedCallProducesOneObservationAtOrigin(t *testing.T) {
 			gor.WithClock(sourceClock),
 			gor.WithHeartbeatInterval(simulationStepDuration),
 			gor.WithViewInterval(simulationStepDuration),
-			gor.WithDeadAfter(3 * simulationStepDuration),
+			gor.WithProbeInterval(simulationStepDuration),
+			gor.WithProbeTimeout(simulationStepDuration / 2),
+			gor.WithProbeFailures(3),
+			gor.WithVoteTTL(6 * simulationStepDuration),
+			gor.WithMaxTickGap(2 * simulationStepDuration),
+			gor.WithMaxTableLatency(simulationStepDuration / 2),
 			gor.WithIdleTimeout(0),
 			gor.WithEvictionInterval(0),
 		}
