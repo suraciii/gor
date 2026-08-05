@@ -77,7 +77,6 @@ type Config struct {
 	Generation        string
 	HeartbeatInterval time.Duration
 	ViewInterval      time.Duration
-	DeadAfter         time.Duration
 	ProbeInterval     time.Duration
 	ProbeTimeout      time.Duration
 	ProbeFailures     int
@@ -120,13 +119,12 @@ func New(options ...Option) (*Runtime, error) {
 		ScheduleInterval:  time.Second,
 		HeartbeatInterval: time.Second,
 		ViewInterval:      time.Second,
-		DeadAfter:         3 * time.Second,
 	}
 	for _, option := range options {
 		option(&config)
 	}
-	if config.MemberStore != nil && config.Transport == nil {
-		return nil, errors.New("member store requires transport")
+	if (config.MemberStore == nil) != (config.Transport == nil) {
+		return nil, errors.New("member store and transport must be configured together")
 	}
 	if config.ScheduleStore == nil {
 		if schedules, ok := config.Store.(store.ScheduleStore); ok {
@@ -147,7 +145,6 @@ func New(options ...Option) (*Runtime, error) {
 			Generation:        config.Generation,
 			HeartbeatInterval: config.HeartbeatInterval,
 			ViewInterval:      config.ViewInterval,
-			DeadAfter:         config.DeadAfter,
 			ProbeInterval:     config.ProbeInterval,
 			ProbeTimeout:      config.ProbeTimeout,
 			ProbeFailures:     config.ProbeFailures,
@@ -278,12 +275,6 @@ func WithHeartbeatInterval(value time.Duration) Option {
 func WithViewInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.ViewInterval = value
-	}
-}
-
-func WithDeadAfter(value time.Duration) Option {
-	return func(config *Config) {
-		config.DeadAfter = value
 	}
 }
 

@@ -181,7 +181,6 @@ func TestNodeProbeStateMachineTracksNeighborsAndExactReplies(t *testing.T) {
 			Generation:        "generation-a",
 			HeartbeatInterval: time.Hour,
 			ViewInterval:      time.Hour,
-			DeadAfter:         time.Hour,
 			ProbeInterval:     time.Second,
 			ProbeTimeout:      500 * time.Millisecond,
 			ProbeFailures:     3,

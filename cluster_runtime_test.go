@@ -31,6 +31,14 @@ func TestNew_ClusterRequiresTransport(t *testing.T) {
 	}
 }
 
+func TestNew_TransportRequiresMemberStore(t *testing.T) {
+	network := newTestTransportNetwork()
+	_, err := New(WithTransport(network.add("node-a")))
+	if err == nil {
+		t.Fatal("New returned nil error for a transport without member store")
+	}
+}
+
 func TestRuntime_ClusterForwardsInvocationToAnotherOwner(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(600, 0).UTC()
@@ -195,7 +203,6 @@ func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
 		firstOptions = append(firstOptions,
 			WithHeartbeatInterval(time.Second),
 			WithViewInterval(time.Hour),
-			WithDeadAfter(time.Hour),
 			WithTransport(network.add("node-a")),
 		)
 		first := mustNew(t, firstOptions...)
@@ -204,7 +211,6 @@ func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
 		secondOptions = append(secondOptions,
 			WithHeartbeatInterval(time.Hour),
 			WithViewInterval(time.Hour),
-			WithDeadAfter(time.Hour),
 			WithTransport(network.add("node-b")),
 		)
 		second := mustNew(t, secondOptions...)
@@ -294,7 +300,6 @@ func clusterRuntimeOptions(backend store.Store, members store.MemberStore, sourc
 		WithClock(sourceClock),
 		WithHeartbeatInterval(time.Hour),
 		WithViewInterval(time.Second),
-		WithDeadAfter(time.Hour),
 		WithProbeInterval(time.Second),
 		WithProbeTimeout(500 * time.Millisecond),
 		WithProbeFailures(3),

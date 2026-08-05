@@ -42,7 +42,6 @@ type Config struct {
 	Generation        string
 	HeartbeatInterval time.Duration
 	ViewInterval      time.Duration
-	DeadAfter         time.Duration
 	ProbeInterval     time.Duration
 	ProbeTimeout      time.Duration
 	ProbeFailures     int
@@ -59,7 +58,6 @@ type Node struct {
 	generation        string
 	heartbeatInterval time.Duration
 	viewInterval      time.Duration
-	deadAfter         time.Duration
 	probeInterval     time.Duration
 	probeTimeout      time.Duration
 	probeFailureLimit int
@@ -94,7 +92,6 @@ func New(config Config) (*Node, error) {
 		generation:        config.Generation,
 		heartbeatInterval: config.HeartbeatInterval,
 		viewInterval:      config.ViewInterval,
-		deadAfter:         config.DeadAfter,
 		probeInterval:     config.ProbeInterval,
 		probeTimeout:      config.ProbeTimeout,
 		probeFailureLimit: config.ProbeFailures,
@@ -452,28 +449,10 @@ func (n *Node) pollView(self store.Member, current View) (View, bool) {
 		return current, true
 	}
 	members := append([]store.Member(nil), snapshot.Members...)
-	now := n.clock.Now()
-	for index := range members {
-		member := members[index]
-		if sameMember(member, self) {
-			if member.Status == store.MemberDead {
-				n.state.Store(uint32(StateDead))
-				return NewView(members), false
-			}
-			continue
-		}
-		if member.Status == store.MemberDead || now.Sub(member.IamAliveAt) <= n.deadAfter {
-			continue
-		}
-
-		candidate := member
-		candidate.Status = store.MemberDead
-		etag, err := n.table.WriteMember(n.ctx, candidate)
-		if err != nil {
-			continue
-		}
-		candidate.ETag = etag
-		members[index] = candidate
+	index := memberIndex(members, self)
+	if index >= 0 && members[index].Status == store.MemberDead {
+		n.state.Store(uint32(StateDead))
+		return NewView(members), false
 	}
 	return NewView(members), true
 }

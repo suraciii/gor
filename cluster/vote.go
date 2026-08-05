@@ -89,19 +89,18 @@ func (n *Node) updateSuspectVote(target, voter MemberID, renew bool) {
 		} else {
 			delete(votes, voter)
 		}
-		if sameSuspectVotes(row.SuspectVotes, votes) {
-			return
-		}
-		row.SuspectVotes = votes
-		etag, err := n.table.WriteMember(n.ctx, row)
-		if err != nil {
-			if errors.Is(err, store.ErrConflict) {
-				continue
+		if !sameSuspectVotes(row.SuspectVotes, votes) {
+			row.SuspectVotes = votes
+			etag, err := n.table.WriteMember(n.ctx, row)
+			if err != nil {
+				if errors.Is(err, store.ErrConflict) {
+					continue
+				}
+				return
 			}
-			return
+			row.ETag = etag
+			members[index] = row
 		}
-		row.ETag = etag
-		members[index] = row
 		if !renew || !shouldMarkDead(store.MemberSnapshot{Members: members, TableNow: snapshot.TableNow}, target) {
 			return
 		}

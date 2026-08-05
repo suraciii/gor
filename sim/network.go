@@ -8,7 +8,6 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/suraciii/gor/store"
 	"github.com/suraciii/gor/transport"
@@ -79,7 +78,7 @@ func (n *simulationNetwork) partition(groups map[string]int) error {
 	return nil
 }
 
-func (n *simulationNetwork) heal(now time.Time) {
+func (n *simulationNetwork) heal() {
 	n.mu.Lock()
 	n.partitioned = false
 	n.groups = nil
@@ -91,10 +90,6 @@ func (n *simulationNetwork) heal(now time.Time) {
 	for _, members := range stores {
 		members.heal()
 	}
-	// The private member snapshots discard heartbeats written during the
-	// partition when heal drops them. Refreshing the shared table compensates
-	// for that simulation-model gap; it is not runtime behavior.
-	n.backend.refreshActiveMembers(now)
 }
 
 func (n *simulationNetwork) blocked(source, destination string) bool {

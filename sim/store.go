@@ -217,19 +217,6 @@ func (s *fakeStore) setReadBarrier(id store.Identity, barrier readBarrier) {
 	s.readBarriers[id] = barrier
 }
 
-func (s *fakeStore) refreshActiveMembers(now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for key, member := range s.members {
-		if member.Status != store.MemberActive {
-			continue
-		}
-		member.IamAliveAt = now
-		member.ETag++
-		s.members[key] = member
-	}
-}
-
 func (s *fakeStore) readBarrier(id store.Identity) readBarrier {
 	s.mu.Lock()
 	defer s.mu.Unlock()
