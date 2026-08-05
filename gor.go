@@ -641,9 +641,10 @@ func (rt *Runtime) closeGracefully() {
 		rt.clusterNode.Close()
 		<-rt.clusterDone
 	}
-	rt.engine.Close()
-	rt.closeTransport()
+	rt.engine.BeginClose()
+	<-rt.engine.Done()
 	rt.waitDrained()
+	rt.closeTransport()
 	rt.finishStop()
 }
 
@@ -655,7 +656,8 @@ func (rt *Runtime) closeImmediately() {
 		rt.clusterNode.Kill()
 		<-rt.clusterDone
 	}
-	rt.engine.Kill()
+	rt.engine.BeginKill()
+	<-rt.engine.Done()
 	rt.closeTransport()
 	rt.finishStop()
 }
@@ -837,17 +839,23 @@ func (rt *Runtime) watchCluster() {
 		rt.clusterView.Store(&view)
 		rt.deactivateMovedActivations(view)
 	}
-	// The cluster node finished. becomeDead is atomic: it returns true only when
-	// this call moved a still-running root to dead. If Close or Kill already left
-	// running, it returns false and the voluntary stop drives its own teardown —
-	// a graceful close must not be upgraded to a sudden stop here.
+	// The cluster node reports why it stopped. Only an external death declaration
+	// collapses a still-running root to dead; becomeDead is atomic, so a root
+	// already in closing or killing stays put and lets its own stop proceed.
+	select {
+	case <-rt.clusterNode.DeclaredDead():
+	default:
+		return
+	}
 	if !rt.becomeDead() {
 		return
 	}
 	if rt.poller != nil {
 		rt.poller.Close()
 	}
-	rt.engine.Kill()
+	rt.engine.BeginKill()
+	<-rt.engine.Done()
+	rt.finishStop()
 }
 
 func (rt *Runtime) deactivateMovedActivations(view cluster.View) {
