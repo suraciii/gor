@@ -6,20 +6,30 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/suraciii/gor/clock"
 	_ "modernc.org/sqlite"
 )
 
 const sqliteBusyTimeout = 5000
 
 type SQLite struct {
-	readDB  *sql.DB
-	writeDB *sql.DB
+	readDB      *sql.DB
+	writeDB     *sql.DB
+	memberClock clock.Clock
 }
 
 var _ Store = (*SQLite)(nil)
 var _ MemberStore = (*SQLite)(nil)
 
 func OpenSQLite(path string) (*SQLite, error) {
+	return openSQLite(path, clock.Real{})
+}
+
+func OpenSQLiteWithClock(path string, memberClock clock.Clock) (*SQLite, error) {
+	return openSQLite(path, memberClock)
+}
+
+func openSQLite(path string, memberClock clock.Clock) (*SQLite, error) {
 	dsn := sqliteDSN(path)
 	writeDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -48,7 +58,7 @@ func OpenSQLite(path string) (*SQLite, error) {
 		return nil, err
 	}
 
-	return &SQLite{readDB: readDB, writeDB: writeDB}, nil
+	return &SQLite{readDB: readDB, writeDB: writeDB, memberClock: memberClock}, nil
 }
 
 func (s *SQLite) Read(ctx context.Context, id Identity) (Record, error) {
@@ -138,6 +148,7 @@ CREATE TABLE IF NOT EXISTS member (
 	generation TEXT NOT NULL,
 	status TEXT NOT NULL,
 	iam_alive_at INTEGER NOT NULL,
+	suspect_votes BLOB NOT NULL DEFAULT '[]',
 	etag INTEGER NOT NULL,
 	PRIMARY KEY (node_addr, generation)
 )`)

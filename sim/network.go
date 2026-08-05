@@ -8,7 +8,6 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/suraciii/gor/store"
 	"github.com/suraciii/gor/transport"
@@ -69,7 +68,7 @@ func (n *simulationNetwork) partition(groups map[string]int) error {
 	}
 	n.mu.Unlock()
 	for _, members := range stores {
-		members.partition(snapshot)
+		members.partition(snapshot.Members)
 	}
 
 	n.mu.Lock()
@@ -79,7 +78,7 @@ func (n *simulationNetwork) partition(groups map[string]int) error {
 	return nil
 }
 
-func (n *simulationNetwork) heal(now time.Time) {
+func (n *simulationNetwork) heal() {
 	n.mu.Lock()
 	n.partitioned = false
 	n.groups = nil
@@ -91,10 +90,6 @@ func (n *simulationNetwork) heal(now time.Time) {
 	for _, members := range stores {
 		members.heal()
 	}
-	// The private member snapshots discard heartbeats written during the
-	// partition when heal drops them. Refreshing the shared table compensates
-	// for that simulation-model gap; it is not runtime behavior.
-	n.backend.refreshActiveMembers(now)
 }
 
 func (n *simulationNetwork) blocked(source, destination string) bool {
@@ -245,9 +240,9 @@ func (s *partitionedMemberStore) WriteMember(ctx context.Context, member store.M
 	return member.ETag, nil
 }
 
-func (s *partitionedMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+func (s *partitionedMemberStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return store.MemberSnapshot{}, err
 	}
 	s.mu.Lock()
 	if !s.partitioned {
@@ -265,5 +260,5 @@ func (s *partitionedMemberStore) ListMembers(ctx context.Context) ([]store.Membe
 		}
 		return members[i].Generation < members[j].Generation
 	})
-	return members, nil
+	return store.MemberSnapshot{Members: members, TableNow: s.backend.memberTableNow()}, nil
 }

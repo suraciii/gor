@@ -20,6 +20,8 @@ member(node_addr, generation, status, iam_alive_at, suspect_votes, etag)
 
 这是第 6c 步之后的形态。`suspect_votes` 只在探测与投票启用后写。
 
+集群节点必须同时配置成员表和传输；只配置其中一个是无效配置。成员表提供共享成员视图，传输提供对其他成员的调用与直接探测，缺少任一项的节点不加入集群。
+
 主键是 (node_addr, generation)。**generation 是节点每次启动新取的一个值**，同一个地址重启后是新的一行。没有它，重启的节点会认领自己上一条命的那一行，而别人可能还在给那一行投死亡票。
 
 ### 表的接口
@@ -98,9 +100,9 @@ joining → active → dead
 
 `cluster` 不导入 `transport`。它只依赖一个异步 `Prober`：给出目标成员 ID，返回一个回复 channel。`gor` 的适配器用 `Transport.Send` 发送 [信封](#信封)定义的 `probe` 请求。传输的服务端 handler 按 `kind` 分派；`probe` 直接交给 `cluster`，不经过实体调用。
 
-探测请求带期望的 `(node_addr, generation)`。服务端当前成员 ID 放进普通响应的 `reply`。只有回复 ID 与快照中的目标完全相同才算成功。地址复用后的新进程不能为旧 generation 洗掉票。
+探测请求只带 `kind`。服务端当前成员 ID 放进普通响应的 `reply`，由发起方与快照中的目标比对；只有完全相同才算成功。地址复用后的新进程不能为旧 generation 洗掉票。
 
-服务端只在本地成员仍是 `active` 且未停止服务时回复。探测本身不读写成员表，不刷新心跳，也不转发第二次。
+服务端在本地成员仍是 `active` 且未停止服务时回复当前成员 ID；否则返回错误响应，不回成员 ID。探测本身不读写成员表，不刷新心跳，也不转发第二次。
 
 探测状态机等待回复 channel、关闭信号和由 `Clock` 创建的超时 channel。超时会取消这次 `Send`。不用 `context.WithTimeout`，也不用墙钟。
 
@@ -278,7 +280,7 @@ Orleans 有目录表，是因为它不按哈希放置——它把激活放在选
 
 ```
 调用  {"kind": "invoke", "type": ..., "key": ..., "method": ..., "args": ...}
-探测  {"kind": "probe", "node_addr": ..., "generation": ...}
+探测  {"kind": "probe"}
 响应  {"reply": ..., "error": ...}
 ```
 
@@ -332,8 +334,4 @@ Orleans 有目录表，是因为它不按哈希放置——它把激活放在选
 
 ## 差距
 
-当前实装已完成 6a 和 6b，但仍使用旧判死规则。`store.Member` 和 SQLite `member` 表没有 `suspect_votes`；`MemberStore` 也不返回带 `TableNow` 的全表快照。它的 CAS 会整行覆盖，不能合并并发票。
-
-`cluster.Node` 只有 `HeartbeatInterval`、`ViewInterval` 和 `DeadAfter`。它在 `pollView` 中按本地 `Clock` 与 `iam_alive_at` 直接写 `dead`，没有成员探测环、`Prober`、连续失败、自检或票数判定。
-
-`transport` 已实现为独立包，`gor` 已在远端归属时通过它转发 `invoke` 请求。6c 的 `kind` 信封、探测适配器和入站探测分派仍未实装。
+当前实现已覆盖本节的成员快照、探测、带过期投票、自检和节点自杀路径。仍未覆盖的是后续未列入第 6c 的运维清理与滚动升级能力。

@@ -24,7 +24,7 @@ func TestRuntime_HandleInvokesMethodAndEncodesReply(t *testing.T) {
 	defer rt.Close()
 	registerAccount(t, rt)
 
-	payload, err := rt.handle(context.Background(), []byte(`{"type":"gor.Account","key":"alice","method":"Deposit","args":{"A0":4}}`))
+	payload, err := rt.handle(context.Background(), []byte(`{"kind":"invoke","type":"gor.Account","key":"alice","method":"Deposit","args":{"A0":4}}`))
 	if err != nil {
 		t.Fatalf("Handle error = %v", err)
 	}
@@ -59,7 +59,7 @@ func TestRuntime_HandleReturnsMethodErrorInResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	payload, err := rt.handle(context.Background(), []byte(`{"type":"gor.Account","key":"alice","method":"Fail","args":{}}`))
+	payload, err := rt.handle(context.Background(), []byte(`{"kind":"invoke","type":"gor.Account","key":"alice","method":"Fail","args":{}}`))
 	if err != nil {
 		t.Fatalf("Handle error = %v, want nil for method error", err)
 	}
@@ -77,7 +77,7 @@ func TestRuntime_HandleRejectsUnknownMethod(t *testing.T) {
 	defer rt.Close()
 	registerAccount(t, rt)
 
-	payload, err := rt.handle(context.Background(), []byte(`{"type":"gor.Account","key":"alice","method":"Missing","args":{}}`))
+	payload, err := rt.handle(context.Background(), []byte(`{"kind":"invoke","type":"gor.Account","key":"alice","method":"Missing","args":{}}`))
 	if err != nil {
 		t.Fatalf("Handle error = %v, want nil for method error", err)
 	}
@@ -94,7 +94,7 @@ func TestRuntime_HandleRejectsUnregisteredType(t *testing.T) {
 	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 	defer rt.Close()
 
-	payload, err := rt.handle(context.Background(), []byte(`{"type":"missing.Account","key":"alice","method":"Balance","args":{}}`))
+	payload, err := rt.handle(context.Background(), []byte(`{"kind":"invoke","type":"missing.Account","key":"alice","method":"Balance","args":{}}`))
 	if err != nil {
 		t.Fatalf("handle error = %v, want nil", err)
 	}
@@ -111,7 +111,7 @@ func TestRuntime_HandleRejectsBadJSON(t *testing.T) {
 	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 	defer rt.Close()
 
-	payload, err := rt.handle(context.Background(), []byte(`{"type":"gor.Account","key":"alice","method":"Deposit","args":{"A0":`))
+	payload, err := rt.handle(context.Background(), []byte(`{"kind":"invoke","type":"gor.Account","key":"alice","method":"Deposit","args":{"A0":`))
 	if err != nil {
 		t.Fatalf("handle error = %v, want nil", err)
 	}
@@ -129,7 +129,7 @@ func TestRuntime_HandleRejectsBadArguments(t *testing.T) {
 	defer rt.Close()
 	registerAccount(t, rt)
 
-	payload, err := rt.handle(context.Background(), []byte(`{"type":"gor.Account","key":"alice","method":"Deposit","args":{"A0":"wrong"}}`))
+	payload, err := rt.handle(context.Background(), []byte(`{"kind":"invoke","type":"gor.Account","key":"alice","method":"Deposit","args":{"A0":"wrong"}}`))
 	if err != nil {
 		t.Fatalf("handle error = %v, want nil", err)
 	}
@@ -146,7 +146,7 @@ func TestRuntime_HandleRejectsClosedRuntime(t *testing.T) {
 	rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 	rt.Close()
 
-	payload, err := rt.handle(context.Background(), []byte(`{"type":"gor.Account","key":"alice","method":"Balance","args":{}}`))
+	payload, err := rt.handle(context.Background(), []byte(`{"kind":"invoke","type":"gor.Account","key":"alice","method":"Balance","args":{}}`))
 	if err != nil {
 		t.Fatalf("handle error = %v, want nil", err)
 	}
@@ -192,7 +192,7 @@ func TestRuntime_HandleRejectsWhileClosing(t *testing.T) {
 		}()
 		synctest.Wait()
 
-		payload, err := rt.handle(context.Background(), []byte(`{"type":"gor.Account","key":"alice","method":"Balance","args":{}}`))
+		payload, err := rt.handle(context.Background(), []byte(`{"kind":"invoke","type":"gor.Account","key":"alice","method":"Balance","args":{}}`))
 		if err != nil {
 			t.Fatalf("handle error = %v, want nil", err)
 		}
@@ -798,6 +798,7 @@ type testTransport struct {
 	serveOnce    sync.Once
 	closeOnce    sync.Once
 	sends        atomic.Int32
+	probeSends   atomic.Int32
 	sendError    error
 	sendResponse []byte
 }
@@ -830,7 +831,14 @@ func (t *testTransport) Serve(ctx context.Context, handler transport.Handler) er
 }
 
 func (t *testTransport) Send(ctx context.Context, addr string, payload []byte) ([]byte, error) {
-	t.sends.Add(1)
+	var request struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(payload, &request); err == nil && request.Kind == requestKindProbe {
+		t.probeSends.Add(1)
+	} else {
+		t.sends.Add(1)
+	}
 	if t.sendError != nil {
 		return nil, t.sendError
 	}

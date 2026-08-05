@@ -44,6 +44,7 @@ func newSimulationCluster(backend *fakeStore, count int, tracker *timerTracker) 
 		nodes:       make([]*clusterNode, count),
 		network:     newSimulationNetwork(backend),
 	}
+	cluster.backend.setMemberClock(cluster.clock)
 	for id := range cluster.nodes {
 		rt, err := cluster.newRuntime(id, 0)
 		if err != nil {
@@ -67,7 +68,12 @@ func (c *simulationCluster) newRuntime(id, generation int) (*gor.Runtime, error)
 		gor.WithGeneration(memberGeneration(id, generation)),
 		gor.WithHeartbeatInterval(simulationStepDuration),
 		gor.WithViewInterval(simulationStepDuration),
-		gor.WithDeadAfter(3*simulationStepDuration),
+		gor.WithProbeInterval(simulationStepDuration),
+		gor.WithProbeTimeout(simulationStepDuration/2),
+		gor.WithProbeFailures(3),
+		gor.WithVoteTTL(6*simulationStepDuration),
+		gor.WithMaxTickGap(2*simulationStepDuration),
+		gor.WithMaxTableLatency(simulationStepDuration/2),
 		gor.WithTransport(network),
 	)
 }
@@ -193,7 +199,7 @@ func (c *simulationCluster) partition(groups map[int]int) error {
 }
 
 func (c *simulationCluster) heal() {
-	c.network.heal(c.clock.Now())
+	c.network.heal()
 }
 
 func (c *simulationCluster) checkInvariants(ids []store.Identity) error {

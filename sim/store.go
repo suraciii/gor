@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/suraciii/gor/clock"
 	"github.com/suraciii/gor/store"
 )
 
@@ -129,6 +130,7 @@ type fakeStore struct {
 	scheduleListFault   scheduleFaultKind
 	scheduleClaimFaults map[store.Identity]scheduleFaultKind
 	timerTracker        *timerTracker
+	memberClock         clock.Clock
 	stats               scheduleStats
 	memberStats         memberStats
 	writes              []writeEvent
@@ -153,8 +155,22 @@ func newFakeStore(tracker *timerTracker) *fakeStore {
 		schedules:           make(map[scheduleKey]store.Schedule),
 		scheduleClaimFaults: make(map[store.Identity]scheduleFaultKind),
 		timerTracker:        tracker,
+		memberClock:         clock.Real{},
 		idle:                idle,
 	}
+}
+
+func (s *fakeStore) setMemberClock(memberClock clock.Clock) {
+	s.mu.Lock()
+	s.memberClock = memberClock
+	s.mu.Unlock()
+}
+
+func (s *fakeStore) memberTableNow() time.Time {
+	s.mu.Lock()
+	memberClock := s.memberClock
+	s.mu.Unlock()
+	return memberClock.Now()
 }
 
 func (s *fakeStore) setFaultPlans(plans map[store.Identity]faultPlan) {
@@ -199,19 +215,6 @@ func (s *fakeStore) setReadBarrier(id store.Identity, barrier readBarrier) {
 		return
 	}
 	s.readBarriers[id] = barrier
-}
-
-func (s *fakeStore) refreshActiveMembers(now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for key, member := range s.members {
-		if member.Status != store.MemberActive {
-			continue
-		}
-		member.IamAliveAt = now
-		member.ETag++
-		s.members[key] = member
-	}
 }
 
 func (s *fakeStore) readBarrier(id store.Identity) readBarrier {
@@ -327,7 +330,7 @@ func (s *fakeStore) WriteMember(_ context.Context, member store.Member) (store.E
 	return member.ETag, nil
 }
 
-func (s *fakeStore) ListMembers(_ context.Context) ([]store.Member, error) {
+func (s *fakeStore) ListMembers(_ context.Context) (store.MemberSnapshot, error) {
 	defer s.endOperation(s.beginOperation())
 	s.mu.Lock()
 	s.memberStats.listCalls++
@@ -336,7 +339,7 @@ func (s *fakeStore) ListMembers(_ context.Context) ([]store.Member, error) {
 		s.memberFault = memberFaultSpec{}
 		s.memberStats.listErrors++
 		s.mu.Unlock()
-		return nil, errMemberListFailure
+		return store.MemberSnapshot{}, errMemberListFailure
 	}
 	members := make([]store.Member, 0, len(s.members))
 	for _, member := range s.members {
@@ -349,7 +352,7 @@ func (s *fakeStore) ListMembers(_ context.Context) ([]store.Member, error) {
 		}
 		return members[i].Generation < members[j].Generation
 	})
-	return members, nil
+	return store.MemberSnapshot{Members: members, TableNow: s.memberTableNow()}, nil
 }
 
 func (s *fakeStore) memberStatsSnapshot() memberStats {

@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/suraciii/gor/cluster"
 	runtimepkg "github.com/suraciii/gor/runtime"
 )
 
 type callRequest struct {
+	Kind   string          `json:"kind"`
 	Type   string          `json:"type"`
 	Key    string          `json:"key"`
 	Method string          `json:"method"`
@@ -27,6 +29,7 @@ func (rt *Runtime) forward(ctx context.Context, owner string, id Identity, metho
 		return fmt.Errorf("encode %s arguments: %w", method, err)
 	}
 	payload, err := json.Marshal(callRequest{
+		Kind:   requestKindInvoke,
 		Type:   id.Type,
 		Key:    id.Key,
 		Method: method,
@@ -67,6 +70,22 @@ func (rt *Runtime) handle(ctx context.Context, payload []byte) ([]byte, error) {
 		return encodeCallResponse(callResponse{Error: fmt.Errorf("decode invocation request: %w", err).Error()})
 	}
 
+	switch request.Kind {
+	case requestKindInvoke:
+		return rt.handleInvoke(ctx, request)
+	case requestKindProbe:
+		return rt.handleProbe()
+	default:
+		return encodeCallResponse(callResponse{Error: fmt.Sprintf("unknown request kind %q", request.Kind)})
+	}
+}
+
+const (
+	requestKindInvoke = "invoke"
+	requestKindProbe  = "probe"
+)
+
+func (rt *Runtime) handleInvoke(ctx context.Context, request callRequest) ([]byte, error) {
 	registration, ok := rt.typeRegistration(request.Type)
 	if !ok {
 		return encodeCallResponse(callResponse{Error: fmt.Errorf("%w: %s", ErrTypeNotInstalled, request.Type).Error()})
@@ -91,6 +110,21 @@ func (rt *Runtime) handle(ctx context.Context, payload []byte) ([]byte, error) {
 		response.Error = fmt.Errorf("encode %s reply: %w", request.Method, replyErr).Error()
 	}
 	return encodeCallResponse(response)
+}
+
+func (rt *Runtime) handleProbe() ([]byte, error) {
+	if rt.clusterNode == nil {
+		return encodeCallResponse(callResponse{Error: "cluster node is not configured"})
+	}
+	id, ok := rt.clusterNode.Probe()
+	if !ok {
+		return encodeCallResponse(callResponse{Error: cluster.ErrNodeDead.Error()})
+	}
+	reply, err := json.Marshal(id)
+	if err != nil {
+		return encodeCallResponse(callResponse{Error: fmt.Errorf("encode probe reply: %w", err).Error()})
+	}
+	return encodeCallResponse(callResponse{Reply: reply})
 }
 
 func encodeCallResponse(response callResponse) ([]byte, error) {

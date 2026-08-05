@@ -11,7 +11,8 @@ import (
 const virtualPointCount = 128
 
 type View struct {
-	points []point
+	points  []point
+	members []MemberID
 }
 
 type point struct {
@@ -28,7 +29,7 @@ func NewView(snapshot []store.Member) View {
 			members = append(members, member)
 		}
 	}
-	return View{points: buildPoints(members)}
+	return View{points: buildPoints(members), members: activeMemberIDs(members)}
 }
 
 func Owner(view View, identity store.Identity) (string, bool) {

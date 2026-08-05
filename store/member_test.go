@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -68,12 +69,12 @@ func runMemberStoreTests(t *testing.T, newBackend func(*testing.T) MemberStore) 
 		for i := range want {
 			want[i].ETag = 1
 		}
-		if len(got) != len(want) {
-			t.Fatalf("ListMembers returned %d rows, want %d: %#v", len(got), len(want), got)
+		if len(got.Members) != len(want) {
+			t.Fatalf("ListMembers returned %d rows, want %d: %#v", len(got.Members), len(want), got)
 		}
 		for i := range want {
-			if got[i] != want[i] {
-				t.Fatalf("member %d = %#v, want %#v", i, got[i], want[i])
+			if !reflect.DeepEqual(got.Members[i], want[i]) {
+				t.Fatalf("member %d = %#v, want %#v", i, got.Members[i], want[i])
 			}
 		}
 	})
@@ -110,9 +111,9 @@ func runMemberStoreTests(t *testing.T, newBackend func(*testing.T) MemberStore) 
 			t.Fatalf("ListMembers after conflicts: %v", err)
 		}
 		var found *Member
-		for i := range got {
-			if got[i].NodeAddr == member.NodeAddr && got[i].Generation == member.Generation {
-				found = &got[i]
+		for i := range got.Members {
+			if got.Members[i].NodeAddr == member.NodeAddr && got.Members[i].Generation == member.Generation {
+				found = &got.Members[i]
 				break
 			}
 		}
@@ -174,9 +175,9 @@ func runMemberStoreTests(t *testing.T, newBackend func(*testing.T) MemberStore) 
 			t.Fatalf("ListMembers after race: %v", err)
 		}
 		var found *Member
-		for i := range got {
-			if got[i].NodeAddr == member.NodeAddr && got[i].Generation == member.Generation {
-				found = &got[i]
+		for i := range got.Members {
+			if got.Members[i].NodeAddr == member.NodeAddr && got.Members[i].Generation == member.Generation {
+				found = &got.Members[i]
 				break
 			}
 		}
@@ -184,4 +185,36 @@ func runMemberStoreTests(t *testing.T, newBackend func(*testing.T) MemberStore) 
 			t.Fatalf("member after race = %#v, want active with ETag %d", got, etag+1)
 		}
 	})
+}
+
+func TestMemoryStoresSuspectVotes(t *testing.T) {
+	assertSuspectVotesPersist(t, NewMemory())
+}
+
+func TestSQLiteStoresSuspectVotes(t *testing.T) {
+	assertSuspectVotesPersist(t, newSQLiteTestStore(t))
+}
+
+func assertSuspectVotesPersist(t *testing.T, backend MemberStore) {
+	t.Helper()
+	member := Member{NodeAddr: "node-a", Generation: "generation-a", Status: MemberActive, IamAliveAt: time.Unix(0, 0).UTC()}
+	if _, err := backend.WriteMember(context.Background(), member); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := backend.ListMembers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	member = snapshot.Members[0]
+	member.SuspectVotes = map[MemberID]SuspectVote{{NodeAddr: "node-b", Generation: "generation-b"}: {ExpiresAt: time.Unix(1, 0).UTC()}}
+	if _, err := backend.WriteMember(context.Background(), member); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = backend.ListMembers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Members[0].SuspectVotes) != 1 {
+		t.Fatalf("stored votes = %#v", snapshot.Members[0].SuspectVotes)
+	}
 }

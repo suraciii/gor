@@ -77,7 +77,12 @@ type Config struct {
 	Generation        string
 	HeartbeatInterval time.Duration
 	ViewInterval      time.Duration
-	DeadAfter         time.Duration
+	ProbeInterval     time.Duration
+	ProbeTimeout      time.Duration
+	ProbeFailures     int
+	VoteTTL           time.Duration
+	MaxTickGap        time.Duration
+	MaxTableLatency   time.Duration
 }
 
 type Invoker interface {
@@ -114,10 +119,12 @@ func New(options ...Option) (*Runtime, error) {
 		ScheduleInterval:  time.Second,
 		HeartbeatInterval: time.Second,
 		ViewInterval:      time.Second,
-		DeadAfter:         3 * time.Second,
 	}
 	for _, option := range options {
 		option(&config)
+	}
+	if (config.MemberStore == nil) != (config.Transport == nil) {
+		return nil, errors.New("member store and transport must be configured together")
 	}
 	if config.ScheduleStore == nil {
 		if schedules, ok := config.Store.(store.ScheduleStore); ok {
@@ -133,11 +140,17 @@ func New(options ...Option) (*Runtime, error) {
 		clusterNode, err = cluster.New(cluster.Config{
 			Table:             config.MemberStore,
 			Clock:             config.Clock,
+			Prober:            transportProber{transport: config.Transport},
 			NodeAddr:          config.NodeAddr,
 			Generation:        config.Generation,
 			HeartbeatInterval: config.HeartbeatInterval,
 			ViewInterval:      config.ViewInterval,
-			DeadAfter:         config.DeadAfter,
+			ProbeInterval:     config.ProbeInterval,
+			ProbeTimeout:      config.ProbeTimeout,
+			ProbeFailures:     config.ProbeFailures,
+			VoteTTL:           config.VoteTTL,
+			MaxTickGap:        config.MaxTickGap,
+			MaxTableLatency:   config.MaxTableLatency,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("start cluster node: %w", err)
@@ -265,9 +278,39 @@ func WithViewInterval(value time.Duration) Option {
 	}
 }
 
-func WithDeadAfter(value time.Duration) Option {
+func WithProbeInterval(value time.Duration) Option {
 	return func(config *Config) {
-		config.DeadAfter = value
+		config.ProbeInterval = value
+	}
+}
+
+func WithProbeTimeout(value time.Duration) Option {
+	return func(config *Config) {
+		config.ProbeTimeout = value
+	}
+}
+
+func WithProbeFailures(value int) Option {
+	return func(config *Config) {
+		config.ProbeFailures = value
+	}
+}
+
+func WithVoteTTL(value time.Duration) Option {
+	return func(config *Config) {
+		config.VoteTTL = value
+	}
+}
+
+func WithMaxTickGap(value time.Duration) Option {
+	return func(config *Config) {
+		config.MaxTickGap = value
+	}
+}
+
+func WithMaxTableLatency(value time.Duration) Option {
+	return func(config *Config) {
+		config.MaxTableLatency = value
 	}
 }
 
@@ -304,9 +347,6 @@ func (rt *Runtime) invoke(ctx context.Context, id Identity, method string, args 
 		return WrongOwnerError{Owner: owner}
 	}
 	if owner != rt.nodeAddr {
-		if rt.transport == nil {
-			return WrongOwnerError{Owner: owner}
-		}
 		return rt.forward(ctx, owner, id, method, args, reply)
 	}
 	return rt.Runtime.Invoke(ctx, id, method, args, reply)

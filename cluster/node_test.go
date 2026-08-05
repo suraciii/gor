@@ -17,7 +17,6 @@ import (
 const (
 	testHeartbeat = time.Second
 	testView      = time.Second
-	testDeadAfter = 3 * time.Second
 )
 
 func TestNodeJoinWritesJoiningReadsThenActivates(t *testing.T) {
@@ -194,7 +193,7 @@ func TestNodePollPreservesViewWhenListMembersFails(t *testing.T) {
 	})
 }
 
-func TestNodePollMarksStaleMemberDeadAndDeadIsTerminal(t *testing.T) {
+func TestNodePollDoesNotKillStaleMember(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(400, 0).UTC()
 		backend := store.NewMemory()
@@ -216,82 +215,18 @@ func TestNodePollMarksStaleMemberDeadAndDeadIsTerminal(t *testing.T) {
 			t.Fatalf("New: %v", err)
 		}
 		initial := <-node.ViewChanges()
-		synctest.Wait()
-
-		fakeClock.Advance(testView)
-		synctest.Wait()
-
-		dead := findTestMember(t, backend, stale.NodeAddr, stale.Generation)
-		if dead.Status != store.MemberDead || dead.ETag != 2 {
-			t.Fatalf("stale member after poll = %#v, want dead with ETag 2", dead)
-		}
-		updated := <-node.ViewChanges()
-		changed := 0
-		for index := 0; index < 4096; index++ {
-			identity := store.Identity{Type: "account", Key: strconv.Itoa(index)}
-			beforeOwner, beforeOK := Owner(initial, identity)
-			afterOwner, afterOK := Owner(updated, identity)
-			if !beforeOK || (beforeOwner != "node-stale" && beforeOwner != "node-observer") || !afterOK || afterOwner != "node-observer" {
-				t.Fatalf("owners for %v = %q/%v -> %q/%v, want observer after stale member death", identity, beforeOwner, beforeOK, afterOwner, afterOK)
-			}
-			if beforeOwner != afterOwner {
-				changed++
-			}
-		}
-		if changed == 0 {
-			t.Fatal("stale member death did not change ownership of any identity")
-		}
-
-		resurrection := stale
-		resurrection.Status = store.MemberActive
-		resurrection.IamAliveAt = start.Add(testView)
-		if _, err := backend.WriteMember(context.Background(), resurrection); !errors.Is(err, store.ErrConflict) {
-			t.Fatalf("dead member resurrection error = %v, want ErrConflict", err)
-		}
-		stillDead := findTestMember(t, backend, stale.NodeAddr, stale.Generation)
-		if stillDead.Status != store.MemberDead || stillDead.ETag != 2 {
-			t.Fatalf("member after resurrection attempt = %#v, want unchanged dead row", stillDead)
-		}
-		node.Close()
-	})
-}
-
-func TestNodePollKeepsStaleMemberWhenDeadWriteFails(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		start := time.Unix(450, 0).UTC()
-		backend := store.NewMemory()
-		stale := store.Member{
-			NodeAddr:   "node-stale",
-			Generation: "generation-stale",
-			Status:     store.MemberActive,
-			IamAliveAt: start.Add(-10 * time.Second),
-		}
-		staleETag, err := backend.WriteMember(context.Background(), stale)
-		if err != nil {
-			t.Fatalf("seed stale member: %v", err)
-		}
-		stale.ETag = staleETag
-
-		fakeClock := clock.NewFake(start)
-		table := &failingDeadWriteMemberStore{backend: backend, target: stale}
-		node, err := New(testNodeConfig(table, fakeClock, "node-observer", "generation-observer"))
-		if err != nil {
-			t.Fatalf("New: %v", err)
-		}
-		previous := <-node.ViewChanges()
 		self := findTestMember(t, backend, "node-observer", "generation-observer")
-		table.failNext.Store(true)
 
-		got, alive := node.pollView(self, previous)
+		got, alive := node.pollView(self, initial)
 		if !alive {
-			t.Fatal("node stopped after stale-member write failure")
+			t.Fatal("node stopped while polling a stale member")
 		}
-		if !sameView(got, previous) {
-			t.Fatalf("view after stale-member write failure = %#v, want stale member retained", got)
+		if !sameView(got, initial) {
+			t.Fatalf("view after stale-member poll changed = %#v, want unchanged", got)
 		}
 		stillActive := findTestMember(t, backend, stale.NodeAddr, stale.Generation)
-		if stillActive.Status != store.MemberActive {
-			t.Fatalf("stale member after failed dead write = %#v, want active", stillActive)
+		if stillActive.Status != store.MemberActive || stillActive.ETag != stale.ETag {
+			t.Fatalf("stale member after poll = %#v, want unchanged active row", stillActive)
 		}
 		node.Close()
 	})
@@ -378,12 +313,6 @@ type failingListMemberStore struct {
 	failNext atomic.Bool
 }
 
-type failingDeadWriteMemberStore struct {
-	backend  store.MemberStore
-	target   store.Member
-	failNext atomic.Bool
-}
-
 func (s *appliedConflictMemberStore) WriteMember(ctx context.Context, member store.Member) (store.ETag, error) {
 	if s.nextAppliedConflict.CompareAndSwap(true, false) {
 		if _, err := s.backend.WriteMember(ctx, member); err != nil {
@@ -394,7 +323,7 @@ func (s *appliedConflictMemberStore) WriteMember(ctx context.Context, member sto
 	return s.backend.WriteMember(ctx, member)
 }
 
-func (s *appliedConflictMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+func (s *appliedConflictMemberStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
 	return s.backend.ListMembers(ctx)
 }
 
@@ -402,21 +331,10 @@ func (s *failingListMemberStore) WriteMember(ctx context.Context, member store.M
 	return s.backend.WriteMember(ctx, member)
 }
 
-func (s *failingListMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+func (s *failingListMemberStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
 	if s.failNext.CompareAndSwap(true, false) {
-		return nil, errors.New("member list unavailable")
+		return store.MemberSnapshot{}, errors.New("member list unavailable")
 	}
-	return s.backend.ListMembers(ctx)
-}
-
-func (s *failingDeadWriteMemberStore) WriteMember(ctx context.Context, member store.Member) (store.ETag, error) {
-	if member.Status == store.MemberDead && sameMember(member, s.target) && s.failNext.CompareAndSwap(true, false) {
-		return 0, errors.New("dead-member write unavailable")
-	}
-	return s.backend.WriteMember(ctx, member)
-}
-
-func (s *failingDeadWriteMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
 	return s.backend.ListMembers(ctx)
 }
 
@@ -425,7 +343,7 @@ func (s *recordingMemberStore) WriteMember(ctx context.Context, member store.Mem
 	return s.backend.WriteMember(ctx, member)
 }
 
-func (s *recordingMemberStore) ListMembers(ctx context.Context) ([]store.Member, error) {
+func (s *recordingMemberStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
 	s.operations = append(s.operations, "list")
 	return s.backend.ListMembers(ctx)
 }
@@ -434,30 +352,43 @@ func testNodeConfig(table store.MemberStore, sourceClock clock.Clock, nodeAddr, 
 	return Config{
 		Table:             table,
 		Clock:             sourceClock,
+		Prober:            testProber{},
 		NodeAddr:          nodeAddr,
 		Generation:        generation,
 		HeartbeatInterval: testHeartbeat,
 		ViewInterval:      testView,
-		DeadAfter:         testDeadAfter,
+		ProbeInterval:     time.Hour,
+		ProbeTimeout:      time.Second,
+		ProbeFailures:     3,
+		VoteTTL:           6 * time.Second,
+		MaxTickGap:        2 * time.Hour,
+		MaxTableLatency:   500 * time.Millisecond,
 	}
+}
+
+type testProber struct{}
+
+func (testProber) Probe(_ context.Context, target MemberID) <-chan ProbeResult {
+	replies := make(chan ProbeResult, 1)
+	replies <- ProbeResult{ID: target}
+	return replies
 }
 
 func findTestMember(t *testing.T, backend store.MemberStore, nodeAddr, generation string) store.Member {
 	t.Helper()
-	members, err := backend.ListMembers(context.Background())
+	snapshot, err := backend.ListMembers(context.Background())
 	if err != nil {
 		t.Fatalf("ListMembers: %v", err)
 	}
-	for _, member := range members {
+	for _, member := range snapshot.Members {
 		if member.NodeAddr == nodeAddr && member.Generation == generation {
 			return member
 		}
 	}
-	t.Fatalf("member %s/%s not found in %#v", nodeAddr, generation, members)
+	t.Fatalf("member %s/%s not found in %#v", nodeAddr, generation, snapshot.Members)
 	return store.Member{}
 }
 
 var _ store.MemberStore = (*recordingMemberStore)(nil)
 var _ store.MemberStore = (*appliedConflictMemberStore)(nil)
 var _ store.MemberStore = (*failingListMemberStore)(nil)
-var _ store.MemberStore = (*failingDeadWriteMemberStore)(nil)
