@@ -332,8 +332,8 @@ Orleans 有目录表，是因为它不按哈希放置——它把激活放在选
 
 ## 差距
 
-当前实装只到旧判死规则。`store.Member` 和 SQLite `member` 表没有 `suspect_votes`；`MemberStore` 也不返回带 `TableNow` 的全表快照。它的 CAS 会整行覆盖，不能合并并发票。
+当前实装已完成 6a 和 6b，但仍使用旧判死规则。`store.Member` 和 SQLite `member` 表没有 `suspect_votes`；`MemberStore` 也不返回带 `TableNow` 的全表快照。它的 CAS 会整行覆盖，不能合并并发票。
 
 `cluster.Node` 只有 `HeartbeatInterval`、`ViewInterval` 和 `DeadAfter`。它在 `pollView` 中按本地 `Clock` 与 `iam_alive_at` 直接写 `dead`，没有成员探测环、`Prober`、连续失败、自检或票数判定。
 
-`transport` 已实现为独立包，但 `gor` 仍在远端归属时返回 `WrongOwnerError`。它没有 `kind` 信封、探测适配器或入站分派。
+`transport` 已实现为独立包，`gor` 已在远端归属时通过它转发 `invoke` 请求。6c 的 `kind` 信封、探测适配器和入站探测分派仍未实装。

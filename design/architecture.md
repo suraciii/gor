@@ -2,7 +2,7 @@
 
 ## 依赖方向
 
-图只画生产包的直接 import。实线是当前代码已有的边；`┈┈▶` 是第 6b 步接通转发后才会出现的目标边。
+图只画生产包的直接 import。实线是当前代码已有的边；`┈┈▶` 是尚未接通的目标边。
 
 ```
 gor ────────▶ runtime ────────▶ mail
@@ -14,18 +14,18 @@ gor ────────▶ runtime ────────▶ mail
  └───────────▶ cluster ────────▶ clock
                     └──────────▶ store
 
-gor ┈┈┈┈┈┈┈▶ transport    第 6b 步的目标边
+gor ──────────▶ transport
 ```
 
-`sim` 只在 `sim` 构建标签下存在，依赖生产包来搭建测试场景，不属于这张生产依赖图。`cluster` 与 `transport` 都是可选能力；前者已被 `gor` 使用，后者虽然已经实现，当前仍是独立包。
+`sim` 只在 `sim` 构建标签下存在，依赖生产包来搭建测试场景，不属于这张生产依赖图。`cluster` 与 `transport` 都是可选能力，二者都已被 `gor` 使用；`transport` 仍保持独立包。
 
-`cluster` 不导入 `transport`。当前环算出远端归属时，调用以带 owner 地址的错误结束；第 6b 步由 `gor` 拿这个地址去转发。判断「归谁」和「怎么送过去」是两件事，让前者认识后者只会在测试环的时候拖出一个网络栈。
+`cluster` 不导入 `transport`。它只负责算出远端归属，`gor` 拿这个地址去转发。判断「归谁」和「怎么送过去」是两件事，让前者认识后者只会在测试环的时候拖出一个网络栈。
 
 `timer` 只认接口：一张表、一个 `Clock`、一个「能发起调用」的东西。`gor` 把 `store` 的实现和 `runtime` 接到它上面。
 
 依赖只向下。`runtime` 不知道 `cluster` 存在，而且**不需要为它留任何接口**。
 
-第 6b 步的目标路由发生在 `gor` 这一层：每次调用先问环这个 Identity 归谁，是自己就交给 `runtime`，是别人就转发（见 [cluster.md](cluster.md)）。`runtime` 那边的接口一个字都不用改——它管的是「同一个 key 上的调用串行」，跟这个 key 为什么落在本节点无关。
+第 6b 步的路由发生在 `gor` 这一层：每次调用先问环这个 Identity 归谁，是自己就交给 `runtime`，是别人就转发（见 [cluster.md](cluster.md)）。`runtime` 那边的接口一个字都不用改——它管的是「同一个 key 上的调用串行」，跟这个 key 为什么落在本节点无关。
 
 `runtime` 同样不导入 `store`——实体状态由 `gor` 在工厂闭包里读写，`runtime` 只交出 Identity、拿回一个不透明的实例（见 [persistence.md](persistence.md)）。
 

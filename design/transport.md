@@ -89,4 +89,4 @@ handler 写回响应也走 channel 交回 owner，帧仍然只有 owner 一个�
 
 ## 差距
 
-假传输还没有。DST 里还没有东西实现这个接口。
+`sim` 构建标签下已有 `simulationTransport` 实现这个接口，可以按分区丢弃消息；当前实现尚未提供设计中列出的延迟和重排注入。
