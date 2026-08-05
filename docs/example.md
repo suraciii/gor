@@ -1,48 +1,48 @@
-# 示例应用
+# Example application
 
-> 已实装。可运行的设备影子服务在 [../examples/shadow/](../examples/shadow/)；本文说明它要演示的编程模型与边界。
+> Implemented. The runnable device-shadow service is in [../examples/shadow/](../examples/shadow/); this document explains the programming model and boundaries it demonstrates.
 
-## 为什么不是计数器
+## Why not a counter
 
-`gor` 的三个概念用计数器十行就能演示完。问题是计数器演示不出**为什么要用 `gor`**——一个 map 加一把锁也能做计数器。
+A counter demonstrates gor's three concepts in ten lines. The problem: a counter does not show why you would use `gor` — a map plus a lock can do a counter too.
 
-示例应用要回答的是另一个问题：什么时候你会庆幸自己用了这个东西。
+The example app answers a different question: when would you be glad you used this?
 
-## 讲什么故事
+## The story
 
-**设备影子。** 一大批设备在外面跑，每台定期上报一次状态，服务端要随时能回答「这台设备现在什么样」，还要在某台设备不吭声的时候把它标成掉线。
+**Device shadow.** A large fleet of devices out in the field; each reports state periodically; the server must answer "what is this device like right now" at any time, and mark a device offline when it goes quiet.
 
-选它是因为它同时压到四件事，而这四件事恰好是 `gor` 存在的理由：
+Chosen because it stresses four things at once — exactly the four reasons `gor` exists:
 
-**数量大，但大部分时候是闲的。** 十万台设备，同一时刻在说话的可能只有几百台。传统做法要么把十万个对象都放内存里，要么每次上报都读一次数据库。`gor` 的答案是设备自己就是实体——说话的时候在内存里，不说话就消失，状态留在存储里。
+**Large count, mostly idle.** A hundred thousand devices, but only a few hundred speaking at any moment. The traditional approach keeps all hundred thousand objects in memory, or reads the database on every report. `gor`'s answer: the device itself is an entity — in memory while speaking, gone when silent, with state left in the store.
 
-**同一台设备的并发写必须串起来。** 设备在上报状态，运维同时在下发配置。这两件事撞在一起时，没有串行化就要写一堆乐观锁重试。在 `gor` 里这是默认行为，用户什么都不用做。
+**Concurrent writes to one device must be serialized.** The device reports state while operations pushes configuration. When the two collide, without serialization you write a pile of optimistic-lock retries. In `gor` this is the default; users do nothing.
 
-**掉线判定天然是个定时任务。** 「三十秒没上报就算掉线」——这需要一个跟着设备走、能跨进程重启活下来的闹钟。这正是定时任务那一步做的东西。用轮询整张表来做同一件事，会随着设备数线性变贵。
+**Offline detection is naturally a scheduled task.** "No report for thirty seconds means offline" — this needs an alarm that follows the device and survives process restarts. That is exactly what the scheduled-task step provides. Polling the whole table for the same job gets linearly more expensive with device count.
 
-**聚合要跨实体调用。** 「这个车间有多少台在线」需要设备去找车间。这演示了实体调实体，也演示了为什么不能反过来——车间不能持有十万台设备的引用去挨个问。
+**Aggregation needs cross-entity calls.** "How many devices in this workshop are online" requires devices to reach the workshop. This demonstrates entity-to-entity calls, and why the reverse cannot work — the workshop cannot hold references to a hundred thousand devices and ask them one by one.
 
-## 读者读完该学会什么
+## What the reader should learn
 
-按这个顺序，一个没见过 `gor` 的人应该能：
+In this order, someone new to `gor` should be able to:
 
-1. 认出「哪些东西该是实体」——身份是什么、边界画在哪。
-2. 知道状态怎么存、什么时候落盘、写冲突了会怎样。
-3. 会挂一个定时任务，并且知道它在进程重启后还在。
-4. 知道一个调用失败之后世界处于什么状态——这一条最容易被示例糊弄过去。
+1. Recognize what should be an entity — what an identity is, where the boundaries go.
+2. Know how state is stored, when it is persisted, and what a write conflict does.
+3. Attach a scheduled task and know it survives a process restart.
+4. Know what state the world is in after a call fails — the point examples most easily gloss over.
 
-第 4 条要认真写。**示例里不许出现忽略掉的 error。** 每一处失败都要么处理，要么在注释里说清为什么这里可以不处理。示例是用来抄的，抄走一个 `_ = err` 就是抄走一个 bug。
+Point 4 must be written seriously. **No ignored errors in the example.** Every failure is either handled, or a comment explains why it can be ignored here. Examples are copied; copying a `_ = err` copies a bug.
 
-## 边界
+## Boundaries
 
-**示例不许改库。** 写示例的过程中撞上 API 别扭、能力缺失、文档说不清的地方，那是这个示例最值钱的产出——把它记下来，不要在示例里绕过去，也不要顺手改库来迁就它。
+**The example must not modify the library.** When writing it surfaces an awkward API, a missing capability, or a doc that cannot say what it means — that is the example's most valuable output: record it. Do not work around it in the example, and do not change the library to accommodate it.
 
-**不引入 Web 框架、ORM、配置库。** 标准库够用。示例要读的是 `gor` 的用法，不是别人的用法。
+**No web framework, ORM, or config library.** The standard library is enough. The example should teach `gor` usage, not someone else's.
 
-**不做前端。** 一个能用 `curl` 打的 HTTP 接口就够了。
+**No frontend.** An HTTP interface you can hit with `curl` is enough.
 
-## 差距
+## Gap
 
-端到端跨节点转发已经接通，但示例的启动器目前仍只跑单进程。把它复跑在多节点时，业务代码不应改动；若必须改，说明抽象漏了。
+End-to-end cross-node forwarding is wired up, but the example's launcher still runs single-process only. When it is rerun on multiple nodes, the business code must not change; if it must, the abstraction has a leak.
 
-**这条要当验收标准用。** 示例改了业务代码才能上集群，说明抽象漏了。
+Use this as the acceptance criterion: if the example needs business-code changes to run on a cluster, the abstraction has a leak.

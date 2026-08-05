@@ -1,16 +1,16 @@
-# 错误与取消
+# Errors and cancellation
 
-一次实体调用可能在本节点完成，也可能由另一个节点完成。调用者可以依赖同一组结局规则。位置透明只保证这一点。
+An entity call may complete on this node or on another. Callers can rely on the same set of outcome rules. Location transparency guarantees exactly that — nothing more.
 
-位置透明不保留进程内错误对象。错误的具体类型、字段、包装关系和实现细节不因调用跨节点而成为契约。调用也不承诺恰好执行一次。
+Location transparency does not preserve in-process error objects. An error's concrete type, fields, wrapping, and implementation details do not become a contract because the call crosses nodes. Calls do not promise exactly-once execution either.
 
-## 稳定错误码
+## Stable error codes
 
-调用方需要据错误作决定时，应用必须声明一个稳定错误码。错误码是应用的公开词汇，不是给日志搜索用的文本。
+When callers need to make decisions based on errors, the application must declare a stable error code. Error codes are the application's public vocabulary, not text for log searching.
 
-错误码由小写 ASCII 的拥有者名和名称组成，中间用一个点分开。例如 `shadow.workshop_id_required`。名称可含小写字母、数字和下划线。拥有者名必须由应用拥有。`gor` 是库保留的拥有者名；应用不得声明 `gor.*`。
+An error code is an owner name plus a name, both lowercase ASCII, separated by a dot. Example: `shadow.workshop_id_required`. The name may contain lowercase letters, digits, and underscores. The owner name must be owned by the application. `gor` is reserved as the library's owner name; applications must not declare `gor.*`.
 
-应用在包级以 `gor.Code` 常量声明自己的码，并把它或包装了它的错误作为方法结果返回：
+Applications declare their codes as package-level `gor.Code` constants and return the constant, or an error wrapping it, as the method result:
 
 ```go
 const ErrWorkshopIDRequired gor.Code = "shadow.workshop_id_required"
@@ -18,47 +18,47 @@ const ErrWorkshopIDRequired gor.Code = "shadow.workshop_id_required"
 return fmt.Errorf("workshop ID is required: %w", ErrWorkshopIDRequired)
 ```
 
-调用方以 Go 的 `errors.Is` 检查该常量。错误文本只供人阅读、日志和诊断。它不是分支条件。
+Callers check the constant with Go's `errors.Is`. Error text is for humans, logs, and diagnostics. It is not a branching condition.
 
-gor 自己的码是一个封闭集合。库只使用已公开的 `gor.*` 码。完整列表和每个码的含义见 [../design/errors.md](../design/errors.md)。
+gor's own codes are a closed set. The library only uses the published `gor.*` codes. Full list and the meaning of each code: [../design/errors.md](../design/errors.md).
 
-## 调用方拿到的结果
+## What the caller gets
 
-| 结局 | 本地调用 | 跨节点调用 |
+| Outcome | Local call | Cross-node call |
 | --- | --- | --- |
-| 带稳定码的错误 | 原错误可被该码匹配。 | 新错误可被同一码匹配。文本可变。 |
-| 没有确定码的错误 | 原错误对象照常返回。 | 只留下可展示的文本。 |
-| 调用方取消或超时 | 返回调用方自己的取消或超时错误。 | 同左。远端可能仍在执行。 |
-| 发送、连接或收回复失败 | 这是传递失败。 | 同左。它不能证明远端没有执行。 |
+| Error with a stable code | The original error matches the code. | A new error matches the same code. Text may differ. |
+| Error with no determinate code | The original error object is returned as-is. | Only displayable text remains. |
+| Caller cancels or times out | The caller gets its own cancellation or timeout error. | Same. The remote side may still be executing. |
+| Send, connect, or reply-receive failure | This is a delivery failure. | Same. It cannot prove the remote side did not execute. |
 
-这里的对等只针对错误确定的稳定码。一个错误至多有一个确定的码：它是错误树里唯一出现的码。带确定码的错误，本地与跨节点都按该码匹配。没有确定码的错误——整棵树没有码，或出现多个不同的码——跨节点只留下文本。合并多个错误也走这条规则：合并后恰有一个码则有效，出现多个不同的码即歧义，按没有码处理。对等不承诺任意 sentinel、具体类型或 `errors.As` 在两边一致。
+This parity applies only to an error's determinate stable code. An error has at most one determinate code: the only code appearing in its error tree. An error with a determinate code matches by that code both locally and across nodes. An error with no determinate code — the whole tree has none, or has several different ones — leaves only text across nodes. Merged errors follow the same rule: if the merge leaves exactly one code, it counts; several different codes are ambiguous and count as none. Parity does not promise that arbitrary sentinels, concrete types, or `errors.As` behave identically on both sides.
 
-没有确定码的错误跨节点后仍可显示、记录和向上返回。调用方不能据它的文本、类型、字段或包装关系分支，也不能从它推断业务状态。
+An error with no determinate code can still be displayed, logged, and returned upward across nodes. Callers must not branch on its text, type, fields, or wrapping, and must not infer business state from it.
 
-## 取消
+## Cancellation
 
-调用方取消或超时，表示调用方不再等待。它不表示业务动作没有发生。
+Caller cancellation or timeout means the caller is no longer waiting. It does not mean the business action did not happen.
 
-本地调用把调用方的取消交给方法。跨节点调用不传取消，也不传截止时间。调用方的取消一旦先发生，调用方立即得到自己的 `ctx.Err()`；已经送到远端的方法继续使用远端自己的执行上下文。远端可以完成、改变状态并产生结果，结果会被源端丢弃。
+A local call hands the caller's cancellation to the method. A cross-node call carries neither cancellation nor deadline. If the caller's cancellation happens first, the caller immediately gets its own `ctx.Err()`; a method already delivered to the remote side keeps using the remote side's own execution context. The remote side can complete, change state, and produce a result; the result is discarded at the source.
 
-这条边界不让调用方知道请求是否已经送达。需要避免重复动作或需要补偿时，应用必须把幂等键、状态机或补偿规则写进业务协议。
+This boundary keeps the caller from knowing whether the request was delivered. To avoid duplicate actions or to compensate, applications must put idempotency keys, state machines, or compensation rules into the business protocol.
 
-## 回复不能编码
+## Reply that cannot be encoded
 
-方法已经返回业务错误时，这个错误优先。运行时不再尝试编码同一次调用的返回值，因此返回值编码失败不能覆盖业务错误。
+When a method has already returned a business error, that error wins. The runtime does not try to encode the same call's return value, so a return-value encoding failure cannot override the business error.
 
-方法成功但返回值不能编码时，调用方得到 `gor.reply_encode_failed`。没有可用返回值。若连调用结果本身都没有送回，调用方得到的是传递失败；它同样不证明方法未执行。
+When a method succeeds but its return value cannot be encoded, the caller gets `gor.reply_encode_failed`. No return value is available. If not even the call result came back, the caller sees a delivery failure; that equally does not prove the method did not execute.
 
-## 本版边界
+## This version's boundary
 
-本版不注册任意错误类型，不恢复错误字段，不保留错误链或合并的结构，也不为错误码增加代码生成注解。应用若需要跨节点传递业务数据，应把数据放进正常返回值或持久化状态，不应借错误对象传递。
+This version does not register arbitrary error types, does not restore error fields, does not preserve error chains or merge structure, and adds no codegen annotation for error codes. Applications that need business data across nodes should put it in normal return values or persistent state, not smuggle it through error objects.
 
-## 迁移
+## Migration
 
-现有按 sentinel 分支的应用代码，应把该 sentinel 换成声明的 `gor.Code`，再继续用 `errors.Is`。例如设备影子 HTTP 处理器中的 HTTP 400 判断应改为检查 `shadow.workshop_id_required`，而不是检查只能在本进程识别的错误对象。
+Application code that currently branches on sentinels should replace the sentinel with a declared `gor.Code` and keep using `errors.Is`. For example, the device-shadow HTTP handler's HTTP 400 check should test `shadow.workshop_id_required` instead of an error object only recognizable in-process.
 
-模拟器和测试也只按稳定码或调用方自己的取消错误分类。`sim/sim.go` 现在用错误文本补足 `errors.Is` 的地方必须删除；没有确定码的错误应被报告为未分类，而不是以文本猜测类别。
+Simulators and tests must classify only by stable codes or the caller's own cancellation errors. The places in `sim/sim.go` that currently supplement `errors.Is` with error text must be deleted; errors without a determinate code must be reported as unclassified, not categorized by guessing at text.
 
-## 差距
+## Gap
 
-稳定码、跨节点 `errors.Is` 对等、回复编码优先级，以及 shadow 和模拟器迁移已经实装。仍未提供任意错误类型恢复、错误字段或错误链保真、`errors.Join` 结构保真、取消帧或远端截止时间传播；这些是本版边界内明确不做的能力。
+Stable codes, cross-node `errors.Is` parity, reply-encoding priority, and the shadow and simulator migrations are implemented. Still not provided: arbitrary error type recovery, error field or chain fidelity, `errors.Join` structure fidelity, cancellation-frame or remote-deadline propagation. These are explicitly out of scope for this version.

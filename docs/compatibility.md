@@ -1,67 +1,67 @@
-# 兼容性承诺
+# Compatibility promises
 
-这篇说的是使用者升级 **gor 本身** 时能指望什么。它不替应用安排自身的升级，也不承诺尚未公开的开发版本。
+This document is about what users can expect when upgrading gor itself. It does not arrange the application's own upgrades, and it promises nothing about unpublished development versions.
 
-承诺从公开发布的版本开始生效。预览版本可以用来试用和反馈，但不是绕开变更说明的借口。
+Promises take effect from publicly released versions. Preview versions are for trying out and giving feedback, not an excuse to skip change notes.
 
-## v0 的范围
+## What v0 covers
 
-v0 是把产品做完整、把边界说清的阶段，不是假装已经稳定的 v1。
+v0 is the stage that completes the product and states its boundaries clearly; it is not a pretend-stable v1.
 
-在同一个 v0 次版本内，补丁版本不会主动破坏已经写明的使用方式。修正错误可能让原先错误的结果、时机或报错消失；这种用户可见的修正也会写进发布说明。
+Within one v0 minor version, patch versions do not actively break documented usage. Bug fixes may make previously wrong results, timings, or errors disappear; such user-visible fixes are written into release notes too.
 
-升到下一个 v0 次版本时，gor 保留改变下列事情的权利：
+When moving to the next v0 minor version, gor reserves the right to change:
 
-- 接入运行时和调用实体的方式。
-- 自动生成的调用产物。
-- 可设置项、错误细节和资源使用方式。
-- 集群中的路由、故障处理和恢复行为。
-- 没有写进文档的行为、性能数字和内部时机。
+- how the runtime is wired up and entities are called.
+- the automatically generated call artifacts.
+- options, error details, and resource usage.
+- routing, fault handling, and recovery behavior in a cluster.
+- undocumented behavior, performance numbers, and internal timing.
 
-计划中的生成物变更属于这一类。它们不是补丁版本里悄悄发生的事。每一个不兼容的 v0 次版本都要在发布说明里写出影响、受影响的人和迁移做法。没有自动迁移时，也要直说没有。
+Planned generated-artifact changes fall in this category. They do not sneak in through patch versions. Every incompatible v0 minor version must state in its release notes the impact, who is affected, and how to migrate. When no automatic migration exists, say so plainly.
 
-生产使用应固定到一个明确的 v0 次版本。升级到下一个次版本是一次主动安排的变更，不是日常补丁更新。
+Production should pin to a specific v0 minor version. Moving to the next minor version is a scheduled change, not routine patching.
 
-## 已经可依赖的事
+## What can already be relied on
 
-v0 的可用范围是单进程。对已经公开的单进程能力，使用者可以依赖这些基本语义：
+v0's usable scope is single-process. For the published single-process capabilities, users can rely on these basic semantics:
 
-- 同一个身份上的调用按顺序执行。
-- 成功确认的状态在进程重启后可以继续使用。
-- 已写明的定时投递、过载和失败结局按文档描述处理。
+- calls on the same identity execute in order.
+- state confirmed successfully survives a process restart.
+- documented scheduled delivery, overload, and failure outcomes behave as described.
 
-这些是产品承诺，不是对实现形状、吞吐数字或精确执行时刻的承诺。
+These are product promises, not promises about implementation shape, throughput numbers, or exact execution instants.
 
-多节点仍是预览能力。当前失效判断基于邻居直接探测和带过期的死亡票，但网络分区可能把健康节点当成失效节点，甚至让全体节点停止服务；恢复需要新的 generation。因此，在 v0 期间不能把多节点的可用性、故障判断准确性或升级体验当成稳定保证。相关行为可以在新的 v0 次版本中调整或撤回。
+Multi-node is still a preview capability. Current failure detection is based on direct probing of neighbors and death votes with expiry, but a network partition can mistake healthy nodes for failed ones, even stopping every node from serving; recovery needs a new generation. So during v0, multi-node availability, failure-detection accuracy, and upgrade experience are not stable guarantees. Related behavior may be adjusted or withdrawn in a new v0 minor version.
 
-应用自己的业务状态仍由应用负责演进。gor 不理解业务字段的含义，也不会替应用把旧业务数据变成新业务数据。应用改变方法约定或状态含义时，要自行安排兼容读写或停机切换。
+The application remains responsible for evolving its own business state. gor does not understand business fields and will not convert old business data into new for the application. When the application changes method contracts or state meaning, it arranges compatible reads/writes or a downtime switch itself.
 
-## 怎样知道不兼容
+## How to know something is incompatible
 
-每个公开版本有一份发布说明。只要有不兼容变更，说明必须单列「破坏性变更与迁移」：
+Every public release has release notes. Whenever there are incompatible changes, the notes must have a "Breaking changes and migration" section:
 
-- 改了什么用户可见行为。
-- 哪些使用者会受影响。
-- 升级前后要做什么；不能自动处理时明确说明。
+- what user-visible behavior changed.
+- which users are affected.
+- what to do before and after upgrading; state clearly when it cannot be automated.
 
-没有破坏性变更时，这一栏写「无」。版本号让使用者判断升级风险，发布说明让使用者判断具体工作量；两者缺一不可。
+With no breaking changes, the section says "None". The version number lets users judge upgrade risk; the release notes let them judge the actual work; both are required.
 
-## 这不等于应用滚动升级
+## This is not application rolling upgrades
 
-这里的兼容性是 gor 与使用者之间的约定。它不改变应用在同一集群里升级时的限制。
+This compatibility is a contract between gor and its users. It does not change the constraints on applications upgrading within one cluster.
 
-应用的节点仍要使用彼此兼容的方法约定和状态格式。不兼容的应用改动要停机发布，或由应用自己安排兼容读写。这个限制见 [programming-model.md](programming-model.md)，与 gor 自身从一个版本升到另一个版本是两件事。
+An application's nodes must still use mutually compatible method contracts and state formats. Incompatible application changes need a downtime release, or compatible reads/writes arranged by the application itself. This constraint is in [programming-model.md](programming-model.md); it is a different matter from gor itself moving from one version to another.
 
-## v1 的含义
+## What v1 means
 
-v1 才开始承诺稳定的公开使用方式。从 `v1.0.0` 起，在 v1 的补丁和次版本之间，已经写明的接入方式、调用含义和 gor 管理的数据不能要求使用者改代码或手工搬数据才能继续使用。
+Only v1 starts promising a stable public usage surface. From `v1.0.0`, across v1 patches and minor versions, documented wiring, call semantics, and data managed by gor must not require users to change code or hand-migrate data to keep working.
 
-v0 升到 `v1.0.0` 可以有一次明确迁移，发布说明必须完整写出。
+The move from v0 to `v1.0.0` may include one explicit migration; the release notes must describe it fully.
 
-修正错误仍可能改变错误行为，但发布说明必须说清。性能、未文档化行为和超出已写明范围的集群条件，不因为版本到了 v1 就自动得到保证。
+Bug fixes may still change error behavior, but the release notes must say so. Performance, undocumented behavior, and cluster conditions beyond the documented scope do not automatically become guaranteed because the version reaches v1.
 
-如果未来必须打破这份 v1 承诺，gor 会发布新的主版本，并给出迁移说明。v1 不是无限期支持承诺，也不表示 gor 会变成无限扩展的分布式系统。
+If this v1 promise must ever be broken, gor will release a new major version with migration notes. v1 is not an indefinite support promise, and it does not mean gor will become an unboundedly scalable distributed system.
 
-## 差距
+## Gap
 
-现在还没有公开版本标签，因此还没有任何已经生效的兼容性承诺。发布前的必办项尚未全部完成；README 目前只把单进程列为可用，并明确说明多节点的失效判断不可靠。
+There are no public version tags yet, so no compatibility promises are in effect. Not all pre-release requirements are complete; the README currently lists only single-process as usable and states plainly that multi-node failure detection is unreliable.
