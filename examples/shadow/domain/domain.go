@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/suraciii/gor"
@@ -89,6 +90,16 @@ func (d *device) Configure(ctx context.Context, configuration string) error {
 
 func (d *device) Shadow(context.Context) (Shadow, error) {
 	return d.shadow.Get(), nil
+}
+
+func (d *device) OnActivate(context.Context) error {
+	log.Printf("%s activated", d.id.Key)
+	return nil
+}
+
+func (d *device) OnDeactivate(context.Context) error {
+	log.Printf("%s deactivated", d.id.Key)
+	return nil
 }
 
 func (d *device) MarkOffline(ctx context.Context) error {

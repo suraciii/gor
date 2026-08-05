@@ -69,6 +69,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 		gor.WithIdleTimeout(idleTimeout),
 		gor.WithEvictionInterval(evictionInterval),
 		gor.WithScheduleInterval(time.Second),
+		gor.OnError(shadow.LogBackgroundError),
 	)
 	if err != nil {
 		return fmt.Errorf("create runtime: %w", err)
@@ -117,5 +118,8 @@ func reportDevices(ctx context.Context, rt *gor.Runtime, count int) error {
 	}
 	waitGroup.Wait()
 	close(failures)
-	return <-failures
+	for failure := range failures {
+		return failure
+	}
+	return nil
 }

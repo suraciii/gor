@@ -1,10 +1,16 @@
 package shadow
 
 import (
+	"log"
+
 	"github.com/suraciii/gor"
 	"github.com/suraciii/gor/examples/shadow/domain"
 	"github.com/suraciii/gor/examples/shadow/gorgen"
 )
+
+func LogBackgroundError(id gor.Identity, method string, err error) {
+	log.Printf("%s/%s.%s failed: %v", id.Type, id.Key, method, err)
+}
 
 func Register(rt *gor.Runtime) error {
 	if err := gorgen.Install(rt); err != nil {
