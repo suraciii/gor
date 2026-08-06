@@ -74,6 +74,11 @@ func TestSim_ChecksSeedBatch(t *testing.T) {
 				seenStats["network-"+stat] = true
 			}
 		}
+		for _, stat := range []string{"drop-requests", "drop-replies"} {
+			if networkStatPositive(output, stat) {
+				seenStats["network-"+stat] = true
+			}
+		}
 	}
 	if len(replayFailures) > 0 {
 		t.Fatalf("seed batch did not replay byte-identically for %d seeds:\n%s", len(replayFailures), strings.Join(replayFailures, "\n"))
@@ -100,6 +105,11 @@ func TestSim_ChecksSeedBatch(t *testing.T) {
 		}
 	}
 	for _, stat := range []string{"held", "completed"} {
+		if !seenStats["network-"+stat] {
+			t.Fatalf("seed batch never triggered network stat %s", stat)
+		}
+	}
+	for _, stat := range []string{"drop-requests", "drop-replies"} {
 		if !seenStats["network-"+stat] {
 			t.Fatalf("seed batch never triggered network stat %s", stat)
 		}

@@ -197,6 +197,7 @@ func (c *simulationCluster) settle() {
 	c.backend.setFaultPlans(nil)
 	c.backend.setMemberFault(memberFaultSpec{})
 	c.network.setDelays(nil)
+	c.network.setDrops(networkDropSpec{})
 	for range 20 {
 		c.advance(simulationStepDuration)
 	}

@@ -32,8 +32,11 @@ func counterOperationOutputFor(value int64, err error) counterOperationOutput {
 	// A call that returned an error after the runtime stopped may still have
 	// taken effect: the write landed and the reply was lost. Such outcomes are
 	// unknown, not failures, whether the stop was a Kill (canceled), a
-	// persistence loss, or a Close that cut the delivery (closed).
-	case simErrorIs(err, errAppliedWriteFailure), simErrorIs(err, gor.ErrPersistenceFailed), simErrorIs(err, gor.ErrRuntimeClosed), simErrorIs(err, context.Canceled):
+	// persistence loss, a Close that cut the delivery (closed), or a transport
+	// drop (transport-failed). The caller cannot tell a dropped request from a
+	// dropped reply — the history records what the caller observes, not what
+	// the driver knows.
+	case simErrorIs(err, errAppliedWriteFailure), simErrorIs(err, gor.ErrPersistenceFailed), simErrorIs(err, gor.ErrRuntimeClosed), simErrorIs(err, context.Canceled), simErrorIs(err, gor.ErrTransportFailed):
 		return counterOperationOutput{value: value, status: counterOperationUnknown}
 	case simErrorIs(err, errWriteFailure):
 		return counterOperationOutput{value: value, status: counterOperationFailed}
