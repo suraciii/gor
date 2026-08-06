@@ -25,7 +25,7 @@ When a document diverges significantly from the code, it lists a "Gap" section i
 - [simulation.md](simulation.md) — the simulation skeleton: seed, fault injection, crashes, event log.
 - [observability.md](observability.md) — minimal runtime observability facts and performance bounds.
 - [benchmarks.md](benchmarks.md) — what the performance baseline measures and does not, and the measurement conditions comparable numbers must carry.
-- [api-documentation.md](api-documentation.md) — English doc comments for the public API: contract boundaries, scope, example trade-offs, and v0.1.0 acceptance.
+- [api-documentation.md](api-documentation.md) — English doc comments for the public API: contract boundaries, scope, example trade-offs, and the acceptance process.
 - [release.md](release.md) — version numbers, release thresholds, the manual release checklist, and how release-note blocks are handled.
 
 ## Decision records
