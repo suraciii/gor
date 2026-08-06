@@ -14,12 +14,14 @@ Measured on 2026-08-05. The results below come from a single `make bench` run, w
 
 | Benchmark | ns/op | allocs/op | Conditions |
 | --- | ---: | ---: | --- |
-| `BenchmarkInvocationRoundTrip` | 885.1 | 10 | in-memory store, `OnCall` disabled |
-| `BenchmarkInvocationRoundTripWithOnCall` | 951.5 | 10 | in-memory store, empty `OnCall` callback |
-| `BenchmarkForwardingRoundTrip/Local` | 883.8 | 10 | in-memory store, local `Noop` |
-| `BenchmarkForwardingRoundTrip/Forwarded` | 21397 | 45 | in-memory store, real loopback TCP forwarded `Noop` |
+| `BenchmarkInvocationRoundTrip` | 885.1 | 11 | in-memory store, `OnCall` disabled |
+| `BenchmarkInvocationRoundTripWithOnCall` | 951.5 | 11 | in-memory store, empty `OnCall` callback |
+| `BenchmarkForwardingRoundTrip/Local` | 883.8 | 11 | in-memory store, local `Noop` |
+| `BenchmarkForwardingRoundTrip/Forwarded` | 21397 | 48 | in-memory store, real loopback TCP forwarded `Noop` |
 
 With observation disabled, results are about `-0.5%` relative to the existing `0.89 us/op` baseline; an empty callback adds `7.5%` over the disabled state. Forwarding adds about `20513 ns/op` over a same-condition local call — about `24.2` times a local call. The forwarding row uses real loopback TCP to include 6b's framing, JSON encoding/decoding, connection reuse, and handler path; the local and forwarded calls invoke the same `Noop` method on the same type, and the connection and activation are warmed up before timing. This number is not machine-to-machine network latency; it only answers the library-internal extra cost of forwarding over local.
+
+Re-verified on 2026-08-06: the ns/op values are unchanged code-side. The machine was under sustained load (load average ≈ 17, including an inference server at ≈ 1500% CPU), so absolute numbers came out about 2.3 times higher; an A/B comparison of the baseline commit `0678933` with the current HEAD under that identical load shows overlapping distributions (local 2.0–2.2 us, forwarded 41–48 us), so the recorded idle-machine values remain the formal baseline. Allocations did move: +1 per local call and +3 per forwarded call (624 B and 2199 B total before, 640 B and 2250 B now), from the admission gate and the error-envelope work that landed after the original baseline. `BenchmarkStateWrite` reproduces at 1.8 ms/op unchanged; cold activation measured 40 us/op under load against 18 us/op recorded, consistent with its documented load sensitivity.
 
 ## Measurement conditions
 

@@ -34,6 +34,15 @@ const (
 
 type MemberID = store.MemberID
 
+const (
+	defaultProbeInterval   = time.Second
+	defaultProbeTimeout    = 500 * time.Millisecond
+	defaultProbeFailures   = 3
+	defaultVoteTTL         = 6 * time.Second
+	defaultMaxTickGap      = 2 * time.Second
+	defaultMaxTableLatency = 500 * time.Millisecond
+)
+
 type Config struct {
 	Table             store.MemberStore
 	Clock             clock.Clock
@@ -81,8 +90,26 @@ func New(config Config) (*Node, error) {
 	if config.Prober == nil {
 		return nil, ErrProberRequired
 	}
-	if config.ProbeInterval <= 0 || config.ProbeTimeout <= 0 || config.ProbeFailures <= 0 || config.VoteTTL <= 0 || config.MaxTickGap <= 0 || config.MaxTableLatency <= 0 {
+	if config.ProbeInterval < 0 || config.ProbeTimeout < 0 || config.ProbeFailures < 0 || config.VoteTTL < 0 || config.MaxTickGap < 0 || config.MaxTableLatency < 0 {
 		return nil, ErrInvalidConfig
+	}
+	if config.ProbeInterval == 0 {
+		config.ProbeInterval = defaultProbeInterval
+	}
+	if config.ProbeTimeout == 0 {
+		config.ProbeTimeout = defaultProbeTimeout
+	}
+	if config.ProbeFailures == 0 {
+		config.ProbeFailures = defaultProbeFailures
+	}
+	if config.VoteTTL == 0 {
+		config.VoteTTL = defaultVoteTTL
+	}
+	if config.MaxTickGap == 0 {
+		config.MaxTickGap = defaultMaxTickGap
+	}
+	if config.MaxTableLatency == 0 {
+		config.MaxTableLatency = defaultMaxTableLatency
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	node := &Node{
