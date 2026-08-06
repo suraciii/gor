@@ -4,7 +4,7 @@ This document specifies how maintainers release gor. It is deliberately a short 
 
 ## The conclusion
 
-Each version has exactly one user-facing release note, written in that version's GitHub Release. The repository keeps no second CHANGELOG and assembles no notes from PRs automatically.
+Each announced release has exactly one user-facing release note, written in that version's GitHub Release. 0.0.x tags are not announced releases: they get no note and no GitHub Release (see "0.0.x" below). The repository keeps no second CHANGELOG and assembles no notes from PRs automatically.
 
 The `release-note` code block in `.github/PULL_REQUEST_TEMPLATE.md` is the raw material of release notes. Its only consumer is the maintainer at release time: hand-read the blocks in the list of merged PRs, then write that version's release note. An author stating user impact while the change is fresh is more accurate than re-reading all changes after a delay.
 
@@ -19,7 +19,7 @@ The release note must at least include:
 
 ## Version numbers
 
-Version tags use `vMAJOR.MINOR.PATCH`. Previews may use a suffix like `v0.1.0-rc.1`; a preview does not replace a proper release and does not change the compatibility rules of proper versions.
+Version tags use `vMAJOR.MINOR.PATCH`. Previews may use a suffix like `v1.0.0-rc.1`; a preview does not replace a proper release and does not change the compatibility rules of proper versions.
 
 | Scope | May contain | Must not do |
 | --- | --- | --- |
@@ -31,17 +31,21 @@ Version tags use `vMAJOR.MINOR.PATCH`. Previews may use a suffix like `v0.1.0-rc
 
 v0's minor version is a compatibility boundary, a discipline gor imposes on itself beyond Go's looser v0 requirements. A patch may still fix a bug and change a previously wrong result, but the release note must say so.
 
+The 0.0 minor (0.0.x) is the band before that discipline takes effect. gor tags it so the work is publicly visible and `go get`-able, but it is not an announced release: no GitHub Release is created and no release note is assembled. Go's v0 promises nothing here, and gor adds only the two items named in [docs/compatibility.md](../docs/compatibility.md)'s "0.0.x" section. Anything else may change between 0.0.x tags, stated in the PR's `release-note` block rather than silently. The patch/minor discipline in the table above starts from 0.1.0.
+
 The transition from v0 to `v1.0.0` may include one documented migration. Only after `v1.0.0` do the rules that v1 requires no migration take effect.
 
 Go's module major-version rules make v1 a valuable stability promise: v0 and v1 use the repository root path, so users upgrading to v1 do not change import paths for a major-version suffix. From v2 on, module declarations and import paths must carry `/v2`, `/v3`, and so on. That forces every user to change source code, so v2 and beyond only happen when the v1 promise truly cannot be kept.
 
-## The first public release
+## 0.0.x
 
-`v0.1.0` can only be released after all of [ROADMAP.md](../ROADMAP.md)'s "required before release" items are done. Completion is judged by the roadmap's explicit status, not by "the code looks close enough".
+gor is in the 0.0.x band. A 0.0.x tag is publicly visible — the repository is public, so a tag is `go get`-able the moment it is pushed and the module proxy caches it; a tag is not access-controlled — but it is not an announced release. No GitHub Release is created and no release note is assembled; the version number is the only signal, and in Go's terms v0 promises nothing. What gor holds stable even here is the narrow set in [docs/compatibility.md](../docs/compatibility.md)'s "0.0.x" section; everything else may change between tags.
 
-Every "required before release" item except the last one is done: English documentation, public API doc comments, the error and cancellation contract, the root runtime shutdown contract, deactivation reasons and the background error sink, the example application, observability, and the performance baseline. The benchmark failure that had blocked the baseline is fixed: `cluster.New` implements the default values of the six probe parameters from [design/cluster.md](cluster.md), `make bench` passes again on a real-disk path, and the forwarding baseline is re-verified unchanged on 2026-08-06 (see [benchmarks.md](../benchmarks.md)); the documented cluster startup snippet in [docs/programming-model.md](../docs/programming-model.md) now runs verbatim in a clean module. What remains is the "Versioning and release" item itself: the release process this document describes, including the install-and-upgrade check in release-sequence step 3.
+The 0.0.x release-note question has a zero-maintenance answer: none is written. The `release-note` blocks in merged PRs still accumulate as raw material; their only consumer is the maintainer writing the first announced release's note. Nothing is assembled, published, or kept in sync per 0.0.x tag.
 
-Multi-node is still a preview capability and partitions can misjudge healthy nodes, so the first public release must not be treated as settled.
+The readiness work for an announced release is already complete. Every [ROADMAP.md](../ROADMAP.md) "required" item is done — English documentation, public API doc comments, the error and cancellation contract, the root runtime shutdown contract, deactivation reasons and the background error sink, the example application, observability, and the performance baseline — and `make ci` passes. The benchmark failure that had blocked the baseline is fixed (`cluster.New` honors the six probe-parameter defaults from [design/cluster.md](cluster.md), `make bench` passes on a real-disk path, the forwarding baseline re-verified on 2026-08-06), and the cluster startup snippet in [docs/programming-model.md](../docs/programming-model.md) runs verbatim in a clean module. The reason gor is at 0.0.x and not announced is the maintainer's judgment that it is not time, not a missing technical gate. Inventing a new checklist to "earn" an announced release would be dishonest; when the maintainer decides to announce, that decision is the gate.
+
+Multi-node is still a preview capability and partitions can misjudge healthy nodes, so no release — 0.0.x or announced — should be treated as settled.
 
 ## The bar for v1.0.0
 
@@ -57,9 +61,11 @@ No extra thresholds like "wait until mature", "wait until enough users", or a fi
 
 ## Release sequence
 
+For a 0.0.x tag, only the verification core runs: `make ci` (step 3), the install-and-upgrade check when the change touches generated artifacts or persistence (step 3), keep docs and Gap honest (step 2), inspect the commit and working tree (step 4), then create the tag (step 5, tag only). No release note is assembled and no GitHub Release is created. The full six steps are for announced releases.
+
 1. Hand-read the merged PRs' `release-note` blocks, list what this release includes, and choose the version number per the previous section. Breaking changes go only into v0 minors or new major versions.
 2. Update the affected product promises, designs, and the roadmap; keep or add a "Gap" section where a limitation has not gone away.
-3. Run `make ci` on the candidate commit. For the first public release, a major version, artifact changes, or persistence-related changes, also run an install-and-upgrade check in a clean user project.
+3. Run `make ci` on the candidate commit. For the first announced release, a major version, artifact changes, or persistence-related changes, also run an install-and-upgrade check in a clean user project.
 4. Inspect the to-be-released commit, version tag, and working tree. Only verified content enters the release.
 5. Hand-write the GitHub Release note from these blocks as raw material, then create the version tag and the Release. The library produces no standalone service binary, so no fake download packages.
 6. After the release, install the exact version in a clean user project and run one minimal call. On failure, retract or mark that Release first; do not ship a patch to cover up an uninstallable version.
@@ -68,10 +74,10 @@ Steps 1, 2, 4, and 5 need maintainer judgment and stay manual. Step 3 already ha
 
 ## Gap
 
-There are no version tags today, and `v0.1.0`'s roadmap thresholds are not yet met — the "Versioning and release" item is the only one left. The `release-note` block in the PR template stays; at release time it is still read and organized by hand per this document.
+There are no version tags today. The readiness work for an announced release is complete (every ROADMAP "required" item is done); the maintainer has not tagged 0.0.1, and staying in 0.0.x is a choice, not a missing gate. The `release-note` block in the PR template stays; the blocks accumulate and are read by hand when the first announced release is written.
 
 The install half of release-sequence step 3 was run on the pseudo-version `v0.0.0-20260806024742-eda84d5c45d7` in a clean user module outside the repository, following the documented flow verbatim — `go get` of the module, `go get -tool` of the generator, `go tool gorgen -pkg ./domain` without `-out`, import of the generated `<entity-pkg>/gorgen`, the startup snippet from [docs/programming-model.md](../docs/programming-model.md) including its `os.MkdirAll` step, a minimal entity flow, close, reopen, and state survives — and it passes end to end with no extra steps. The two gaps previously listed here (a missing go.sum entry for `golang.org/x/tools` and the unimportable `internal/gorgen` default) are gone.
 
-The upgrade half of the step-3 check could not be run: there are no version tags, so there is no previous version to upgrade from. It becomes meaningful only after `v0.1.0`, when release-sequence step 6 also becomes runnable for the first time.
+The upgrade half of the step-3 check has no previous version until 0.0.1 exists. After 0.0.1, it applies — under the artifact-change or persistence-change condition — to later 0.0.x tags. Release-sequence step 6 (install the exact tagged version in a clean project after tagging) likewise becomes meaningful once there is an announced release; for 0.0.x the pre-tag install check in step 3 already covers installability.
 
 The release-prep audit's cluster-startup inconsistency is resolved: [design/cluster.md](cluster.md) always specified default values for the six probe parameters, and the implementation now honors them — a zero value means "use the default" (ProbeInterval 1 s, ProbeTimeout 500 ms, ProbeFailures 3, VoteTTL 6 s, MaxTickGap 2 s, MaxTableLatency 500 ms), and only a negative value returns `cluster.ErrInvalidConfig`. The documented cluster startup snippet now runs verbatim in a clean module, and `make bench` passes again on a real-disk path.

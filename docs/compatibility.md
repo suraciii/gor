@@ -2,11 +2,22 @@
 
 This document is about what users can expect when upgrading gor itself. It does not arrange the application's own upgrades, and it promises nothing about unpublished development versions.
 
-Promises take effect from publicly released versions. Preview versions are for trying out and giving feedback, not an excuse to skip change notes.
+The repository is public, so a version tag is `go get`-able the moment it is pushed, and the module proxy caches it; a tag is not access-controlled. What users may rely on is told by the version number, not by who can fetch it. Go's v0 makes no compatibility promise; the sections below state where gor adds discipline on top of that, and where it deliberately does not.
+
+## 0.0.x
+
+0.0.x is the band before gor's v0 discipline takes effect. The tags are public, but they are not announced — their only signal is the version number itself, which in Go's terms promises nothing.
+
+Go's v0 already promises nothing here, and gor keeps stable only two things users cannot avoid depending on, even at 0.0.x:
+
+- The stable error codes that distinguish one failure from another. A later 0.0.x does not rename or remove a code a user may branch on; it may add new ones.
+- State gor manages. A later 0.0.x still reads state an earlier 0.0.x wrote. (Recovering confirmed state after restarting the same version is a correctness promise, not a compatibility one; it holds in every version.)
+
+Everything else may change between 0.0.x tags — the categories a v0 minor version may change, listed under "What v0 covers", may change here even patch to patch. If a change has to touch one of the two items above, the PR that makes it states the impact; it is not done silently.
 
 ## What v0 covers
 
-v0 is the stage that completes the product and states its boundaries clearly; it is not a pretend-stable v1.
+From 0.1.0 on, v0 is the stage that completes the product and states its boundaries clearly; it is not a pretend-stable v1.
 
 Within one v0 minor version, patch versions do not actively break documented usage. Bug fixes may make previously wrong results, timings, or errors disappear; such user-visible fixes are written into release notes too.
 
@@ -38,7 +49,7 @@ The application remains responsible for evolving its own business state. gor doe
 
 ## How to know something is incompatible
 
-Every public release has release notes. Whenever there are incompatible changes, the notes must have a "Breaking changes and migration" section:
+Every announced release has a release note. (0.0.x tags do not; their changes are recorded in the PR `release-note` blocks and surface in the first announced release's note.) Whenever an announced release has incompatible changes, its note must have a "Breaking changes and migration" section:
 
 - what user-visible behavior changed.
 - which users are affected.
@@ -64,4 +75,4 @@ If this v1 promise must ever be broken, gor will release a new major version wit
 
 ## Gap
 
-There are no public version tags yet, so no compatibility promises are in effect. Not all pre-release requirements are complete; the README presents single-process as the usable scope and describes multi-node failure detection as direct probing with death voting, while the reliability limits are stated in this document's "What can already be relied on" section.
+There are no version tags yet. The readiness work for an announced release is complete (every ROADMAP "required" item is done); the maintainer has not tagged 0.0.1, and staying in 0.0.x is a choice, not a missing requirement. When 0.0.1 is tagged, the two 0.0.x promises above take effect; the broader v0 discipline and assembled release notes start at 0.1.0. The README presents single-process as the usable scope and describes multi-node failure detection as direct probing with death voting, while the reliability limits are stated in this document's "What can already be relied on" section.

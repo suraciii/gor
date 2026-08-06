@@ -2,7 +2,7 @@
 
 ## The decision
 
-Before `v0.1.0`, gor's public API must have English Go doc comments. They are a contract for users, not implementation comments.
+Before any version is tagged, gor's public API must have English Go doc comments. They are a contract for users, not implementation comments.
 
 This does not overturn the repository's comment principles. Readers of implementation comments can read the source; if a comment merely restates what the code does, the code boundaries or naming are not good enough. Readers of the public API usually see only the signatures and pkg.go.dev; they cannot see activation, persistence, cancellation, or shutdown paths. Signatures cannot express what they may rely on or what happens when misused. Only the contract can fill that gap.
 
@@ -21,7 +21,7 @@ The cost is one bounded manual review at the release candidate. It does not requ
 
 Public API comments are written in English from the start; no bilingual copies.
 
-pkg.go.dev's default reader is a Go user from the first public release on, not the repository's current maintainers. English originals let that reader see a quotable, searchable contract directly; translating from Chinese later creates extra translation drift, and every API change would need proofreading twice.
+pkg.go.dev's default reader is a Go user from the first public tag on, not the repository's current maintainers. English originals let that reader see a quotable, searchable contract directly; translating from Chinese later creates extra translation drift, and every API change would need proofreading twice.
 
 This does not require finishing `docs/` and `design/` early. They are large and their target state is still moving; the ROADMAP is right to put them last. Doc comments are short and follow a settled public declaration and a release-candidate review; their readers and their churn boundaries differ.
 
@@ -29,7 +29,7 @@ This does not require finishing `docs/` and `design/` early. They are large and 
 
 Distinguish packages first, then judge symbols; "all exported names" cannot be the rule.
 
-| Category | v0.1.0 requirement |
+| Category | requirement |
 | --- | --- |
 | `gor`, called directly by users | The package doc and every independently usable entry point get a contract: startup and shutdown, registration and references, state, scheduling, lifecycle, observability, errors, options, and the seams generated artifacts call. |
 | Extension packages users implement or pass to `gor`: `clock`, `store`, `transport` | Package doc, interfaces and their methods, constructors, closable resources, errors, state values, and fields that affect implementer correctness all get contracts. |
@@ -80,7 +80,7 @@ A comment may state one local restriction; it must not restate a whole model jus
 
 ## Runnable examples
 
-`v0.1.0` adds no Go `Example` functions and sets none as a release gate.
+gor adds no Go `Example` functions and sets none as a release gate.
 
 A realistic root-package call must at least define an entity interface, generate proxies, build a runtime, install the artifacts, register factories, and then obtain a reference and call. It is not a lightweight example demonstrating one declaration. Inside an `Example`, it would compile and run on every `make test`; any v0 change to artifact shape, startup order, or public signatures would mean maintaining a third call path, plus text results when `Output` is present. `docs/example.md` and `examples/shadow/` already carry the full path; duplicating it would not improve v0.1's contract clarity.
 
