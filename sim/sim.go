@@ -16,7 +16,7 @@ import (
 	"github.com/suraciii/gor/store"
 )
 
-const simulationSeed uint64 = 0x8f3c2a1b
+const simulationSeed uint64 = 0x8f3c224c
 
 const (
 	simulationSteps        = 24
@@ -254,27 +254,54 @@ func chooseFaultPlan(rng *rand.Rand) faultPlan {
 	return plan
 }
 
-func chooseMemberFault(rng *rand.Rand) memberFaultSpec {
+func chooseMemberFault(rng *rand.Rand, cluster *simulationCluster, restartNode int) memberFaultSpec {
 	kind := randomMemberFaultKinds[rng.IntN(len(randomMemberFaultKinds))]
-	if kind == memberDelay {
-		return memberFaultSpec{kind: kind, delay: time.Duration(rng.IntN(3)+4) * time.Millisecond}
+	spec := memberFaultSpec{kind: kind}
+	if kind == memberFaultNone {
+		return spec
 	}
-	return memberFaultSpec{kind: kind}
+	// The target is drawn the way node indices for calls and crashes are —
+	// from the nodes that can produce member-table operations this step —
+	// then resolved to the node's current generation in the driver's own
+	// model: restart counts are decisions, so the resolution is a pure
+	// function of the seed. A node restarted this step addresses its new
+	// generation row.
+	pool := cluster.targetPool(restartNode)
+	targetNode := pool[rng.IntN(len(pool))]
+	generation := cluster.generations[targetNode]
+	if targetNode == restartNode {
+		generation++
+	}
+	spec.target = memberFaultTarget{
+		addr: nodeAddress(targetNode),
+		row:  fakeMemberKey{nodeAddr: nodeAddress(targetNode), generation: memberGeneration(targetNode, generation)},
+	}
+	if kind == memberDelay {
+		spec.delay = time.Duration(rng.IntN(3)+4) * time.Millisecond
+	}
+	return spec
 }
 
-func chooseScheduleFault(rng *rand.Rand) scheduleFaultKind {
+func chooseScheduleFault(rng *rand.Rand, cluster *simulationCluster) scheduleFaultSpec {
+	kind := scheduleFaultNone
 	switch rng.IntN(5) {
 	case 0:
-		return scheduleFaultNone
+		kind = scheduleFaultNone
 	case 1:
-		return scheduleListError
+		kind = scheduleListError
 	case 2:
-		return scheduleListDelay
+		kind = scheduleListDelay
 	case 3:
-		return scheduleClaimError
+		kind = scheduleClaimError
 	default:
-		return scheduleClaimAppliedError
+		kind = scheduleClaimAppliedError
 	}
+	spec := scheduleFaultSpec{kind: kind}
+	if kind == scheduleListError || kind == scheduleListDelay {
+		pool := cluster.targetPool(-1)
+		spec.targetNode = pool[rng.IntN(len(pool))]
+	}
+	return spec
 }
 
 func classifyOutcome(err error) (string, error) {
@@ -410,8 +437,17 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 
 	for step := 0; step < simulationSteps; step++ {
 		cluster.backend.setFaultPlans(nil)
+		cluster.backend.setScheduleListFault(scheduleFaultSpec{})
 		action := chooseClusterAction(rng, cluster)
-		memberFault := chooseMemberFault(rng)
+		// The restart node is drawn before the member fault so the fault's
+		// target can resolve the restarting node to the generation it will
+		// address this step.
+		restartNode := -1
+		if action == clusterRestart {
+			stoppedIDs := cluster.stoppedNodeIDs()
+			restartNode = stoppedIDs[rng.IntN(len(stoppedIDs))]
+		}
+		memberFault := chooseMemberFault(rng, cluster, restartNode)
 		cluster.backend.setMemberFault(memberFault)
 		switch action {
 		case clusterCall:
@@ -458,17 +494,15 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 				return log.String(), fmt.Errorf("step %d: %w", step, err)
 			}
 		case clusterRestart:
-			stoppedIDs := cluster.stoppedNodeIDs()
-			nodeID := stoppedIDs[rng.IntN(len(stoppedIDs))]
-			log.addRestartDecision(nodeID, memberFault)
-			if err := cluster.restart(nodeID); err != nil {
+			log.addRestartDecision(restartNode, memberFault)
+			if err := cluster.restart(restartNode); err != nil {
 				outcome, classifyErr := classifyOutcome(err)
 				if classifyErr != nil {
-					return log.String(), fmt.Errorf("step %d: restart node %d: %w", step, nodeID, classifyErr)
+					return log.String(), fmt.Errorf("step %d: restart node %d: %w", step, restartNode, classifyErr)
 				}
-				log.addClusterOutcome("restart", nodeID, outcome)
+				log.addClusterOutcome("restart", restartNode, outcome)
 			} else {
-				log.addClusterOutcome("restart", nodeID, "ok")
+				log.addClusterOutcome("restart", restartNode, "ok")
 			}
 		case clusterLeave:
 			liveIDs := cluster.liveNodeIDs()
@@ -490,7 +524,7 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 				interval = time.Duration(rng.IntN(2)+2) * simulationStepDuration
 				delay = interval
 			}
-			fault := chooseScheduleFault(rng)
+			fault := chooseScheduleFault(rng, cluster)
 			log.addScheduleDecision(nodeID, entity, name, delay, interval, fault, memberFault)
 			err := cluster.nodes[nodeID].rt.Invoke(context.Background(), id, "Arm", &counterArmRequest{A0: name, A1: delay, A2: interval}, &counterArmReply{})
 			outcome, classifyErr := classifyOutcome(err)

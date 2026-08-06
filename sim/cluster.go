@@ -64,6 +64,7 @@ func (c *simulationCluster) newRuntime(id, generation int) (*gor.Runtime, error)
 		c.tracker,
 		gor.WithClock(c.clock),
 		gor.WithMemberStore(members),
+		gor.WithScheduleStore(&nodeScheduleStore{backend: c.backend, addr: addr}),
 		gor.WithNodeAddr(addr),
 		gor.WithGeneration(memberGeneration(id, generation)),
 		gor.WithHeartbeatInterval(simulationStepDuration),
@@ -241,6 +242,20 @@ func (c *simulationCluster) liveNodeIDs() []int {
 		}
 	}
 	return ids
+}
+
+// targetPool returns the nodes a fault target may draw this step — the nodes
+// that can produce member-table operations. Live nodes heartbeat, poll views,
+// and self-check; a node restarted this step joins, writing and listing its
+// new-generation row. A target outside this pool could never be addressed
+// this step, so it is not drawable — the same way calls and crashes draw
+// their node indices from live nodes.
+func (c *simulationCluster) targetPool(restartNode int) []int {
+	pool := c.liveNodeIDs()
+	if restartNode >= 0 {
+		pool = append(pool, restartNode)
+	}
+	return pool
 }
 
 func (c *simulationCluster) stoppedNodeIDs() []int {

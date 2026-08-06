@@ -44,7 +44,11 @@ func runDelayedMemberWriteScenario(t *testing.T) memberStats {
 
 		started := make(chan struct{})
 		backend.setMemberFault(memberFaultSpec{
-			kind:    memberDelay,
+			kind: memberDelay,
+			target: memberFaultTarget{
+				addr: "node-a",
+				row:  fakeMemberKey{nodeAddr: "node-a", generation: "generation-a"},
+			},
 			delay:   time.Millisecond,
 			started: started,
 		})

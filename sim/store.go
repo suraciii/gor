@@ -5,6 +5,7 @@ package sim
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -44,8 +45,17 @@ const (
 	memberDelay
 )
 
+// memberFaultTarget is the seed-drawn target of a member fault. The list kind
+// binds a node, matched by caller; the write and delay kinds bind a member
+// row, matched by key.
+type memberFaultTarget struct {
+	addr string
+	row  fakeMemberKey
+}
+
 type memberFaultSpec struct {
 	kind    memberFaultKind
+	target  memberFaultTarget
 	delay   time.Duration
 	started chan struct{}
 }
@@ -64,6 +74,14 @@ const (
 	scheduleClaimError
 	scheduleClaimAppliedError
 )
+
+// scheduleFaultSpec carries the seed-drawn target for the list kinds: the
+// fault fires only on a ListDue issued by targetNode's poller. Claim kinds are
+// keyed by entity identity and take no target.
+type scheduleFaultSpec struct {
+	kind       scheduleFaultKind
+	targetNode int
+}
 
 const scheduleListDelayDuration = 100 * time.Microsecond
 
@@ -127,7 +145,7 @@ type fakeStore struct {
 	members             map[fakeMemberKey]store.Member
 	memberFault         memberFaultSpec
 	schedules           map[scheduleKey]store.Schedule
-	scheduleListFault   scheduleFaultKind
+	scheduleListFault   scheduleFaultSpec
 	scheduleClaimFaults map[store.Identity]scheduleFaultKind
 	timerTracker        *timerTracker
 	memberClock         clock.Clock
@@ -188,17 +206,27 @@ func (s *fakeStore) setMemberFault(fault memberFaultSpec) {
 	s.mu.Unlock()
 }
 
-func (s *fakeStore) setScheduleFault(id store.Identity, fault scheduleFaultKind) {
+func (s *fakeStore) setScheduleFault(id store.Identity, fault scheduleFaultSpec) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.scheduleListFault = scheduleFaultNone
+	s.scheduleListFault = scheduleFaultSpec{}
 	delete(s.scheduleClaimFaults, id)
-	switch fault {
+	switch fault.kind {
 	case scheduleListError, scheduleListDelay:
 		s.scheduleListFault = fault
 	case scheduleClaimError, scheduleClaimAppliedError:
-		s.scheduleClaimFaults[id] = fault
+		s.scheduleClaimFaults[id] = fault.kind
 	}
+}
+
+func (s *fakeStore) setScheduleListFault(fault scheduleFaultSpec) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scheduleListFault = fault
+}
+
+func nodeAddress(node int) string {
+	return fmt.Sprintf("node-%d", node)
 }
 
 func (s *fakeStore) faultPlan(id store.Identity) faultPlan {
@@ -283,9 +311,9 @@ func (s *fakeStore) WriteMember(_ context.Context, member store.Member) (store.E
 	s.memberStats.writeCalls++
 	fault := s.memberFault
 	key := fakeMemberKey{nodeAddr: member.NodeAddr, generation: member.Generation}
-	current := s.members[key]
-	delayedActiveWrite := fault.kind == memberDelay && member.Status == store.MemberActive && member.ETag > 1
-	if fault.kind == memberCASFailure {
+	addressesTarget := fault.kind != memberFaultNone && key == fault.target.row
+	delayedActiveWrite := addressesTarget && fault.kind == memberDelay && member.Status == store.MemberActive && member.ETag > 1
+	if addressesTarget && fault.kind == memberCASFailure {
 		s.memberFault = memberFaultSpec{}
 		s.memberStats.casConflicts++
 		s.mu.Unlock()
@@ -303,7 +331,7 @@ func (s *fakeStore) WriteMember(_ context.Context, member store.Member) (store.E
 		s.mu.Lock()
 	}
 
-	current = s.members[key]
+	current := s.members[key]
 	if current.ETag != member.ETag {
 		if delayedActiveWrite && current.Status == store.MemberDead {
 			s.memberStats.delayedDeadCAS++
@@ -311,7 +339,7 @@ func (s *fakeStore) WriteMember(_ context.Context, member store.Member) (store.E
 		s.mu.Unlock()
 		return 0, store.ErrConflict
 	}
-	if fault.kind == memberCASAppliedError {
+	if addressesTarget && fault.kind == memberCASAppliedError {
 		s.memberFault = memberFaultSpec{}
 	}
 
@@ -321,7 +349,7 @@ func (s *fakeStore) WriteMember(_ context.Context, member store.Member) (store.E
 	if member.Status == store.MemberDead {
 		s.memberStats.deadWrites++
 	}
-	if fault.kind == memberCASAppliedError {
+	if addressesTarget && fault.kind == memberCASAppliedError {
 		s.memberStats.casAppliedErrors++
 		s.mu.Unlock()
 		return member.ETag, errMemberAppliedFailure
@@ -330,12 +358,16 @@ func (s *fakeStore) WriteMember(_ context.Context, member store.Member) (store.E
 	return member.ETag, nil
 }
 
-func (s *fakeStore) ListMembers(_ context.Context) (store.MemberSnapshot, error) {
+func (s *fakeStore) ListMembers(ctx context.Context) (store.MemberSnapshot, error) {
+	return s.listMembersFor(ctx, "")
+}
+
+func (s *fakeStore) listMembersFor(_ context.Context, caller string) (store.MemberSnapshot, error) {
 	defer s.endOperation(s.beginOperation())
 	s.mu.Lock()
 	s.memberStats.listCalls++
 	fault := s.memberFault
-	if fault.kind == memberListError {
+	if fault.kind == memberListError && caller == fault.target.addr {
 		s.memberFault = memberFaultSpec{}
 		s.memberStats.listErrors++
 		s.mu.Unlock()
@@ -376,7 +408,7 @@ func (s *fakeStore) checkMemberStatuses() error {
 	return nil
 }
 
-func (s *fakeStore) snapshotDue(now time.Time) ([]store.Schedule, scheduleFaultKind) {
+func (s *fakeStore) snapshotDue(now time.Time, caller string) ([]store.Schedule, scheduleFaultSpec) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stats.listCalls++
@@ -399,11 +431,14 @@ func (s *fakeStore) snapshotDue(now time.Time) ([]store.Schedule, scheduleFaultK
 		return result[i].Name < result[j].Name
 	})
 	fault := s.scheduleListFault
-	if fault == scheduleListDelay && len(result) == 0 {
-		return result, scheduleFaultNone
+	if fault.kind != scheduleFaultNone && caller != nodeAddress(fault.targetNode) {
+		return result, scheduleFaultSpec{}
 	}
-	s.scheduleListFault = scheduleFaultNone
-	switch fault {
+	if fault.kind == scheduleListDelay && len(result) == 0 {
+		return result, scheduleFaultSpec{}
+	}
+	s.scheduleListFault = scheduleFaultSpec{}
+	switch fault.kind {
 	case scheduleListError:
 		s.stats.listErrors++
 	case scheduleListDelay:
@@ -412,13 +447,17 @@ func (s *fakeStore) snapshotDue(now time.Time) ([]store.Schedule, scheduleFaultK
 	return result, fault
 }
 
-func (s *fakeStore) ListDue(_ context.Context, now time.Time) ([]store.Schedule, error) {
+func (s *fakeStore) ListDue(ctx context.Context, now time.Time) ([]store.Schedule, error) {
+	return s.listDueFor(ctx, "", now)
+}
+
+func (s *fakeStore) listDueFor(_ context.Context, caller string, now time.Time) ([]store.Schedule, error) {
 	defer s.endOperation(s.beginOperation())
-	result, fault := s.snapshotDue(now)
-	if fault == scheduleListError {
+	result, fault := s.snapshotDue(now, caller)
+	if fault.kind == scheduleListError {
 		return nil, errScheduleListFailure
 	}
-	if fault == scheduleListDelay {
+	if fault.kind == scheduleListDelay {
 		s.recordDelay()
 		time.Sleep(scheduleListDelayDuration)
 	}
