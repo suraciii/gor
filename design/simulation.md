@@ -219,7 +219,7 @@ seed=8f3c2a1b
 
 **Only decision lines are numbered, counting consecutively from 0.** Observation lines are not numbered. If numbering ran across both halves, what a decision line looks like would depend on how many observations came before it: the compared half would depend on the uncompared half, and a change in observation count would fail the reproduction test for reasons unrelated to the seed.
 
-Re-running with the same seed gives byte-identical `decision` lines — this rule itself needs a test.
+Re-running with the same seed gives byte-identical `decision` lines — this rule itself needs a test, and the test must cover the seed population, not one seed (see *The reproducibility gate covers the batch*).
 
 **Any failure prints the whole log**, not just the decision half. The observation half exists for exactly this moment.
 
@@ -231,9 +231,25 @@ The `sim/` package, build tag `sim`, tests named with a `TestSim` prefix (`make 
 
 `sim` depends on `gor`, `runtime`, `store`, and `clock`; none of them depend on it.
 
-**Invariants run over a batch of seeds, not one.** One seed walks one trajectory and cannot cover several fault combinations. The seed list is hardcoded (for example 64 consecutive seeds from some base), so failures reproduce without introducing wall-clock randomness. The reproduction test, in turn, needs only one fixed seed: it tests that the skeleton itself does not draw the PRNG from multiple goroutines, not coverage.
+**Invariants run over a batch of seeds, not one.** One seed walks one trajectory and cannot cover several fault combinations. The seed list is hardcoded (for example 64 consecutive seeds from some base), so failures reproduce without introducing wall-clock randomness. Reproducibility has two guards, for two distinct bug classes. A single fixed seed, run twice, catches the skeleton's classic bug — drawing the PRNG from several goroutines — because that breaks *every* seed. It does not catch a leak that breaks only *some* seeds; for that, every seed the batch runs is run twice and its decision lines compared. The single-seed test is the smoke alarm; the batch is the contract.
 
 porcupine (`github.com/anishathalye/porcupine`) is a new dependency.
+
+## The reproducibility gate covers the batch, not one seed
+
+*The log splits in two* promises byte-identical decision lines for **any** seed. A test that replays one seed verifies that promise for one seed — no more. Two bug classes hide behind that gap.
+
+The first is the skeleton drawing the PRNG from several goroutines. It scrambles the draw order, so *every* seed stops reproducing; one replayed seed catches it. This is the class the single-seed test was built for, and it is enough for this class alone.
+
+The second is a leak that breaks only *some* seeds — *Liveness has two sources* is one: about three seeds in ten diverge, the rest replay clean. A one-seed gate can sit inside the safe majority forever, green while the contract is broken. This is exactly how #73 hid: the fixed seed walks a trajectory that never clears a vote, and the batch test runs each of its 64 seeds once, so neither test ever compared a fragile seed against itself. About one seed in four inside the batch window diverges on replay; the batch stayed green.
+
+The gate must match the contract. Every seed the batch runs is run twice and its decision lines compared, alongside the coverage check it already does. The single-seed replay stays — it is still the right smoke alarm for the PRNG-draw class — but it is no longer mistaken for the reproducibility gate.
+
+### Cost
+
+Running each seed twice doubles the batch's wall-clock. At the current 64-seed window that is about 1.3s becoming 2.6s — out of the default `test` target, and small. The only honest lever for cost is the window size, never skipping replay on some seeds: a gate that replays a subset reintroduces the same hole, just smaller.
+
+One wrinkle, faced honestly. The divergence is itself scheduling-dependent, so *which* seeds diverge moves a little run to run, and a fragile seed can pass a given pair by luck. With roughly fifteen fragile seeds in a 64-window, at least one fires on essentially every run, so the gate is reliably red while the contract is broken and reliably green once it is fixed. The wobble does not rescue a broken contract; it only blurs the exact count.
 
 ## What the later steps hang on the skeleton
 
@@ -268,3 +284,5 @@ The fake network deterministically simulates partitions, drops (as a partition s
 The driver runs a fixed batch of 64 consecutive seeds (`simulationSeed` + 0..63), each walking one deterministic *decision* trajectory. It is not a seed search: there is no fuzzing over seeds at test time, and a search would not help the scheduling-race class anyway — the same seed can pass or fail by scheduling, since observations are interleaving-dependent by design (*The log splits in two*). What a search would broaden is decision-sequence coverage, a separate axis from fault breadth.
 
 **Decision-half purity is broken by cluster-declared death (open, #73).** `liveNodeIDs()`, `stoppedNodeIDs()`, and `targetPool()` read `runtimeStopped`, which fires both when the driver stops a node and when the cluster declares it dead; the second is an observation that depends on probe scheduling. It reaches the action choice and every target draw, so the decision half is not a pure function of the seed. A 256-seed replay scan over `simulationSeed` (`0x8f3c224c`) finds about 28% of seeds split across two runs — 72/256 on the run recorded for this ruling; the exact count moves between runs because the split is itself scheduling-dependent. `TestSim_ReplaysEventLog` stays green only because the fixed seed walks a trajectory that never clears a vote. The remedy — the decision half reads driver-owned liveness only — is specified in *Liveness has two sources*; the code change is not yet made.
+
+**The reproducibility gate covers one seed, not the contract (open, #73).** `TestSim_ReplaysEventLog` replays a single fixed seed; `TestSim_ChecksSeedBatch` runs each of its 64 seeds once and checks only coverage. Neither compares a seed against itself across the population, so a leak that breaks only some seeds — the liveness leak above breaks about a quarter of the batch window — passes green. The remedy — the batch replay-compares every seed — is specified in *The reproducibility gate covers the batch*; the test change is not yet made.
