@@ -109,7 +109,7 @@ It knows nothing of entities, identities, or the membership table — it moves b
 
 Wire 6a's routing decisions to 6t's transport, plus a fake network (delay, packet loss, partition). Envelope and forwarding semantics: the "Forwarding" section of [design/cluster.md](design/cluster.md); how the server side recovers types from bytes: [design/codegen.md](design/codegen.md).
 
-Implemented. Calls to entities not on this node are forwarded through the transport to the node that currently owns them, sharing the same call path as local calls; the fake network currently simulates partitions, drops, and recovery deterministically. Delay injection is not implemented yet; reorder is not a distinct fault under this transport model (see [design/simulation.md](design/simulation.md)). Probing and death voting are 6c.
+Implemented. Calls to entities not on this node are forwarded through the transport to the node that currently owns them, sharing the same call path as local calls; the fake network deterministically simulates partitions, drops, recovery, and delay. Reorder is not a distinct fault under this transport model (see [design/simulation.md](design/simulation.md)). Probing and death voting are 6c.
 
 This step already changed the generated artifacts. `Invoke`'s argument went from `[]any` to `any`; each method has one request struct, and each type has one constructor like `newAccountCall`. Like step 3 taking over `dispatch`, this is a planned breaking change.
 
@@ -144,8 +144,6 @@ Not part of any step above, but completed before gor points users at a version. 
 ## Risks
 
 Only step 6 carries real distributed risk, and it contains no consensus algorithm — Orleans' membership outsources linearizability to a CAS-capable table, and so does `gor`. Steps 1 through 5 contain no distributed invariants; their risk is ordinary engineering risk.
-
-- **DST coverage risk.** The fake network deterministically simulates partitions, drops, and recovery. It does not yet inject delay — the one timing fault that is meaningful under this transport model. (Reorder is not a distinct fault: within a connection replies are correlation-id-matched and a TCP stream is ordered; across connections, reorder is just independent delays. See [design/simulation.md](design/simulation.md).) Delay injection would extend coverage into the late-arrival / unknown-outcome regime — a forwarded reply that lands after the caller's deadline, a probe delayed past its timeout — which is a real `gor` risk, but the same semantic class the Store-fault injection already exercises at the storage layer. It would not have caught the graceful-close teardown race: that was a single-node scheduling race, which network injection cannot reach; the guard for that class is a blocking-seam teardown contract test plus the `-race` detector. Classified as a risk that blocks the first announced release — do delay injection before v0.1.0, because shipping the announcement with a known hole in gor's main differentiator is worse than a later announcement.
 
 The real risks are not technical:
 

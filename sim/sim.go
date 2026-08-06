@@ -282,6 +282,32 @@ func chooseMemberFault(rng *rand.Rand, cluster *simulationCluster, restartNode i
 	return spec
 }
 
+func chooseNetworkDelay(rng *rand.Rand) time.Duration {
+	if rng.IntN(2) == 0 {
+		return time.Duration(rng.IntN(3)+1) * simulationStepDuration
+	}
+	return 0
+}
+
+func networkDelays(cluster *simulationCluster, delay time.Duration) map[networkPair]time.Duration {
+	if delay == 0 {
+		return nil
+	}
+	delays := make(map[networkPair]time.Duration)
+	for _, source := range cluster.nodes {
+		for _, destination := range cluster.nodes {
+			if source.id == destination.id {
+				continue
+			}
+			delays[networkPair{
+				source:      fmt.Sprintf("node-%d", source.id),
+				destination: fmt.Sprintf("node-%d", destination.id),
+			}] = delay
+		}
+	}
+	return delays
+}
+
 func chooseScheduleFault(rng *rand.Rand, cluster *simulationCluster) scheduleFaultSpec {
 	kind := scheduleFaultNone
 	switch rng.IntN(5) {
@@ -449,6 +475,9 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 		}
 		memberFault := chooseMemberFault(rng, cluster, restartNode)
 		cluster.backend.setMemberFault(memberFault)
+		networkDelay := chooseNetworkDelay(rng)
+		cluster.network.setDelays(networkDelays(cluster, networkDelay))
+		log.addNetworkDecision(networkDelay)
 		switch action {
 		case clusterCall:
 			entity := entities[rng.IntN(len(entities))]
@@ -571,6 +600,7 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 			return log.String(), fmt.Errorf("step %d: %w", step, err)
 		}
 		log.addMemberObservation(backend.memberStatsSnapshot())
+		log.addNetworkObservation(cluster.network.stats())
 	}
 	if err := timerTracker.check(); err != nil {
 		log.addScheduleObservation(backend.scheduleStats(), timerTracker.deliveryCount())

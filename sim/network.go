@@ -19,25 +19,89 @@ var (
 	errSimNetworkClosed    = errors.New("sim network closed")
 )
 
+type networkPair struct {
+	source      string
+	destination string
+}
+
 type simulationNetwork struct {
 	backend *fakeStore
 
-	mu          sync.Mutex
-	transports  map[string]*simulationTransport
-	memberStore map[string]*partitionedMemberStore
-	groups      map[string]int
-	partitioned bool
-	sends       atomic.Int64
-	delivered   atomic.Int64
-	dropped     atomic.Int64
+	mu               sync.Mutex
+	transports       map[string]*simulationTransport
+	memberStore      map[string]*partitionedMemberStore
+	groups           map[string]int
+	partitioned      bool
+	delays           map[networkPair]time.Duration
+	activeDeliveries int
+	deliveriesIdle   chan struct{}
+	sends            atomic.Int64
+	delivered        atomic.Int64
+	dropped          atomic.Int64
+	held             atomic.Int64
+	completed        atomic.Int64
 }
 
 func newSimulationNetwork(backend *fakeStore) *simulationNetwork {
+	idle := make(chan struct{})
+	close(idle)
 	return &simulationNetwork{
-		backend:     backend,
-		transports:  make(map[string]*simulationTransport),
-		memberStore: make(map[string]*partitionedMemberStore),
+		backend:        backend,
+		transports:     make(map[string]*simulationTransport),
+		memberStore:    make(map[string]*partitionedMemberStore),
+		deliveriesIdle: idle,
 	}
+}
+
+// setDelays arms per-pair message delays. A message sent from source to
+// destination while a non-zero delay is armed is held for that delay before
+// its handler runs. The delay is fake-clock time: it elapses only while the
+// driver is durably blocked, and the bubble clock releases the message, so a
+// held message can never be released by a goroutine sleep the scheduler
+// happens to honor.
+func (n *simulationNetwork) setDelays(delays map[networkPair]time.Duration) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.delays = make(map[networkPair]time.Duration, len(delays))
+	for pair, delay := range delays {
+		n.delays[pair] = delay
+	}
+}
+
+func (n *simulationNetwork) delayFor(source, destination string) time.Duration {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.delays[networkPair{source: source, destination: destination}]
+}
+
+// beginDelivery and endDelivery track in-flight message deliveries. The
+// driver blocks on the idle channel to let the bubble clock release held
+// messages before observing; the same quiescence discipline the fake store
+// obeys ([simulation.md](simulation.md)).
+func (n *simulationNetwork) beginDelivery() chan struct{} {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.activeDeliveries == 0 {
+		n.deliveriesIdle = make(chan struct{})
+	}
+	n.activeDeliveries++
+	return n.deliveriesIdle
+}
+
+func (n *simulationNetwork) endDelivery(idle chan struct{}) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.activeDeliveries--
+	if n.activeDeliveries == 0 {
+		close(idle)
+	}
+}
+
+func (n *simulationNetwork) waitForIdle() {
+	n.mu.Lock()
+	idle := n.deliveriesIdle
+	n.mu.Unlock()
+	<-idle
 }
 
 func (n *simulationNetwork) addNode(addr string) (store.MemberStore, *simulationTransport) {
@@ -102,8 +166,8 @@ func (n *simulationNetwork) blocked(source, destination string) bool {
 	return n.groups[source] != n.groups[destination]
 }
 
-func (n *simulationNetwork) stats() (sends, delivered, dropped int64) {
-	return n.sends.Load(), n.delivered.Load(), n.dropped.Load()
+func (n *simulationNetwork) stats() (sends, delivered, dropped, held, completed int64) {
+	return n.sends.Load(), n.delivered.Load(), n.dropped.Load(), n.held.Load(), n.completed.Load()
 }
 
 func cloneGroups(groups map[string]int) map[string]int {
@@ -167,11 +231,21 @@ func (t *simulationTransport) Send(ctx context.Context, addr string, payload []b
 		return nil, errors.New("sim network destination is not serving")
 	}
 
+	delay := t.network.delayFor(t.addr, addr)
 	result := make(chan struct {
 		payload []byte
 		err     error
 	}, 1)
 	go func() {
+		idle := t.network.beginDelivery()
+		defer func() {
+			t.network.completed.Add(1)
+			t.network.endDelivery(idle)
+		}()
+		if delay > 0 {
+			t.network.held.Add(1)
+			time.Sleep(delay)
+		}
 		response, err := handler(context.Background(), payload)
 		result <- struct {
 			payload []byte

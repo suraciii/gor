@@ -35,7 +35,7 @@ Closing a milestone freezes its scope as a completed set; it is not the same act
 
 The current 0.0.x is the lowest-numbered open milestone. Route a new issue by three questions, in order.
 
-1. **Is it required before the first announced release?** Required means a spec already written in `design/` but not implemented, where that spec is part of what the release promises (the DST delay-injection gap is the case in point — a hole in the project's stated differentiator), or a defect in something the release promises. If required, the issue belongs somewhere in the 0.0.x chain ahead of v0.1.0. If not, go to question 3.
+1. **Is it required before the first announced release?** Required means a spec already written in `design/` but not implemented, where that spec is part of what the release promises (a hole in the project's stated differentiator), or a defect in something the release promises. If required, the issue belongs somewhere in the 0.0.x chain ahead of v0.1.0. If not, go to question 3.
 2. **Is it cut-blocking?** A defect a user hits with ordinary use is cut-blocking: route it to the current 0.0.x. A written-but-unimplemented spec, or a defect that needs unusual input to trigger, is not cut-blocking: route it to the next 0.0.x (create one if none exists). Once in a milestone, an issue stays there until it is done or is moved at cut time.
 3. **Otherwise it is backlog.** An issue with no milestone is recorded work not committed to any tag — future direction, environment debt with no user impact, or a gap explicitly deferred. No milestone is a legitimate, intended state, not a mistake and not a queue to drain before a release.
 
