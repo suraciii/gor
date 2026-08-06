@@ -144,7 +144,7 @@ Load packages with `golang.org/x/tools/go/packages`, get type information from `
 
 **A known pitfall**: `go/types` requires the loaded package to pass type checking. If the artifacts lived in the same package as the user interface, then "the artifacts do not exist yet" → "user code references them → the package fails type checking" → "the generator cannot load the package" — a deadlock.
 
-The solution: **the artifacts land in a subpackage** (for example `internal/gorgen/`). The package holding the user interface does not import the artifacts; `gor.Register` / `gor.Ref` connect them at runtime through the registry.
+The solution: **the artifacts land in their own package**. The entity package does not import them; `gor.Register` / `gor.Ref` connect them at runtime through the registry. That package must also be importable from the startup code that calls `Install`, so it is not `internal` — by default it sits at `<entity-pkg>/gorgen` (see [Invocation](#invocation)).
 
 ## How the generator is tested
 
@@ -159,15 +159,30 @@ The split is not just for testing. Contract violations are reported in the loadi
 
 ## Invocation
 
+Add the generator as a tool when you add gor:
+
 ```bash
-go run github.com/suraciii/gor/cmd/gorgen -pkg ./domain
+go get github.com/suraciii/gor
+go get -tool github.com/suraciii/gor/cmd/gorgen
 ```
 
-Or `//go:generate`.
+The `tool` line records `cmd/gorgen` in `go.mod` and lands the generator's build dependencies — above all `golang.org/x/tools` — in `go.sum`. The library alone does not pull those in; without this line the run below fails on a missing `go.sum` entry.
 
-No automatic generation on `go build`: Go has no such hook; forcing it would need a wrapper script, and that would make the most common command, `go test ./...`, behave unpredictably. Generation is an explicit step, and CI gets a "generated artifacts match the source" check.
+Generate after creating or changing a marked interface:
+
+```bash
+go tool gorgen -pkg ./domain
+```
+
+The output is a non-`internal` subpackage of the entity package — `<entity-pkg>/gorgen` — so the startup code can import it and call `Install`. `-out` picks another directory; the package name is always `gorgen`. `//go:generate` works too.
+
+Why a separate `tool` line rather than plain `go run`: the generator depends on `golang.org/x/tools`, which the library never imports, so `go get` of the library alone leaves it out of `go.sum`. Splitting `cmd/gorgen` into its own module would fix the same thing, but it would force `internal/codegen` to leave `internal/`; the `tool` directive keeps the generator in-tree.
+
+No generation runs on `go build`: Go has no such hook, and forcing one would make `go test ./...` behave unpredictably. Generation is an explicit step, and CI gets a "generated artifacts match the source" check.
 
 ## Gap
+
+**Default output and invocation are not implemented as specified here.** The generator's current default output is the entity package's `internal/gorgen`, which Go's `internal` rule makes unimportable from the startup code that must call `Install`; the documented command is also still `go run github.com/suraciii/gor/cmd/gorgen`, which fails on a missing `go.sum` entry because the library alone does not record the generator's dependencies. The Invocation section above is the target: a `tool` directive and a non-`internal` `<entity-pkg>/gorgen` default.
 
 **`newCall` is already produced by the generator, and `Invoke`'s argument is already `any`.** These artifact changes were completed when 6b forwarding was connected; the artifacts now serve local and forwarded calls alike.
 

@@ -28,7 +28,7 @@ The first parameter of an interface method must be `context.Context`; the last r
 
 ### Generation prerequisite
 
-The `//gor:entity` marker says this interface gets typed calls generated for it. After creating or modifying a marked interface, run generation explicitly before building; `go generate` works, and so does running it directly. The command, where generated files land, and how to check them: [../design/codegen.md](../design/codegen.md).
+The `//gor:entity` marker says this interface gets typed calls generated for it. You add the generator to your module once, then run it whenever a marked interface is created or changed, before building. The exact commands and where the generated files land: [../design/codegen.md](../design/codegen.md).
 
 Every runtime must install the generated output at startup before entities can be registered or references obtained. The startup example below shows where installation happens.
 
