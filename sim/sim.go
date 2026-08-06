@@ -260,12 +260,14 @@ func chooseMemberFault(rng *rand.Rand, cluster *simulationCluster, restartNode i
 	if kind == memberFaultNone {
 		return spec
 	}
-	// The target is drawn the way node indices for calls and crashes are,
+	// The target is drawn the way node indices for calls and crashes are —
+	// from the nodes that can produce member-table operations this step —
 	// then resolved to the node's current generation in the driver's own
-	// model — restart counts are decisions, so the resolution is a pure
+	// model: restart counts are decisions, so the resolution is a pure
 	// function of the seed. A node restarted this step addresses its new
 	// generation row.
-	targetNode := rng.IntN(len(cluster.nodes))
+	pool := cluster.targetPool(restartNode)
+	targetNode := pool[rng.IntN(len(pool))]
 	generation := cluster.generations[targetNode]
 	if targetNode == restartNode {
 		generation++
@@ -296,7 +298,8 @@ func chooseScheduleFault(rng *rand.Rand, cluster *simulationCluster) scheduleFau
 	}
 	spec := scheduleFaultSpec{kind: kind}
 	if kind == scheduleListError || kind == scheduleListDelay {
-		spec.targetNode = rng.IntN(len(cluster.nodes))
+		pool := cluster.targetPool(-1)
+		spec.targetNode = pool[rng.IntN(len(pool))]
 	}
 	return spec
 }

@@ -244,6 +244,20 @@ func (c *simulationCluster) liveNodeIDs() []int {
 	return ids
 }
 
+// targetPool returns the nodes a fault target may draw this step — the nodes
+// that can produce member-table operations. Live nodes heartbeat, poll views,
+// and self-check; a node restarted this step joins, writing and listing its
+// new-generation row. A target outside this pool could never be addressed
+// this step, so it is not drawable — the same way calls and crashes draw
+// their node indices from live nodes.
+func (c *simulationCluster) targetPool(restartNode int) []int {
+	pool := c.liveNodeIDs()
+	if restartNode >= 0 {
+		pool = append(pool, restartNode)
+	}
+	return pool
+}
+
 func (c *simulationCluster) stoppedNodeIDs() []int {
 	ids := make([]int, 0, len(c.nodes))
 	for _, node := range c.nodes {
