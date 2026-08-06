@@ -29,7 +29,7 @@ A **0.0.x** tag (publicly visible, not announced — see "0.0.x") may be cut whe
 
 An **announced release** (v0.1.0 and later) is cut by maintainer judgment, not by a checklist — see "The bar for v1.0.0" and the 0.0.x note that readiness is complete and announcing is a choice. The 0.0.x chain leads up to it; the maintainer decides when to stop tagging 0.0.x and announce.
 
-Closing a milestone freezes its scope as a completed set; it is not the same act as pushing the tag, which stays the manual step in "Release sequence." The two may be separated — v0.0.1 was closed as a scope marker (its content is master) before any tag was pushed.
+Closing a milestone freezes its scope as a completed set; it is not the same act as pushing the tag, which stays the manual step in "Release sequence." The two may be separated — v0.0.1's milestone was closed as a scope marker, and its tag was pushed afterward.
 
 ### Which issue goes in which milestone
 
@@ -110,12 +110,10 @@ Steps 1, 2, 4, and 5 need maintainer judgment and stay manual. Step 3 already ha
 
 ## Gap
 
-There are no version tags today. The readiness work for an announced release is complete (every ROADMAP "required" item is done); the maintainer has not tagged 0.0.1, and staying in 0.0.x is a choice, not a missing gate. The `release-note` block in the PR template stays; the blocks accumulate and are read by hand when the first announced release is written.
-
-Two planning consequences of the above. The v0.0.1 milestone is closed as a scope marker (its content is master) while no tag has been pushed — closing a milestone and pushing a tag are separate acts (see Planning). And the ROADMAP "Risks" section still words delay injection as work to do "after the first announced release"; under the Planning rule (a written-but-unimplemented differentiator spec is required before announce) it is before v0.1.0, which is how the milestones are ordered. Reconciling the ROADMAP wording is a maintainer decision; this document follows the plan.
+Two 0.0.x tags exist — `v0.0.1`, marking master at the moment versioning started, and `v0.0.2`, the first forward batch — both annotated, neither with a GitHub Release, both cut under the Planning rules. The readiness work for an announced release is complete (every ROADMAP "required" item is done); staying in 0.0.x rather than announcing is a choice, not a missing gate. The `release-note` block in the PR template stays; the blocks accumulate and are read by hand when the first announced release is written.
 
 The install half of release-sequence step 3 was run on the pseudo-version `v0.0.0-20260806024742-eda84d5c45d7` in a clean user module outside the repository, following the documented flow verbatim — `go get` of the module, `go get -tool` of the generator, `go tool gorgen -pkg ./domain` without `-out`, import of the generated `<entity-pkg>/gorgen`, the startup snippet from [docs/programming-model.md](../docs/programming-model.md) including its `os.MkdirAll` step, a minimal entity flow, close, reopen, and state survives — and it passes end to end with no extra steps. The two gaps previously listed here (a missing go.sum entry for `golang.org/x/tools` and the unimportable `internal/gorgen` default) are gone.
 
-The upgrade half of the step-3 check has no previous version until 0.0.1 exists. After 0.0.1, it applies — under the artifact-change or persistence-change condition — to later 0.0.x tags. Release-sequence step 6 (install the exact tagged version in a clean project after tagging) likewise becomes meaningful once there is an announced release; for 0.0.x the pre-tag install check in step 3 already covers installability.
+With `v0.0.1` and `v0.0.2` tagged, the upgrade half of the step-3 check now applies — under the artifact-change or persistence-change condition — to later 0.0.x tags. Release-sequence step 6 (install the exact tagged version in a clean project after tagging) becomes meaningful once there is an announced release; for 0.0.x the pre-tag install check in step 3 already covers installability.
 
 The release-prep audit's cluster-startup inconsistency is resolved: [design/cluster.md](cluster.md) always specified default values for the six probe parameters, and the implementation now honors them — a zero value means "use the default" (ProbeInterval 1 s, ProbeTimeout 500 ms, ProbeFailures 3, VoteTTL 6 s, MaxTickGap 2 s, MaxTableLatency 500 ms), and only a negative value returns `cluster.ErrInvalidConfig`. The documented cluster startup snippet now runs verbatim in a clean module, and `make bench` passes again on a real-disk path.
