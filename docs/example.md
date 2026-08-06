@@ -1,6 +1,6 @@
 # Example application
 
-> Implemented. The runnable device-shadow service is in [../examples/shadow/](../examples/shadow/); this document explains the programming model and boundaries it demonstrates.
+> Implemented. The runnable device-shadow service is in [../examples/shadow/](../examples/shadow/); this document explains the programming model and boundaries it demonstrates. The same service runs on one node or on several; the business code does not change between them.
 
 ## Why not a counter
 
@@ -40,9 +40,3 @@ Point 4 must be written seriously. **No ignored errors in the example.** Every f
 **No web framework, ORM, or config library.** The standard library is enough. The example should teach `gor` usage, not someone else's.
 
 **No frontend.** An HTTP interface you can hit with `curl` is enough.
-
-## Gap
-
-End-to-end cross-node forwarding is wired up, but the example's launcher still runs single-process only. When it is rerun on multiple nodes, the business code must not change; if it must, the abstraction has a leak.
-
-Use this as the acceptance criterion: if the example needs business-code changes to run on a cluster, the abstraction has a leak.

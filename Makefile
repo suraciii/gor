@@ -18,6 +18,7 @@ gen:
 # 真 TCP 的传输测试单独运行，不进默认 test
 net:
 	go test -tags net ./transport/...
+	go test -tags net ./examples/shadow/...
 
 lint:
 	go run ./internal/constraintcheck

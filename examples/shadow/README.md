@@ -49,6 +49,20 @@ The service listens on `:8080` and writes data to `data/gor.db`. Address and dat
 go run ./examples/shadow/cmd/shadow -addr :9090 -db ./data/shadow.db
 ```
 
+## Running it on multiple nodes
+
+The same service runs as a cluster. Start one process per node, all sharing one database file; each node takes a distinct HTTP address and cluster transport address, and a fresh membership generation is taken automatically on every start:
+
+```bash
+go run ./examples/shadow/cmd/shadow -cluster -addr 127.0.0.1:8081 -node-addr 127.0.0.1:7371 -db ./data/cluster.db
+go run ./examples/shadow/cmd/shadow -cluster -addr 127.0.0.1:8082 -node-addr 127.0.0.1:7372 -db ./data/cluster.db
+go run ./examples/shadow/cmd/shadow -cluster -addr 127.0.0.1:8083 -node-addr 127.0.0.1:7373 -db ./data/cluster.db
+```
+
+Run each in its own terminal. Every node serves the same HTTP API; send a request to any node and it is executed on the node that owns that entity, forwarded over the cluster transport when that node is a different one. The entity definitions and handlers are identical to the single-node service — clustering is a launcher concern, not a business-code one.
+
+A node begins serving the moment it joins. As the nodes discover each other, which node owns which entity settles within about a second; during that brief window an entity may be served by a node that is about to hand it off, but it is always served, from the shared state. `curl` any node the same way as the single-node service.
+
 ## Calling it
 
 Report from device `device-1` to the `assembly` workshop:
