@@ -90,7 +90,7 @@ The artifacts land in a subpackage, and the user's interface package does not im
 The generator additionally emits an install function:
 
 ```go
-gorgen.Install(rt)
+if err := gorgen.Install(rt); err != nil { return err }
 ```
 
 It registers each interface's dispatch function and proxy constructor on `rt`. After that:
