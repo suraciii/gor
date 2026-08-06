@@ -60,7 +60,7 @@ type MethodHandle[T any] struct {
 func Handle[T any](m func(T, context.Context) error) MethodHandle[T] {
 	full := runtime.FuncForPC(reflect.ValueOf(m).Pointer()).Name()
 	name := full[strings.LastIndexByte(full, '.')+1:]
-	return MethodHandle[T]{method: strings.TrimSuffix(name, "-fm")}
+	return MethodHandle[T]{method: name}
 }
 
 // Schedule manages schedules for the entity bound to a Binder, typed to the
