@@ -161,7 +161,7 @@ The reason is not that JSON is fast; it is readable — when something goes wron
 
 User-injected `Codec` is rejected. An entity's state is one record assembled from multiple cells; the outer container and the values inside the cells must use the same encoding. Making it pluggable has only two outcomes: either the outer layer is always JSON and only the cells go through the codec — a fake codec, since non-JSON bytes cannot fit into a JSON container — or the outer layer is `map[string][]byte`, and then JSON base64-encodes every value, killing readability, which was the entire reason for choosing JSON. Not worth paying that price for a knob nobody asked for.
 
-Encoding for transport between nodes is a separate matter; it will be decided at step 6, see [architecture.md](architecture.md).
+Encoding for transport between nodes is a separate matter; see [architecture.md](architecture.md).
 
 No version-tolerant encoding (automatic compatibility when fields are added or removed). Orleans paid 30k lines for it. gor's stance: state structure evolution is handled by users at the application layer — read the old format, write the new one; the runtime does not intervene.
 
