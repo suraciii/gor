@@ -60,7 +60,7 @@ type counterTickReply struct{}
 type counterEntity struct {
 	value    gor.State[int64]
 	id       gor.Identity
-	schedule gor.Schedule
+	schedule gor.Schedule[counter]
 	tracker  *timerTracker
 }
 
@@ -77,7 +77,7 @@ func (c *counterEntity) Arm(ctx context.Context, name string, delay, interval ti
 	if interval > 0 {
 		when = gor.Every(interval)
 	}
-	return c.schedule.Set(ctx, name, when, "Tick")
+	return c.schedule.Set(ctx, name, when, gor.Handle(counter.Tick))
 }
 
 func (c *counterEntity) Disarm(ctx context.Context, name string) error {
@@ -169,7 +169,7 @@ func installCounterWithTracker(rt *gor.Runtime, tracker *timerTracker) error {
 		return &counterEntity{
 			value:    gor.NewState[int64](b, "value"),
 			id:       gor.Self(b),
-			schedule: gor.NewSchedule(b),
+			schedule: gor.NewSchedule[counter](b),
 			tracker:  tracker,
 		}
 	})

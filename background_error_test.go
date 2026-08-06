@@ -51,7 +51,7 @@ type misnamedScheduleDeactivateRequest struct{}
 type misnamedScheduleDeactivateReply struct{}
 
 type misnamedScheduleEntity struct {
-	schedule Schedule
+	schedule Schedule[misnamedSchedule]
 	wakeErr  error
 }
 
@@ -61,7 +61,7 @@ type misnamedScheduleProxy struct {
 }
 
 func (e *misnamedScheduleEntity) Arm(ctx context.Context) error {
-	return e.schedule.Set(ctx, "wake", After(12*time.Second), "OnDeactivate")
+	return e.schedule.Set(ctx, "wake", After(12*time.Second), Handle(misnamedSchedule.OnDeactivate))
 }
 
 func (e *misnamedScheduleEntity) OnDeactivate(context.Context) error {
@@ -106,7 +106,7 @@ func installMisnamedSchedule(t *testing.T, rt *Runtime, wakeErr error) {
 		t.Fatal(err)
 	}
 	if err := Register[misnamedSchedule](rt, func(b *Binder) misnamedSchedule {
-		return &misnamedScheduleEntity{schedule: NewSchedule(b), wakeErr: wakeErr}
+		return &misnamedScheduleEntity{schedule: NewSchedule[misnamedSchedule](b), wakeErr: wakeErr}
 	}); err != nil {
 		t.Fatal(err)
 	}
