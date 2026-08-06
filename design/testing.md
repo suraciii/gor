@@ -49,7 +49,7 @@ Resonate's public conclusion is the same: goroutine scheduling cannot be control
 
 So the `sim` package builds its own. Below are the pieces it needs; how they are built in [simulation.md](simulation.md):
 
-**Fake network** — implements the `Transport` interface. It can decide message delay, reordering, dropping, and partitioning by seed. A partition is a set of "which node pairs cannot talk"; it can change at any time.
+**Fake network** — implements the `Transport` interface. It can decide message delay, dropping, and partitioning by seed. A partition is a set of "which node pairs cannot talk"; it can change at any time. Reorder is not a separate knob: within a connection replies are matched by correlation id and a single TCP stream is ordered, and across connections two independent delays already produce every cross-message reorder. See [simulation.md](simulation.md).
 
 **Fake clock** — uses `synctest`'s time inside the bubble; cross-node time offsets come from a per-node offset in the `Clock` implementation, for testing clock skew.
 

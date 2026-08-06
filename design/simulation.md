@@ -82,7 +82,7 @@ A side benefit: writes the crashed node never got to answer land in this step's 
 
 ## The fault injection seam
 
-Right now there is exactly one real external I/O seam: `Store`. The fake store implements `store.Store` and injects four kinds by seed:
+The `Store` is the storage-side I/O seam. (The cross-node `Transport` seam is its own subject below, in *The fake network's fault classes*.) The fake store implements `store.Store` and injects four kinds by seed:
 
 - Read failure
 - Write failure that did not take effect
@@ -92,6 +92,31 @@ Right now there is exactly one real external I/O seam: `Store`. The fake store i
 The third is the point. It landed, the reply was lost, the caller does not know — the most common and most miswritten kind of outcome in distributed storage. [persistence.md](persistence.md)'s "after a failed write" rule exists precisely for it, and the simulation tests must prove it sufficient.
 
 Slow responses are not a separate kind; they are the delay.
+
+## The fake network's fault classes
+
+The fake `Transport` is the cross-node fault seam. Four things get conflated under "network fault"; only some are real, distinct faults under this transport model.
+
+**Partition** — a set of node pairs that cannot talk. Implemented as a group map; a `Send` across groups returns a partition error at once. Deterministic: the partition is a driver decision, not a coin flip per message. This is the current capability.
+
+**Drop** — a message that never arrives. Today drops happen only as a side effect of partition (a whole pair goes silent). A per-message drop keyed to the seed is the same shape and not yet wired; partition already covers the coarse form.
+
+**Delay** — a message held for a seed-drawn number of fake-clock ticks before delivery. This is the timing fault the current network cannot inject, and the one that matters. Determinism rests on one rule: **the delay is fake-clock time, and delivery is released by the bubble's clock, not by a goroutine sleep the scheduler happens to honor.** The message sits in a queue and a clock timer fires to deliver it, exactly as the Store delay already works (`time.Sleep`, fake inside the bubble); `synctest.Wait()` advances the clock because the wait is durably blocking — a timer channel, not a mutex ([testing.md](testing.md) rule 4). The delay value is drawn from the seeded PRNG in the single driver goroutine, like every other fault. The same quiescence discipline the Store obeys applies: wherever the clock can advance, the driver waits for delayed deliveries to settle before observing, or a component stalls inside one delay forever and looks alive.
+
+**Reorder is not a distinct fault here.** A reorder knob sounds like the obvious fourth, but the transport model dissolves it:
+
+- *Within one connection*, replies already return out of order relative to requests — handlers finish at different times, and the pending table matches by correlation id ([transport.md](transport.md)). Reordered replies are the transport's normal mode, not a fault; reordering request *bytes* within one connection would simulate something TCP does not do, since one stream delivers bytes in order.
+- *Across connections*, "which of two independent messages lands first" is just two independent delays. There is no shared queue to reorder against.
+
+So the meaningful timing fault is delay, and delay produces every cross-message reorder for free. Building a separate reorder mechanism would simulate non-TCP behavior.
+
+## What network injection cannot catch
+
+Network fault injection controls **inter-node** message timing: when a message, once handed to the transport, is delivered to the recipient. It does not control **intra-node** goroutine scheduling: which of two goroutines on the same node runs first. [testing.md](testing.md) states the boundary plainly — synctest is a unit-testing tool, not a DST framework, and does not control goroutine scheduling order.
+
+The consequence is sharp. A bug whose window is "node A tears itself down before it finishes a local step" is a scheduling race on one node. Delaying or reordering the network message downstream of that step does not move the window — the close still races the local write regardless of when the recipient sees the result. Network injection cannot reach this class.
+
+What does catch it: a **contract test with a blocking seam** at the teardown boundary, plus the **`-race` detector** as the statistical net. The blocking seam makes the window unavoidable — the test owns a channel that gates the in-flight work, so close cannot complete until the test releases it, and a broken close fails every run, not one in ten. This is how the graceful-close flush invariant is verified ([transport.md](transport.md) Testing); it is the pattern for teardown-ordering bugs generally, not a gap network injection could fill.
 
 ## Why inject a Clock at all
 
@@ -171,7 +196,7 @@ Step 6a: the membership table is yet another fault source, shaped like the sched
 
 Step 6b:
 
-- The fake `Transport` implementation: network partitions, message reordering, dropping.
+- The fake `Transport` implementation: network partitions, dropping, and delay (the meaningful timing fault; reorder is not distinct — see *The fake network's fault classes*).
 - One `Clock` with an offset per node.
 - Concurrent writes during a partition are blocked by the ETag — this is not a new invariant; it is step 4's invariant re-run under a new fault source.
 
@@ -179,4 +204,8 @@ Step 6c: probe failures and voting; the new invariant is "a healthy node is not 
 
 ## Gap
 
-The current fake network deterministically simulates partitions, drops, and recovery, but does not yet inject delays or message reordering. The existing DST therefore cannot cover message-timing changes.
+The fake network deterministically simulates partitions, drops (as a partition side effect), and recovery. **Delay injection is specified above but not yet implemented** — it is the one timing fault that is meaningful under this transport model.
+
+**Reorder is no longer a goal.** Earlier text listed reorder as a fake-network capability; that was wrong for the reasons in *The fake network's fault classes*. Within a connection, out-of-order replies are the transport's normal correlation-id mode and a TCP stream is ordered; across connections, reorder is just independent delays.
+
+The driver runs a fixed batch of 64 consecutive seeds (`simulationSeed` + 0..63), each walking one deterministic *decision* trajectory. It is not a seed search: there is no fuzzing over seeds at test time, and a search would not help the scheduling-race class anyway — the same seed can pass or fail by scheduling, since observations are interleaving-dependent by design (*The log splits in two*). What a search would broaden is decision-sequence coverage, a separate axis from fault breadth.

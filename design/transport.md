@@ -102,7 +102,7 @@ Frames and multiplexing are all tested with `net.Pipe` — an in-memory bidirect
 
 Real TCP tests only the dialing and listening slice, on a separate `make net` target; like `make gen`, it stays out of the default tests.
 
-The fault-injecting fake transport — partition, reorder, drop — belongs to the simulation tests; see [simulation.md](simulation.md). It implements the same `Transport` interface, not the same code.
+The fault-injecting fake transport — partition, drop, delay — belongs to the simulation tests; see [simulation.md](simulation.md). It implements the same `Transport` interface, not the same code. Reorder is not a distinct fault under the one-connection-per-direction model; see [simulation.md](simulation.md).
 
 **The graceful-close flush invariant is verified deterministically.** A test that fails one run in ten under full CPU is not a regression test. The invariant — a graceful `Close` may not complete while it still owes the peer a reply — is checked with a blocking handler: issue a `Send` whose server-side handler blocks on a channel the test owns, call `Close`, and assert `Close` has not returned while the reply is still pending; then release the handler and assert the caller received the business reply, after which `Close` returns. The reply cannot be written until the test releases it, so there is no schedule under which a broken `Close` wins — a regression that stops waiting for the flush fails this test every time.
 
@@ -114,4 +114,4 @@ Real-TCP close behavior is covered under `make net`: an in-flight `Send` followe
 
 The interface specified above is implemented. `Transport` exposes `Close` (graceful) and `Kill` (abrupt): a graceful close stops accepting new requests, joins in-flight handlers through their completion signals on the owner channel, flushes every queued reply frame, and only then closes the socket; a Kill cancels in-flight handlers, drops replies not yet written, and closes sockets, and it escalates a graceful close still in progress. The runtime's graceful stop calls `Close`; its abrupt stop and a declared-death collapse call `Kill`, including when the Kill escalates a close already under way. The in-memory fakes (`testTransport`, `simulationTransport`) implement both stops, and the graceful-close flush invariant is verified deterministically with a blocking handler under `synctest`.
 
-Under the `sim` build tag, `simulationTransport` can drop messages by partition; the delay and reorder injection listed in the design are not yet provided.
+Under the `sim` build tag, `simulationTransport` can drop messages by partition. Delay injection is specified but not yet provided; reorder is not a distinct fault under this transport model (see [simulation.md](simulation.md)).
