@@ -28,7 +28,7 @@ func (l *eventLog) addCallDecision(nodes []int, id store.Identity, plan faultPla
 	l.addDecisionEvent("call nodes=[%s] entity=%s/%s deltas=[%s] fault=%s", formatIntList(nodes), id.Type, id.Key, formatInt64List(deltas), plan.eventName())
 }
 
-func (l *eventLog) addScheduleDecision(node int, id store.Identity, name string, delay, interval time.Duration, fault scheduleFaultKind, member ...memberFaultSpec) {
+func (l *eventLog) addScheduleDecision(node int, id store.Identity, name string, delay, interval time.Duration, fault scheduleFaultSpec, member ...memberFaultSpec) {
 	l.addDecisionEvent("schedule node=%d entity=%s/%s name=%s after=%s every=%s fault=%s%s", node, id.Type, id.Key, name, delay, interval, fault.eventName(), memberFaultSuffix(member))
 }
 
@@ -108,16 +108,20 @@ func (p faultPlan) eventName() string {
 func (f memberFaultSpec) eventName() string {
 	switch f.kind {
 	case memberListError:
-		return "member.list.error"
+		return "member.list.error@" + f.target.addr
 	case memberCASFailure:
-		return "member.cas.error"
+		return "member.cas.error@" + f.target.row.eventName()
 	case memberCASAppliedError:
-		return "member.cas.applied-then-error"
+		return "member.cas.applied-then-error@" + f.target.row.eventName()
 	case memberDelay:
-		return fmt.Sprintf("member.delay=%s", f.delay)
+		return fmt.Sprintf("member.delay=%s@%s", f.delay, f.target.row.eventName())
 	default:
 		return "none"
 	}
+}
+
+func (k fakeMemberKey) eventName() string {
+	return k.nodeAddr + "/" + k.generation
 }
 
 func memberFaultSuffix(fault []memberFaultSpec) string {
@@ -142,12 +146,12 @@ func (f faultSpec) eventName(operation string) string {
 	}
 }
 
-func (f scheduleFaultKind) eventName() string {
-	switch f {
+func (f scheduleFaultSpec) eventName() string {
+	switch f.kind {
 	case scheduleListError:
-		return "schedule.list.error"
+		return "schedule.list.error@" + nodeAddress(f.targetNode)
 	case scheduleListDelay:
-		return "schedule.list.delay"
+		return "schedule.list.delay@" + nodeAddress(f.targetNode)
 	case scheduleClaimError:
 		return "schedule.claim.error"
 	case scheduleClaimAppliedError:

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/suraciii/gor/store"
 	"github.com/suraciii/gor/transport"
@@ -49,7 +50,7 @@ func (n *simulationNetwork) addNode(addr string) (store.MemberStore, *simulation
 		done:    make(chan struct{}),
 		closed:  make(chan struct{}),
 	}
-	members := &partitionedMemberStore{backend: n.backend}
+	members := &partitionedMemberStore{backend: n.backend, addr: addr}
 	n.transports[addr] = endpoint
 	n.memberStore[addr] = members
 	return members, endpoint
@@ -202,6 +203,7 @@ func (t *simulationTransport) Kill() error {
 
 type partitionedMemberStore struct {
 	backend *fakeStore
+	addr    string
 
 	mu          sync.Mutex
 	partitioned bool
@@ -255,7 +257,7 @@ func (s *partitionedMemberStore) ListMembers(ctx context.Context) (store.MemberS
 	s.mu.Lock()
 	if !s.partitioned {
 		s.mu.Unlock()
-		return s.backend.ListMembers(ctx)
+		return s.backend.listMembersFor(ctx, s.addr)
 	}
 	members := make([]store.Member, 0, len(s.members))
 	for _, member := range s.members {
@@ -269,4 +271,30 @@ func (s *partitionedMemberStore) ListMembers(ctx context.Context) (store.MemberS
 		return members[i].Generation < members[j].Generation
 	})
 	return store.MemberSnapshot{Members: members, TableNow: s.backend.memberTableNow()}, nil
+}
+
+// nodeScheduleStore attributes the poller's list calls to the owning node so
+// the schedule list fault can bind a node target, the same way
+// partitionedMemberStore attributes member list calls.
+type nodeScheduleStore struct {
+	backend *fakeStore
+	addr    string
+}
+
+var _ store.ScheduleStore = (*nodeScheduleStore)(nil)
+
+func (s *nodeScheduleStore) ListDue(ctx context.Context, now time.Time) ([]store.Schedule, error) {
+	return s.backend.listDueFor(ctx, s.addr, now)
+}
+
+func (s *nodeScheduleStore) Claim(ctx context.Context, schedule store.Schedule, nextDueAt time.Time) (bool, error) {
+	return s.backend.Claim(ctx, schedule, nextDueAt)
+}
+
+func (s *nodeScheduleStore) Put(ctx context.Context, schedule store.Schedule) error {
+	return s.backend.Put(ctx, schedule)
+}
+
+func (s *nodeScheduleStore) Delete(ctx context.Context, id store.Identity, name string) error {
+	return s.backend.Delete(ctx, id, name)
 }

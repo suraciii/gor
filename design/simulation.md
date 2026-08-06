@@ -240,8 +240,6 @@ Step 6c: probe failures and voting; the new invariant is "a healthy node is not 
 
 The fake network deterministically simulates partitions, drops (as a partition side effect), and recovery. **Delay injection is specified above but not yet implemented** — it is the one timing fault that is meaningful under this transport model.
 
-**Member and schedule-list faults do not yet bind a target.** They are single unkeyed fields consumed by the first operation to take the lock — the defect *A fault names its target* adjudicates. The target binding specified there is not yet implemented; until it lands, a one-shot member fault can let a restart's outcome vary by scheduling, which leaks through the (necessary) live-node read into the decision half and breaks replay.
-
 **Reorder is no longer a goal.** Earlier text listed reorder as a fake-network capability; that was wrong for the reasons in *The fake network's fault classes*. Within a connection, out-of-order replies are the transport's normal correlation-id mode and a TCP stream is ordered; across connections, reorder is just independent delays.
 
 The driver runs a fixed batch of 64 consecutive seeds (`simulationSeed` + 0..63), each walking one deterministic *decision* trajectory. It is not a seed search: there is no fuzzing over seeds at test time, and a search would not help the scheduling-race class anyway — the same seed can pass or fail by scheduling, since observations are interleaving-dependent by design (*The log splits in two*). What a search would broaden is decision-sequence coverage, a separate axis from fault breadth.

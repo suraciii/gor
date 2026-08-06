@@ -29,7 +29,11 @@ func counterOperationOutputFor(value int64, err error) counterOperationOutput {
 	switch {
 	case err == nil:
 		return counterOperationOutput{value: value, status: counterOperationSucceeded}
-	case simErrorIs(err, errAppliedWriteFailure), simErrorIs(err, gor.ErrPersistenceFailed), simErrorIs(err, context.Canceled):
+	// A call that returned an error after the runtime stopped may still have
+	// taken effect: the write landed and the reply was lost. Such outcomes are
+	// unknown, not failures, whether the stop was a Kill (canceled), a
+	// persistence loss, or a Close that cut the delivery (closed).
+	case simErrorIs(err, errAppliedWriteFailure), simErrorIs(err, gor.ErrPersistenceFailed), simErrorIs(err, gor.ErrRuntimeClosed), simErrorIs(err, context.Canceled):
 		return counterOperationOutput{value: value, status: counterOperationUnknown}
 	case simErrorIs(err, errWriteFailure):
 		return counterOperationOutput{value: value, status: counterOperationFailed}
