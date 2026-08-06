@@ -51,6 +51,40 @@ Interleaving-dependent correctness does not rely on reproduction; it relies on t
 
 Go offers nothing stronger ([testing.md](testing.md) cites Resonate's same conclusion). Writing the impossible as possible only makes nobody know what to trust when the first flake appears.
 
+## A fault names its target
+
+*The log splits in two* makes one promise about reproducibility: re-running with the seed yields byte-identical **decision** lines. For that to hold, the decision half must be a pure function of the seed — nothing the goroutine scheduler can change may flow into it. Tracing exactly where that line was crossed is the whole of this question.
+
+The decision encoding reads node liveness — `liveNodeIDs()`, `stoppedNodeIDs()` — to pick valid targets: which node to crash, to call, to restart. That read is **necessary**; the driver cannot pick a live node without knowing which are live, and every action case depends on it. It is **safe** on one condition: the liveness it reads must itself be seed-determined. Crash and leave are decisions, so they move liveness deterministically. Restart is a decision to *attempt*; whether the attempt succeeds is an observation. So long as restart-success is seed-determined, liveness is seed-determined, and the decision half stays pure.
+
+A one-shot fault with no target breaks the condition. The member fault is a single field consumed by whichever `WriteMember` or `ListMembers` takes the lock first. During a restart the new runtime's join write and a survivor's heartbeat write both reach the member store while such a fault is pending; they write **different rows**, both can succeed, and whichever the scheduler runs first consumes the fault. The fault is **drawn** deterministically and **applied** nondeterministically. Its application fixes the join write's fate, which fixes restart-success — an observation — which moves liveness, which the decision encoding reads next step. A divergence the split permits on the observation side (restart outcome) walks through a necessary read into the decision side (which node the next step targets), and the decision lines split from the next step on.
+
+That is the defect, and it is **one root, not two**. "May a fault be consumed nondeterministically" and "may the decision encoding read runtime state" are the same leak seen from two ends: the fault's first-arrival consumption is what makes the runtime state scheduler-dependent, and reading that state is what carries the dependence into the decision half. Fixing the read is not an option — the read is necessary, and the state is scheduler-dependent only because of the fault. The fix is at the fault.
+
+### The remedy: bind the target by the seed
+
+A fault is two facts — a kind and a target. The kind has always been a decision. The target must be a decision too. The store fault already does this: keyed by entity identity, drawn in the driver, read fresh on every call to that entity, not consumed by first arrival. The member fault must meet the same bar. This is not new machinery; it is removing the inconsistency that left the member fault the odd one out.
+
+The target of a member fault is a member row — the `(node address, generation)` the member store keys on — for the write and delay kinds, and a node for the list-error kind. The driver draws the target with the seed, the same way it draws node indices for calls and crashes, resolving a node to its current generation. The fault fires only on an operation addressing that target; if none does this step it does not fire — dropped, deterministically, the way a store fault on an entity nobody calls does not manifest. The delay kind is already shape-bound to an active-refresh write; it takes the target row as well, so two survivors heartbeating no longer race for one delay token. With the target fixed by the seed, restart-success is fixed by the seed (a write or list fault fails restart exactly when it targets the restarting node; a delay never does), liveness is fixed by the seed, and the decision half is pure again.
+
+### Per seam
+
+Whether a seam carries this defect turns on one test: does its first-arrival consumption move a runtime quantity the decision encoding reads?
+
+- **Store read/write fault** — keyed by entity identity, not consumed by first arrival. No defect.
+- **Schedule claim fault** — keyed by entity identity; the consuming `Claim` is CAS-unique, so the fault rides the one winner. Which node wins is scheduling, but the observable — one delivery, the fault applied — is invariant, and liveness is untouched. No defect; the residual scheduling dependence is the accepted outcome kind.
+- **Member fault** — single unkeyed field, first-arrival. Its consumption fixes restart-success, which moves liveness, which the decision encoding reads. **The defect.**
+- **Schedule list fault** — single unkeyed field, first-arrival, same *shape* as the member fault. But a list error is read-only and the poller retries next tick; it moves no quantity the decision encoding reads, so no divergence reaches the decision half. **Benign today; take the same target binding for consistency, not urgency** — a future seam that let schedule state feed a decision would reopen the leak through the same shape.
+- **Network fault** — not this shape. A partition is a deterministic group map applied per node pair; drop is a partition side effect; delay is drawn unconditionally in the driver and released by the clock. None latches onto a target by first arrival.
+
+### What does not change
+
+Concurrency is not reduced and no fault is removed. Binding a target is not "shrinking the load to make observations comparable": calls stay concurrent, faults still fire, and the outcome of a fault on its bound target is still interleaving-dependent. The member fault's *kind* was always a decision; only its *target* was left to the scheduler, and only the target moves onto the seed.
+
+The invariants do not change. Membership views still converge, declaring death is still irreversible, and one owner per key still holds after convergence — these hold whichever target a fault hits, and binding the target does not narrow them.
+
+The reproduction test does not change in shape. It still compares decision lines. A fault's target is now part of the decision line, so it is part of what is compared — correct, because the target is now a decision.
+
 ## What a "node" is
 
 A node = one `runtime.Runtime`. Several nodes share one `Store`. Before [step 6](../ROADMAP.md#6-multiple-nodes), nodes have no other connection.
@@ -205,6 +239,8 @@ Step 6c: probe failures and voting; the new invariant is "a healthy node is not 
 ## Gap
 
 The fake network deterministically simulates partitions, drops (as a partition side effect), and recovery. **Delay injection is specified above but not yet implemented** — it is the one timing fault that is meaningful under this transport model.
+
+**Member and schedule-list faults do not yet bind a target.** They are single unkeyed fields consumed by the first operation to take the lock — the defect *A fault names its target* adjudicates. The target binding specified there is not yet implemented; until it lands, a one-shot member fault can let a restart's outcome vary by scheduling, which leaks through the (necessary) live-node read into the decision half and breaks replay.
 
 **Reorder is no longer a goal.** Earlier text listed reorder as a fake-network capability; that was wrong for the reasons in *The fake network's fault classes*. Within a connection, out-of-order replies are the transport's normal correlation-id mode and a TCP stream is ordered; across connections, reorder is just independent delays.
 
