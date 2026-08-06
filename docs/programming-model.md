@@ -55,12 +55,14 @@ func (a *account) Balance(ctx context.Context) (int64, error) {
 }
 ```
 
-Register:
+The interface, the implementation, and the registration below live together in the entity's package — the factory refers to the unexported `account` type, so the registration cannot be written anywhere else. The startup code calls the registration with the runtime it built:
 
 ```go
-gor.Register[Account](rt, func(b *gor.Binder) Account {
-    return &account{balance: gor.NewState[int64](b, "balance")}
-})
+func Register(rt *gor.Runtime) error {
+    return gor.Register[Account](rt, func(b *gor.Binder) Account {
+        return &account{balance: gor.NewState[int64](b, "balance")}
+    })
+}
 ```
 
 `b` is handed in by the runtime; it connects the state cells to the store. Apart from that, the factory is an ordinary constructor.
@@ -69,18 +71,22 @@ No locks in method bodies, because none are needed — a second call on the same
 
 ## The entity knows who it is
 
+Extending the registration from the previous section — the struct also keeps its identity:
+
 ```go
 type account struct {
     id      gor.Identity
     balance gor.State[int64]
 }
 
-gor.Register[Account](rt, func(b *gor.Binder) Account {
-    return &account{
-        id:      gor.Self(b),
-        balance: gor.NewState[int64](b, "balance"),
-    }
-})
+func Register(rt *gor.Runtime) error {
+    return gor.Register[Account](rt, func(b *gor.Binder) Account {
+        return &account{
+            id:      gor.Self(b),
+            balance: gor.NewState[int64](b, "balance"),
+        }
+    })
+}
 ```
 
 This is needed for logging, for using the key as business data (the `alice` in `Account("alice")` is a username), and for calling another entity and telling it who you are.
@@ -89,7 +95,7 @@ An identity is not state. It never enters the store, does not change when the en
 
 ## The entity reads time
 
-The `Binder` is given to the factory once, at activation. If method bodies need it, keep it in the factory:
+The `Binder` is given to the factory once, at activation. If method bodies need it, keep it in the factory — registration shaped as in the previous sections:
 
 ```go
 type device struct {
@@ -97,9 +103,11 @@ type device struct {
     reading gor.State[reading]
 }
 
-gor.Register[Device](rt, func(b *gor.Binder) Device {
-    return &device{b: b, reading: gor.NewState[reading](b, "reading")}
-})
+func Register(rt *gor.Runtime) error {
+    return gor.Register[Device](rt, func(b *gor.Binder) Device {
+        return &device{b: b, reading: gor.NewState[reading](b, "reading")}
+    })
+}
 
 func (d *device) Report(ctx context.Context, value float64) error {
     next := d.reading.Get()
@@ -250,7 +258,7 @@ rt, err := gor.New(gor.WithStore(database))
 if err != nil { return err }
 defer rt.Close()
 
-gorgen.Install(rt)
+if err := gorgen.Install(rt); err != nil { return err }
 ```
 
 `Install` hands the generated proxies and dispatch functions to the runtime. Without this line, `Register` and `Ref` fail at startup — not at the first call.
