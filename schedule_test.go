@@ -35,7 +35,7 @@ type scheduledAccountValueReply struct {
 
 type scheduledAccountEntity struct {
 	value           State[int64]
-	schedule        Schedule
+	schedule        Schedule[scheduledAccount]
 	wakeErr         error
 	wakeStarted     chan struct{}
 	cancelShapedErr bool
@@ -47,7 +47,7 @@ type scheduledAccountProxy struct {
 }
 
 func (a *scheduledAccountEntity) Arm(ctx context.Context) error {
-	return a.schedule.Set(ctx, "wake", After(12*time.Second), "Wake")
+	return a.schedule.Set(ctx, "wake", After(12*time.Second), Handle(scheduledAccount.Wake))
 }
 
 func (a *scheduledAccountEntity) Wake(ctx context.Context) error {
@@ -137,7 +137,7 @@ func installScheduledAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int
 		factoryCalls.Add(1)
 		return &scheduledAccountEntity{
 			value:           NewState[int64](b, "value"),
-			schedule:        NewSchedule(b),
+			schedule:        NewSchedule[scheduledAccount](b),
 			wakeErr:         config.wakeErr,
 			wakeStarted:     config.wakeStarted,
 			cancelShapedErr: config.cancelShapedErr,
@@ -266,19 +266,19 @@ func TestSchedule_SetOverwritesAndCancelDeletes(t *testing.T) {
 	start := time.Unix(0, 0).UTC()
 	fakeClock := clock.NewFake(start)
 	backend := store.NewMemory()
-	schedule := NewSchedule(newTestBinder(Identity{Type: "account", Key: "alice"}, backend, backend, fakeClock))
+	schedule := NewSchedule[scheduledAccount](newTestBinder(Identity{Type: "account", Key: "alice"}, backend, backend, fakeClock))
 
-	if err := schedule.Set(context.Background(), "wake", After(time.Second), "Wake"); err != nil {
+	if err := schedule.Set(context.Background(), "wake", After(time.Second), Handle(scheduledAccount.Wake)); err != nil {
 		t.Fatal(err)
 	}
-	if err := schedule.Set(context.Background(), "wake", Every(2*time.Second), "WakeAgain"); err != nil {
+	if err := schedule.Set(context.Background(), "wake", Every(2*time.Second), Handle(scheduledAccount.Arm)); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := backend.ListDue(context.Background(), start.Add(3*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Method != "WakeAgain" || rows[0].Interval != 2*time.Second || !rows[0].DueAt.Equal(start.Add(2*time.Second)) {
+	if len(rows) != 1 || rows[0].Method != "Arm" || rows[0].Interval != 2*time.Second || !rows[0].DueAt.Equal(start.Add(2*time.Second)) {
 		t.Fatalf("overwritten schedule = %#v", rows)
 	}
 
@@ -295,8 +295,8 @@ func TestSchedule_SetOverwritesAndCancelDeletes(t *testing.T) {
 }
 
 func TestSchedule_ReturnsUnavailableWithoutScheduleStore(t *testing.T) {
-	schedule := NewSchedule(newTestBinder(Identity{Type: "account", Key: "alice"}, failingWriteStore{}, nil, clock.Real{}))
-	if err := schedule.Set(context.Background(), "wake", After(time.Second), "Wake"); !errors.Is(err, ErrScheduleStoreUnavailable) {
+	schedule := NewSchedule[scheduledAccount](newTestBinder(Identity{Type: "account", Key: "alice"}, failingWriteStore{}, nil, clock.Real{}))
+	if err := schedule.Set(context.Background(), "wake", After(time.Second), Handle(scheduledAccount.Wake)); !errors.Is(err, ErrScheduleStoreUnavailable) {
 		t.Fatalf("Set error = %v, want ErrScheduleStoreUnavailable", err)
 	}
 	if err := schedule.Cancel(context.Background(), "wake"); !errors.Is(err, ErrScheduleStoreUnavailable) {

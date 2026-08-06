@@ -50,7 +50,7 @@ type device struct {
 	binder          *gor.Binder
 	id              gor.Identity
 	shadow          gor.State[Shadow]
-	schedule        gor.Schedule
+	schedule        gor.Schedule[Device]
 	lifecycleEvents chan<- LifecycleEvent
 }
 
@@ -67,7 +67,7 @@ func newDevice(b *gor.Binder, events chan<- LifecycleEvent) Device {
 		binder:          b,
 		id:              gor.Self(b),
 		shadow:          gor.NewState[Shadow](b, "shadow"),
-		schedule:        gor.NewSchedule(b),
+		schedule:        gor.NewSchedule[Device](b),
 		lifecycleEvents: events,
 	}
 }
@@ -85,7 +85,7 @@ func (d *device) Report(ctx context.Context, workshopID string, state string) er
 	if err := d.shadow.Set(ctx, next); err != nil {
 		return err
 	}
-	if err := d.schedule.Set(ctx, "offline", gor.After(OfflineAfter), "MarkOffline"); err != nil {
+	if err := d.schedule.Set(ctx, "offline", gor.After(OfflineAfter), gor.Handle(Device.MarkOffline)); err != nil {
 		return err
 	}
 
