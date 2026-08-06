@@ -176,9 +176,17 @@ func (r *Runtime) Register(name string, registration Registration) error {
 }
 
 func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
+	if err := checkCycle(ctx, id); err != nil {
+		return err
+	}
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(r.killCtx, cancel)()
+
+	// The call occupies id from admission on: activation and the method body
+	// both run with id on the occupied chain, so a nested call that targets
+	// id again is rejected as a cycle.
+	callCtx = withOccupied(callCtx, id)
 
 	registration, err := r.registration(id.Type)
 	if err != nil {

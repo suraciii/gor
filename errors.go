@@ -92,6 +92,12 @@ const (
 	ErrRequestEncodeFailed Code = "gor.request_encode_failed"
 	ErrReplyEncodeFailed   Code = "gor.reply_encode_failed"
 	ErrTransportFailed     Code = "gor.transport_failed"
+	// ErrCallCycle reports that a call targeted an entity that the same call
+	// chain already occupies, so the call could never start. The error text
+	// names the entities in the cycle. The cycle is detected at delivery, not
+	// inferred from elapsed time: a slow call that is not a cycle still times
+	// out as a plain timeout.
+	ErrCallCycle Code = "gor.call_cycle"
 )
 
 type codedError struct {
@@ -143,6 +149,8 @@ func publicError(err error) error {
 		return withCode(ErrPersistenceConflict, err)
 	case errors.Is(err, runtimepkg.ErrPanic):
 		return withCode(ErrPanic, err)
+	case errors.Is(err, runtimepkg.ErrCallCycle):
+		return withCode(ErrCallCycle, err)
 	default:
 		return err
 	}

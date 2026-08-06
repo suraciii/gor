@@ -55,6 +55,7 @@ This version's framework code set is sealed as follows:
 | `gor.request_encode_failed` | The source could not encode the arguments into a call request. |
 | `gor.reply_encode_failed` | The return values of a successful call could not be encoded. |
 | `gor.transport_failed` | The request, response, or connection failed to transfer; the execution outcome is unknown. |
+| `gor.call_cycle` | A call targeted an entity already occupied by the same call chain, so it could never start. |
 
 The framework must not invent `gor.*` codes outside this set for the same outcome. Applications must not use `gor.*`. This version registers no extra mappings for arbitrary error types and derives no codes from error text.
 

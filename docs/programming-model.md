@@ -159,7 +159,7 @@ Timeout or cancellation only means the caller stopped waiting. The method may ha
 
 A method panic makes the call return an error and discards the current instance. Calls already queued but not started also end in error; they are not rerun on a fresh instance. The next call rebuilds the instance from persistent state.
 
-While an entity handles one call, it does not start a second. Call cycles like A calling B and B calling A back fail; waiting does not resolve them. The runtime does not retry automatically: whether retrying is safe and how to avoid duplicate business actions is the caller's judgment.
+While an entity handles one call, it does not start a second. A call that would close a cycle — A calling B and B calling A back — is detected along the call chain and fails with an error that names the entities in the cycle, instead of hanging until the caller gives up; its stable code tells it apart from an ordinary timeout. The runtime does not retry automatically: whether retrying is safe and how to avoid duplicate business actions is the caller's judgment.
 
 Calls from one caller to one entity, sent locally in sequence, execute in issue order. Cross-node, that order is not guaranteed; operations with ordering dependencies must express the dependency in business data, not rely on network arrival order.
 
