@@ -182,8 +182,6 @@ No generation runs on `go build`: Go has no such hook, and forcing one would mak
 
 ## Gap
 
-**Default output and invocation are not implemented as specified here.** The generator's current default output is the entity package's `internal/gorgen`, which Go's `internal` rule makes unimportable from the startup code that must call `Install`; the documented command is also still `go run github.com/suraciii/gor/cmd/gorgen`, which fails on a missing `go.sum` entry because the library alone does not record the generator's dependencies. The Invocation section above is the target: a `tool` directive and a non-`internal` `<entity-pkg>/gorgen` default.
-
 **`newCall` is already produced by the generator, and `Invoke`'s argument is already `any`.** These artifact changes were completed when 6b forwarding was connected; the artifacts now serve local and forwarded calls alike.
 
 **Import alias collisions.** The generator writes imports by package name; two packages with the same name at different paths (`a/domain` and `b/domain`) produce code that does not compile. This only happens when a method signature uses cross-package types. The generator should assign its own aliases; it does not yet.

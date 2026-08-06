@@ -4,13 +4,17 @@
 // //gor:entity, and writes generated proxies, dispatch functions, and an
 // Install function to generated.go. Run it with, for example:
 //
-//	go run github.com/suraciii/gor/cmd/gorgen -pkg ./domain
+//	go tool gorgen -pkg ./domain
 //
-// Without -out, gorgen writes to the package's internal/gorgen directory. Use
-// -out to select another output directory. Import the generated package,
-// call its Install function after creating a gor.Runtime and before using the
-// generated entity references, then register and invoke those entities through
-// the root gor package.
+// (Add the generator to the module once with
+// `go get -tool github.com/suraciii/gor/cmd/gorgen`; inside the gor
+// repository itself, `go run ./cmd/gorgen` works the same.)
+//
+// Without -out, gorgen writes to the entity package's gorgen subpackage,
+// <package>/gorgen. Use -out to select another output directory. Import the
+// generated package, call its Install function after creating a gor.Runtime
+// and before using the generated entity references, then register and invoke
+// those entities through the root gor package.
 package main
 
 import (
@@ -35,7 +39,7 @@ func run(args []string, stderr io.Writer) error {
 	flags := flag.NewFlagSet("gorgen", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	packagePattern := flags.String("pkg", "", "package containing gor:entity interfaces")
-	output := flags.String("out", "", "output directory (default: package/internal/gorgen)")
+	output := flags.String("out", "", "output directory (default: <package>/gorgen)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -56,7 +60,7 @@ func run(args []string, stderr io.Writer) error {
 	}
 	outputDir := *output
 	if outputDir == "" {
-		outputDir = filepath.Join(loaded.Dir, "internal", "gorgen")
+		outputDir = filepath.Join(loaded.Dir, "gorgen")
 	}
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("create output directory %s: %w", outputDir, err)

@@ -241,6 +241,7 @@ Completion-event callbacks run synchronously with the caller. A callback must no
 Single node, state in a local file:
 
 ```go
+if err := os.MkdirAll("data", 0o755); err != nil { return err }
 database, err := store.OpenSQLite("data/gor.db")
 if err != nil { return err }
 defer database.Close()
