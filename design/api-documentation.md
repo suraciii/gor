@@ -99,4 +99,4 @@ From then on, the same change that adds or alters a supported declaration must u
 
 ## Gap
 
-Today `go doc .`, `go doc ./store`, `go doc ./cluster`, and the other production packages show only bare signatures; no package or exported declaration has a doc comment. This is the current state, not the release-candidate state this document prescribes.
+The candidate API documentation batch is in place: the supported packages (`gor`, `clock`, `store`, `transport`, and `cmd/gorgen`) carry package docs and per-symbol contracts on their independently usable entry points, and the implementation packages (`runtime`, `mail`, `timer`, `cluster`) carry package docs stating the no-direct-dependency boundary. One borderline case remains: the root `Activation` alias carries no independent comment; its semantics are covered by the documented `Activations()` return aggregate and its self-describing fields, which this document's aggregate exception permits, but it is listed here for the manual review this section's acceptance step 2 prescribes. No Go `Example` functions exist, as prescribed.

@@ -64,4 +64,4 @@ If this v1 promise must ever be broken, gor will release a new major version wit
 
 ## Gap
 
-There are no public version tags yet, so no compatibility promises are in effect. Not all pre-release requirements are complete; the README currently lists only single-process as usable and states plainly that multi-node failure detection is unreliable.
+There are no public version tags yet, so no compatibility promises are in effect. Not all pre-release requirements are complete; the README presents single-process as the usable scope and describes multi-node failure detection as direct probing with death voting, while the reliability limits are stated in this document's "What can already be relied on" section.
