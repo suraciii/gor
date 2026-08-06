@@ -39,20 +39,13 @@ func (pipeAddr) Network() string { return "pipe" }
 func (pipeAddr) String() string  { return "pipe" }
 
 // newPipeTCP builds a TCP transport whose accept loop serves net.Pipe
-// connections handed to it by the test.
+// connections handed to it by the test. It shares the production assembly
+// path, newTCP; only the injected listener differs from New.
 func newPipeTCP() (*TCP, net.Conn) {
 	server, peer := net.Pipe()
 	listener := &pipeListener{conns: make(chan net.Conn, 1), done: make(chan struct{})}
 	listener.conns <- server
-	tcp := &TCP{
-		listener:    listener,
-		addr:        "pipe",
-		closeDone:   make(chan struct{}),
-		serveDone:   make(chan struct{}),
-		outgoing:    make(map[string]*connection),
-		connections: make(map[*connection]struct{}),
-	}
-	return tcp, peer
+	return newTCP(listener), peer
 }
 
 // TestTCPGracefulCloseFlushesReplyAndDoesNotCancelHandler pins the TCP-level
