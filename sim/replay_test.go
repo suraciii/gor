@@ -56,6 +56,11 @@ func TestSim_ChecksSeedBatch(t *testing.T) {
 				seenStats["member-"+stat] = true
 			}
 		}
+		for _, stat := range []string{"held", "completed"} {
+			if networkStatPositive(output, stat) {
+				seenStats["network-"+stat] = true
+			}
+		}
 	}
 	for _, stat := range []string{
 		"list-errors",
@@ -78,6 +83,30 @@ func TestSim_ChecksSeedBatch(t *testing.T) {
 			t.Fatalf("seed batch never triggered member stat %s", stat)
 		}
 	}
+	for _, stat := range []string{"held", "completed"} {
+		if !seenStats["network-"+stat] {
+			t.Fatalf("seed batch never triggered network stat %s", stat)
+		}
+	}
+}
+
+func networkStatPositive(log, name string) bool {
+	for _, line := range strings.Split(log, "\n") {
+		if !strings.Contains(line, "observe network ") {
+			continue
+		}
+		for _, field := range strings.Fields(line) {
+			prefix := name + "="
+			if !strings.HasPrefix(field, prefix) {
+				continue
+			}
+			value, err := strconv.Atoi(strings.TrimPrefix(field, prefix))
+			if err == nil && value > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func scheduleStatPositive(log, name string) bool {

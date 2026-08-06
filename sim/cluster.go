@@ -170,6 +170,7 @@ func (c *simulationCluster) advance(duration time.Duration) {
 		runtime.Gosched()
 		synctest.Wait()
 		c.backend.waitForIdle()
+		c.network.waitForIdle()
 		duration -= step
 	}
 	synctest.Wait()
@@ -178,6 +179,7 @@ func (c *simulationCluster) advance(duration time.Duration) {
 func (c *simulationCluster) settle() {
 	c.backend.setFaultPlans(nil)
 	c.backend.setMemberFault(memberFaultSpec{})
+	c.network.setDelays(nil)
 	for range 20 {
 		c.advance(simulationStepDuration)
 	}
@@ -342,6 +344,7 @@ func executeDecisions(cluster *simulationCluster, decisions []decision, crashNod
 	// Kill lets the caller return while the entity method is still sleeping in
 	// the store; if root exits, the fake clock stops and synctest reports a leak.
 	cluster.backend.waitForIdle()
+	cluster.network.waitForIdle()
 
 	outcomes := make([]string, 0, len(decisions))
 	for range decisions {

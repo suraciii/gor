@@ -159,7 +159,7 @@ func TestSim_NetworkPartitionCreatesDualActivationAndRecovers(t *testing.T) {
 		if !errors.Is(partitioned.err, errSimNetworkPartition) {
 			t.Fatalf("cross-partition forward error = %v, want %v", partitioned.err, errSimNetworkPartition)
 		}
-		_, _, dropped := cluster.network.stats()
+		_, _, dropped, _, _ := cluster.network.stats()
 		if dropped == 0 {
 			t.Fatal("partition dropped no transport messages")
 		}
@@ -209,12 +209,12 @@ func TestSim_NetworkPartitionCreatesDualActivationAndRecovers(t *testing.T) {
 		}
 
 		healedRemote := findIdentityOwnedBy(t, cluster, 1, counterType)
-		sendsBefore, deliveredBefore, droppedBefore := cluster.network.stats()
+		sendsBefore, deliveredBefore, droppedBefore, _, _ := cluster.network.stats()
 		recovered := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.Identity(healedRemote), 7))
 		if recovered.err != nil || recovered.value != 7 {
 			t.Fatalf("healed forwarded call = (%d, %v), want (7, nil)", recovered.value, recovered.err)
 		}
-		sendsAfter, deliveredAfter, droppedAfter := cluster.network.stats()
+		sendsAfter, deliveredAfter, droppedAfter, _, _ := cluster.network.stats()
 		if sendsAfter <= sendsBefore || deliveredAfter <= deliveredBefore || droppedAfter != droppedBefore {
 			t.Fatalf("healed transport stats = (%d,%d,%d), before (%d,%d,%d), want one delivered send and no new drop", sendsAfter, deliveredAfter, droppedAfter, sendsBefore, deliveredBefore, droppedBefore)
 		}

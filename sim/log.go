@@ -84,6 +84,14 @@ func (l *eventLog) addMemberObservation(stats memberStats) {
 	l.add("     observe members list-calls=%d write-calls=%d list-errors=%d cas-errors=%d cas-applied-errors=%d delays=%d dead-writes=%d delayed-dead-cas=%d", stats.listCalls, stats.writeCalls, stats.listErrors, stats.casConflicts, stats.casAppliedErrors, stats.delays, stats.deadWrites, stats.delayedDeadCAS)
 }
 
+func (l *eventLog) addNetworkDecision(delay time.Duration) {
+	l.addDecisionEvent("network-delay=%s", delay)
+}
+
+func (l *eventLog) addNetworkObservation(sends, delivered, dropped, held, completed int64) {
+	l.add("     observe network sends=%d delivered=%d dropped=%d held=%d completed=%d", sends, delivered, dropped, held, completed)
+}
+
 func (l *eventLog) addScheduleOutcome(operation string, node int, outcome string) {
 	l.add("     observe %s node=%d outcome=%s", operation, node, outcome)
 }

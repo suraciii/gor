@@ -135,7 +135,7 @@ The fake `Transport` is the cross-node fault seam. Four things get conflated und
 
 **Drop** — a message that never arrives. Today drops happen only as a side effect of partition (a whole pair goes silent). A per-message drop keyed to the seed is the same shape and not yet wired; partition already covers the coarse form.
 
-**Delay** — a message held for a seed-drawn number of fake-clock ticks before delivery. This is the timing fault the current network cannot inject, and the one that matters. Determinism rests on one rule: **the delay is fake-clock time, and delivery is released by the bubble's clock, not by a goroutine sleep the scheduler happens to honor.** The message sits in a queue and a clock timer fires to deliver it, exactly as the Store delay already works (`time.Sleep`, fake inside the bubble); `synctest.Wait()` advances the clock because the wait is durably blocking — a timer channel, not a mutex ([testing.md](testing.md) rule 4). The delay value is drawn from the seeded PRNG in the single driver goroutine, like every other fault. The same quiescence discipline the Store obeys applies: wherever the clock can advance, the driver waits for delayed deliveries to settle before observing, or a component stalls inside one delay forever and looks alive.
+**Delay** — a message held for a seed-drawn number of fake-clock ticks before delivery. This is the only timing fault that matters under this transport model. Determinism rests on one rule: **the delay is fake-clock time, and delivery is released by the bubble's clock, not by a goroutine sleep the scheduler happens to honor.** The message sits in a queue and a clock timer fires to deliver it, exactly as the Store delay already works (`time.Sleep`, fake inside the bubble); `synctest.Wait()` advances the clock because the wait is durably blocking — a timer channel, not a mutex ([testing.md](testing.md) rule 4). The delay value is drawn from the seeded PRNG in the single driver goroutine, like every other fault. The same quiescence discipline the Store obeys applies: wherever the clock can advance, the driver waits for delayed deliveries to settle before observing, or a component stalls inside one delay forever and looks alive.
 
 **Reorder is not a distinct fault here.** A reorder knob sounds like the obvious fourth, but the transport model dissolves it:
 
@@ -238,7 +238,7 @@ Step 6c: probe failures and voting; the new invariant is "a healthy node is not 
 
 ## Gap
 
-The fake network deterministically simulates partitions, drops (as a partition side effect), and recovery. **Delay injection is specified above but not yet implemented** — it is the one timing fault that is meaningful under this transport model.
+The fake network deterministically simulates partitions, drops (as a partition side effect), recovery, and delay.
 
 **Reorder is no longer a goal.** Earlier text listed reorder as a fake-network capability; that was wrong for the reasons in *The fake network's fault classes*. Within a connection, out-of-order replies are the transport's normal correlation-id mode and a TCP stream is ordered; across connections, reorder is just independent delays.
 

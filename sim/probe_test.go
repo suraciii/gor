@@ -139,9 +139,36 @@ func (c *probeScenario) advance(duration time.Duration) {
 		runtime.Gosched()
 		synctest.Wait()
 		c.backend.waitForIdle()
+		c.network.waitForIdle()
 		duration -= step
 	}
 	synctest.Wait()
+}
+
+// advanceClock advances the injected clock while keeping the bubble clock
+// frozen. A helper goroutine steps the clock and yields generously while the
+// driver blocks on its completion: the cluster's run loops keep processing
+// probe ticks (so they stay healthy and record failures), while the spinning
+// helper keeps the bubble from advancing, so held deliveries stay held and
+// probe timeouts fire while their messages are still in the network. The
+// driver must settle before observing.
+func (c *probeScenario) advanceClock(duration time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for duration > 0 {
+			step := simulationStepDuration
+			if duration < step {
+				step = duration
+			}
+			c.clock.Advance(step)
+			for range 2000 {
+				runtime.Gosched()
+			}
+			duration -= step
+		}
+	}()
+	<-done
 }
 
 func (c *probeScenario) close() {
