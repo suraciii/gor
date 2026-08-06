@@ -83,6 +83,12 @@ No special case for "only one". Passing `&amount` directly for a single value do
 
 **Methods with no parameters or only an `error` return still get the empty structs.** Across nodes, this pair of structs is the bytes on the wire: empty structs encode to `{}`, and there is exactly one encode/decode path; without them, an "is it nil" check would be needed before and after encoding. Without a network it is indeed dead code; with a network it is the shortest form of that path.
 
+## Import names
+
+The generated file imports packages by their declared package name. When a method signature uses types from two packages that share a name at different paths (`a/domain` and `b/domain`), the generator assigns an alias to every colliding import itself: `adomain "a/domain"` and `bdomain "b/domain"`. Imports whose name collides with nothing — including the names the generated file always uses itself (`context`, `fmt`, `gor`, and the source package name) — keep their package name, so adding a new import never churns existing lines of a generated artifact.
+
+An alias is the concatenation of the package path's trailing segments, sanitized into an identifier, extended one segment deeper until it is unique among the run's names: `a/domain` → `adomain`, `billing/domain/v2` → `v2`, `a/x/domain` and `b/x/domain` → `axdomain` and `bxdomain`. A numeric suffix (`domain2`) is the last resort. Assignment is deterministic — the same input always produces the same aliases — so regenerating does not churn the file.
+
 ## How generated artifacts plug into the runtime
 
 The artifacts land in a subpackage, and the user's interface package does not import it (reason: the type-checking deadlock below). So how does the runtime know where `Account`'s dispatch function lives?
@@ -184,7 +190,7 @@ No generation runs on `go build`: Go has no such hook, and forcing one would mak
 
 **`newCall` is already produced by the generator, and `Invoke`'s argument is already `any`.** These artifact changes were completed when 6b forwarding was connected; the artifacts now serve local and forwarded calls alike.
 
-**Import alias collisions.** The generator writes imports by package name; two packages with the same name at different paths (`a/domain` and `b/domain`) produce code that does not compile. This only happens when a method signature uses cross-package types. The generator should assign its own aliases; it does not yet.
+**Import aliases are assigned by the generator.** Two packages with the same name at different paths (`a/domain` and `b/domain`) in one method signature no longer produce code that does not compile; the generator aliases the colliding imports itself. The rule lives in "Import names" above.
 
 ## Rejected approaches
 
