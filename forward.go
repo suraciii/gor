@@ -11,11 +11,19 @@ import (
 )
 
 type callRequest struct {
-	Kind   string          `json:"kind"`
-	Type   string          `json:"type"`
-	Key    string          `json:"key"`
-	Method string          `json:"method"`
-	Args   json.RawMessage `json:"args"`
+	Kind     string             `json:"kind"`
+	Type     string             `json:"type"`
+	Key      string             `json:"key"`
+	Method   string             `json:"method"`
+	Args     json.RawMessage    `json:"args"`
+	Occupied []occupiedIdentity `json:"occupied,omitempty"`
+}
+
+// occupiedIdentity is the wire form of one entity on a forwarded call's
+// occupied chain, shaped like the request's own type/key fields.
+type occupiedIdentity struct {
+	Type string `json:"type"`
+	Key  string `json:"key"`
 }
 
 type callResponse struct {
@@ -77,11 +85,12 @@ func (rt *Runtime) forward(ctx context.Context, owner string, id Identity, metho
 		return withCode(ErrRequestEncodeFailed, fmt.Errorf("encode %s arguments: %w", method, err))
 	}
 	payload, err := json.Marshal(callRequest{
-		Kind:   requestKindInvoke,
-		Type:   id.Type,
-		Key:    id.Key,
-		Method: method,
-		Args:   encodedArgs,
+		Kind:     requestKindInvoke,
+		Type:     id.Type,
+		Key:      id.Key,
+		Method:   method,
+		Args:     encodedArgs,
+		Occupied: occupiedToWire(runtimepkg.OccupiedFrom(ctx)),
 	})
 	if err != nil {
 		return withCode(ErrRequestEncodeFailed, fmt.Errorf("encode invocation request: %w", err))
@@ -155,7 +164,11 @@ func (rt *Runtime) handleInvoke(ctx context.Context, request callRequest) ([]byt
 	}
 
 	// Forwarded requests already crossed the ownership decision; execute them
-	// locally without re-routing.
+	// locally without re-routing. The occupied chain crossed the wire with
+	// the request; restore it so the receiving engine checks and extends it.
+	if occupied := occupiedFromWire(request.Occupied); len(occupied) > 0 {
+		ctx = runtimepkg.WithOccupied(ctx, occupied)
+	}
 	invokeErr := publicError(rt.engine.Invoke(ctx, runtimepkg.Identity{Type: request.Type, Key: request.Key}, request.Method, args, reply))
 	if invokeErr != nil {
 		// The handler context belongs to the serving runtime, so cancellation
@@ -208,4 +221,26 @@ func encodeCallResponse(response callResponse) ([]byte, error) {
 		return nil, fmt.Errorf("encode invocation response: %w", err)
 	}
 	return encoded, nil
+}
+
+func occupiedToWire(chain []runtimepkg.Identity) []occupiedIdentity {
+	if len(chain) == 0 {
+		return nil
+	}
+	wire := make([]occupiedIdentity, 0, len(chain))
+	for _, id := range chain {
+		wire = append(wire, occupiedIdentity{Type: id.Type, Key: id.Key})
+	}
+	return wire
+}
+
+func occupiedFromWire(wire []occupiedIdentity) []runtimepkg.Identity {
+	if len(wire) == 0 {
+		return nil
+	}
+	chain := make([]runtimepkg.Identity, 0, len(wire))
+	for _, id := range wire {
+		chain = append(chain, runtimepkg.Identity{Type: id.Type, Key: id.Key})
+	}
+	return chain
 }
