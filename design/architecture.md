@@ -2,7 +2,7 @@
 
 ## Dependency directions
 
-The diagram shows only direct imports of production packages. Solid lines are edges that exist in the current code; `┈┈▶` is a target edge not yet connected.
+The diagram shows only direct imports of production packages. Solid lines are edges that exist in the current code.
 
 ```
 gor ────────▶ runtime ────────▶ mail

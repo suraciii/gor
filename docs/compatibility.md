@@ -75,4 +75,4 @@ If this v1 promise must ever be broken, gor will release a new major version wit
 
 ## Gap
 
-There are no version tags yet. The readiness work for an announced release is complete (every ROADMAP "required" item is done); the maintainer has not tagged 0.0.1, and staying in 0.0.x is a choice, not a missing requirement. When 0.0.1 is tagged, the two 0.0.x promises above take effect; the broader v0 discipline and assembled release notes start at 0.1.0. The README presents single-process as the usable scope and describes multi-node failure detection as direct probing with death voting, while the reliability limits are stated in this document's "What can already be relied on" section.
+The readiness work for an announced release is complete (every ROADMAP "required" item is done); staying in 0.0.x is a choice, not a missing requirement. The broader v0 discipline and assembled release notes start at 0.1.0. The README presents single-process as the usable scope and describes multi-node failure detection as direct probing with death voting, while the reliability limits are stated in this document's "What can already be relied on" section.
