@@ -50,7 +50,7 @@ func openSQLite(path string, memberClock clock.Clock) (*SQLite, error) {
 	writeDB.SetMaxIdleConns(1)
 	if err := writeDB.Ping(); err != nil {
 		writeDB.Close()
-		return nil, err
+		return nil, fmt.Errorf("open sqlite database %q: %w", path, err)
 	}
 	if err := createSchema(writeDB); err != nil {
 		writeDB.Close()
@@ -66,7 +66,7 @@ func openSQLite(path string, memberClock clock.Clock) (*SQLite, error) {
 	if err := readDB.Ping(); err != nil {
 		readDB.Close()
 		writeDB.Close()
-		return nil, err
+		return nil, fmt.Errorf("open sqlite database %q: %w", path, err)
 	}
 
 	return &SQLite{readDB: readDB, writeDB: writeDB, memberClock: memberClock}, nil

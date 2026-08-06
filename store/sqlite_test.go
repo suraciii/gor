@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -176,6 +177,18 @@ func TestSQLiteStore_PersistsAcrossReopen(t *testing.T) {
 	}
 	if string(record.Data) != "persisted" || record.ETag != 1 {
 		t.Fatalf("Record after reopen = %#v, want persisted data and ETag 1", record)
+	}
+}
+
+func TestOpenSQLite_MissingParentDirErrorNamesPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no", "such", "dir", "gor.db")
+
+	_, err := OpenSQLite(path)
+	if err == nil {
+		t.Fatalf("OpenSQLite: expected error for missing parent dir")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Fatalf("OpenSQLite error %q does not mention path %q", err, path)
 	}
 }
 
