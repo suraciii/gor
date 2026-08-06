@@ -55,7 +55,7 @@ Go offers nothing stronger ([testing.md](testing.md) cites Resonate's same concl
 
 *The log splits in two* makes one promise about reproducibility: re-running with the seed yields byte-identical **decision** lines. For that to hold, the decision half must be a pure function of the seed — nothing the goroutine scheduler can change may flow into it. Tracing exactly where that line was crossed is the whole of this question.
 
-The decision encoding reads node liveness — `liveNodeIDs()`, `stoppedNodeIDs()` — to pick valid targets: which node to crash, to call, to restart. That read is **necessary**; the driver cannot pick a live node without knowing which are live, and every action case depends on it. It is **safe** on one condition: the liveness it reads must itself be seed-determined. Crash and leave are decisions, so they move liveness deterministically. Restart is a decision to *attempt*; whether the attempt succeeds is an observation. So long as restart-success is seed-determined, liveness is seed-determined, and the decision half stays pure.
+The decision encoding reads node liveness — `liveNodeIDs()`, `stoppedNodeIDs()` — to pick valid targets: which node to crash, to call, to restart. That read is **necessary**; the driver cannot pick a live node without knowing which are live, and every action case depends on it. It is **safe** on one condition: the liveness it reads must itself be seed-determined. Crash and leave are decisions, so they move liveness deterministically. Restart is a decision to *attempt*; whether the attempt succeeds is an observation, pinned to the seed by the remedy below. Those three are the movers this section owns. A fourth mover — the cluster declaring a node dead by vote — is an observation that is *not* seed-determined; it has its own section, *Liveness has two sources*, because its remedy is at the read rather than at a fault.
 
 A one-shot fault with no target breaks the condition. The member fault is a single field consumed by whichever `WriteMember` or `ListMembers` takes the lock first. During a restart the new runtime's join write and a survivor's heartbeat write both reach the member store while such a fault is pending; they write **different rows**, both can succeed, and whichever the scheduler runs first consumes the fault. The fault is **drawn** deterministically and **applied** nondeterministically. Its application fixes the join write's fate, which fixes restart-success — an observation — which moves liveness, which the decision encoding reads next step. A divergence the split permits on the observation side (restart outcome) walks through a necessary read into the decision side (which node the next step targets), and the decision lines split from the next step on.
 
@@ -84,6 +84,29 @@ Concurrency is not reduced and no fault is removed. Binding a target is not "shr
 The invariants do not change. Membership views still converge, declaring death is still irreversible, and one owner per key still holds after convergence — these hold whichever target a fault hits, and binding the target does not narrow them.
 
 The reproduction test does not change in shape. It still compares decision lines. A fault's target is now part of the decision line, so it is part of what is compared — correct, because the target is now a decision.
+
+## Liveness has two sources; only one may feed the decision
+
+*A fault names its target* opened with the rule that the liveness the decision reads must be seed-determined, then named the movers it knew — crash, leave, restart-success — and stopped, as if the list were complete. It was not. A node stops being live in one more way, and it is the way this section exists to name.
+
+- **Driver liveness.** The driver crashed the node, left it, or its restart failed. Crash and leave are decisions; restart-success is an observation pinned to the seed by *A fault names its target*. This liveness is a pure function of the seed.
+- **Cluster liveness.** Probes time out, neighbours vote, the vote clears the threshold, and the runtime collapses itself to dead (`becomeDead`, stop code `ErrNodeDead`). Which probe `select` wins when several are ready is scheduling. This is an **observation** by design — the probe loop is supposed to be scheduling-dependent; making it deterministic would defeat the test.
+
+Both close the same channel (`rt.Done()`), so one `runtimeStopped` check cannot tell them apart. The decision encoding reads that one check through `liveNodeIDs()`, `stoppedNodeIDs()`, `targetPool()`, and the action choice — so it reads both, and the second leaks. An observation that moves the decision half breaks reproduction; on master roughly three seeds in ten do break (see *Gap*). This is the member-fault leak from the read end: same defect, a different door.
+
+### Why the fix is at the read, not the source
+
+The member-fault defect was fixed at the source — a fault the driver owns, bound to a seed-drawn target. That does not work here. The source of cluster liveness is the production probe/vote mechanism, and it is *meant* to be scheduling-dependent. The source stays. The read moves: the decision encoding keeps a liveness set the driver owns — the nodes it has crashed, left, or failed to restart — and reads only that. The cluster's `becomeDead` keeps closing `rt.Done()`; observations and invariants keep reading cluster liveness. The two notions no longer have to agree, and after a vote they routinely will not.
+
+### What disagreement costs, and buys
+
+When the driver thinks a node is live and the cluster has declared it dead, the driver still targets it. A call returns `ErrNodeDead` at admission; a crash is a no-op on an already-dead root; a restart closes and rebuilds it. None of this breaks an invariant — `ErrNodeDead` is a clean rejection and the store is untouched — and it is exactly the state the cluster exists to test: two views of who is alive, disagreeing. Today the driver folds to the cluster's view the instant a vote clears, so the disagreement window is never exercised; reading driver liveness presses on it instead.
+
+The cost is narrow. The fault target pool grows by the cluster-dead-but-driver-live nodes, and a fault drawn against such a node may not fire — the node rejects at admission before the fault injection point. This lowers the trigger rate, but only inside the disagreement window, which is the same window that today causes divergence. Outside it the two liveness notions coincide and the rate is unchanged. The trigger rate must be re-measured after the fix; if it regresses past what *A fault names its target* fought to reach, the answer is more seeds, not re-conflating the read.
+
+### What stays
+
+The probe loop, the vote, and `becomeDead` are production code and are not touched. Concurrency is not reduced. The reproduction test still compares decision lines — across a population where three in ten used to split and now should not.
 
 ## What a "node" is
 
@@ -243,3 +266,5 @@ The fake network deterministically simulates partitions, drops (as a partition s
 **Reorder is no longer a goal.** Earlier text listed reorder as a fake-network capability; that was wrong for the reasons in *The fake network's fault classes*. Within a connection, out-of-order replies are the transport's normal correlation-id mode and a TCP stream is ordered; across connections, reorder is just independent delays.
 
 The driver runs a fixed batch of 64 consecutive seeds (`simulationSeed` + 0..63), each walking one deterministic *decision* trajectory. It is not a seed search: there is no fuzzing over seeds at test time, and a search would not help the scheduling-race class anyway — the same seed can pass or fail by scheduling, since observations are interleaving-dependent by design (*The log splits in two*). What a search would broaden is decision-sequence coverage, a separate axis from fault breadth.
+
+**Decision-half purity is broken by cluster-declared death (open, #73).** `liveNodeIDs()`, `stoppedNodeIDs()`, and `targetPool()` read `runtimeStopped`, which fires both when the driver stops a node and when the cluster declares it dead; the second is an observation that depends on probe scheduling. It reaches the action choice and every target draw, so the decision half is not a pure function of the seed. A 256-seed replay scan over `simulationSeed` (`0x8f3c224c`) finds about 28% of seeds split across two runs — 72/256 on the run recorded for this ruling; the exact count moves between runs because the split is itself scheduling-dependent. `TestSim_ReplaysEventLog` stays green only because the fixed seed walks a trajectory that never clears a vote. The remedy — the decision half reads driver-owned liveness only — is specified in *Liveness has two sources*; the code change is not yet made.
