@@ -212,8 +212,9 @@ func (b *Binder) scopeRuntime() *Runtime {
 // eviction and schedule intervals, and one-second heartbeat and view
 // intervals. A MemberStore and Transport must be configured together. In
 // clustered mode, ProbeInterval, ProbeTimeout, ProbeFailures, VoteTTL,
-// MaxTickGap, and MaxTableLatency must also be positive; leaving them at their
-// zero values returns an error matching cluster.ErrInvalidConfig.
+// MaxTickGap, and MaxTableLatency default to one second, 500 ms, three, six
+// seconds, two seconds, and 500 ms; a negative value returns an error matching
+// cluster.ErrInvalidConfig.
 //
 // New returns an error if cluster initialization fails. The returned Runtime
 // is ready for entity installation and registration.
@@ -440,18 +441,18 @@ func WithViewInterval(value time.Duration) Option {
 	}
 }
 
-// WithProbeInterval sets the cluster probe interval. If omitted, the value is
-// zero; a clustered New then returns an error because the interval must be
-// positive. It has no effect when clustering is disabled.
+// WithProbeInterval sets the cluster probe interval. If omitted, New uses one
+// second. A negative value makes a clustered New return an error matching
+// cluster.ErrInvalidConfig. It has no effect when clustering is disabled.
 func WithProbeInterval(value time.Duration) Option {
 	return func(config *Config) {
 		config.ProbeInterval = value
 	}
 }
 
-// WithProbeTimeout sets the deadline for a cluster probe. If omitted, the
-// value is zero; a clustered New then returns an error because the timeout must
-// be positive. It has no effect when clustering is disabled.
+// WithProbeTimeout sets the deadline for a cluster probe. If omitted, New uses
+// 500 ms. A negative value makes a clustered New return an error matching
+// cluster.ErrInvalidConfig. It has no effect when clustering is disabled.
 func WithProbeTimeout(value time.Duration) Option {
 	return func(config *Config) {
 		config.ProbeTimeout = value
@@ -459,9 +460,9 @@ func WithProbeTimeout(value time.Duration) Option {
 }
 
 // WithProbeFailures sets the number of failed probes required before a member
-// is considered for a death vote. If omitted, the value is zero; a clustered
-// New then returns an error because the value must be positive. It has no effect
-// when clustering is disabled.
+// is considered for a death vote. If omitted, New uses three failures. A
+// negative value makes a clustered New return an error matching
+// cluster.ErrInvalidConfig. It has no effect when clustering is disabled.
 func WithProbeFailures(value int) Option {
 	return func(config *Config) {
 		config.ProbeFailures = value
@@ -469,8 +470,9 @@ func WithProbeFailures(value int) Option {
 }
 
 // WithVoteTTL sets how long a cluster suspect vote remains valid. If omitted,
-// the value is zero; a clustered New then returns an error because the duration
-// must be positive. It has no effect when clustering is disabled.
+// New uses six seconds. A negative value makes a clustered New return an error
+// matching cluster.ErrInvalidConfig. It has no effect when clustering is
+// disabled.
 func WithVoteTTL(value time.Duration) Option {
 	return func(config *Config) {
 		config.VoteTTL = value
@@ -478,8 +480,9 @@ func WithVoteTTL(value time.Duration) Option {
 }
 
 // WithMaxTickGap sets the maximum allowed gap between healthy cluster ticks. If
-// omitted, the value is zero; a clustered New then returns an error because the
-// duration must be positive. It has no effect when clustering is disabled.
+// omitted, New uses two seconds. A negative value makes a clustered New return
+// an error matching cluster.ErrInvalidConfig. It has no effect when clustering
+// is disabled.
 func WithMaxTickGap(value time.Duration) Option {
 	return func(config *Config) {
 		config.MaxTickGap = value
@@ -487,8 +490,9 @@ func WithMaxTickGap(value time.Duration) Option {
 }
 
 // WithMaxTableLatency sets the maximum acceptable membership-store latency. If
-// omitted, the value is zero; a clustered New then returns an error because the
-// duration must be positive. It has no effect when clustering is disabled.
+// omitted, New uses 500 ms. A negative value makes a clustered New return an
+// error matching cluster.ErrInvalidConfig. It has no effect when clustering is
+// disabled.
 func WithMaxTableLatency(value time.Duration) Option {
 	return func(config *Config) {
 		config.MaxTableLatency = value

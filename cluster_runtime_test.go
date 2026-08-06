@@ -41,6 +41,29 @@ func TestNew_TransportRequiresMemberStore(t *testing.T) {
 	}
 }
 
+func TestNew_ClusterProbeDefaults(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(600, 0).UTC()
+		fakeClock := clock.NewFake(start)
+		members := store.NewMemory()
+		backend := store.NewMemory()
+		network := newTestTransportNetwork()
+		rt := mustNew(t,
+			WithStore(backend),
+			WithMemberStore(members),
+			WithNodeAddr("node-a"),
+			WithGeneration("generation-a"),
+			WithClock(fakeClock),
+			WithHeartbeatInterval(time.Hour),
+			WithViewInterval(time.Hour),
+			WithIdleTimeout(0),
+			WithEvictionInterval(0),
+			WithTransport(network.add("node-a")),
+		)
+		rt.Close()
+	})
+}
+
 func TestRuntime_ClusterForwardsInvocationToAnotherOwner(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(600, 0).UTC()

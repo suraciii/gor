@@ -127,7 +127,7 @@ Default parameters:
 | `MaxTickGap` | 2 s | Beyond two probe periods, the node can no longer judge consecutive failures reliably. |
 | `MaxTableLatency` | 500 ms | When the node's own membership-table access is slower than one probe, it must not declare others dead. |
 
-All of these live in `cluster.Config`. `VoteTTL` is six times `ProbeInterval`, `MaxTickGap` twice; `ProbeTimeout` and `MaxTableLatency` are each half.
+All of these live in `cluster.Config`. A zero value means "use the default"; only a negative value is an invalid configuration. `VoteTTL` is six times `ProbeInterval`, `MaxTickGap` twice; `ProbeTimeout` and `MaxTableLatency` are each half.
 
 ### Votes
 
