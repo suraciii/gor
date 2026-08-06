@@ -39,7 +39,15 @@ The current 0.0.x is the lowest-numbered open milestone. Route a new issue by th
 2. **Is it cut-blocking?** A defect a user hits with ordinary use is cut-blocking: route it to the current 0.0.x. A written-but-unimplemented spec, or a defect that needs unusual input to trigger, is not cut-blocking: route it to the next 0.0.x (create one if none exists). Once in a milestone, an issue stays there until it is done or is moved at cut time.
 3. **Otherwise it is backlog.** An issue with no milestone is recorded work not committed to any tag — future direction, environment debt with no user impact, or a gap explicitly deferred. No milestone is a legitimate, intended state, not a mistake and not a queue to drain before a release.
 
-The one fork not decidable from the issue alone is "ordinary use" versus "unusual input" in question 2. That is a judgment about how likely a user is to hit the defect. Worked example: a codegen import collision triggered by two method-signature packages sharing a name (common — cut-blocking, current 0.0.x) versus one triggered only by an entity package literally named `context` (rare — next 0.0.x). The agent proposes a placement; the maintainer confirms that single fork. Seeding a milestone's initial batch and deciding to announce are also maintainer calls; routing, straggler-moving, and the zero-open cut check are mechanical.
+The one fork not decidable from the issue alone is "ordinary use" versus "unusual input" in question 2. That is a judgment about how likely a user is to hit the defect. Worked example: a codegen import collision triggered by two method-signature packages sharing a name (common — cut-blocking, current 0.0.x) versus one triggered only by an entity package literally named `context` (rare — next 0.0.x). The agent proposes a placement; the maintainer confirms that single fork. Seeding a milestone's initial batch, deciding to announce, and judging an issue misrouted when its work cannot wait are also maintainer calls; routing, straggler-moving, and the zero-open cut check are mechanical.
+
+### Merge order on the linear trunk
+
+The trunk is linear — one master, no per-release branch — so a tag holds exactly what the trunk held at cut time. That is the linear trunk's fact, not an option: nothing keeps a later milestone's work out of an earlier tag except the order of merges.
+
+Therefore finished work committed to a later milestone merges only after the earlier milestone is cut; a done PR sits open until then. Merging it earlier would put the later milestone's work into the earlier tag, which then carries scope its milestone never committed to.
+
+If the wait is unacceptable, the original routing was wrong — the issue does not belong in the milestone it was given. The remedy is to change the issue's milestone, never the tag's content. Judging the routing wrong is a maintainer call, not a mechanical step.
 
 ### Unfinished work at cut time
 
