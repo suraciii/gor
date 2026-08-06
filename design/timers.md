@@ -9,34 +9,62 @@ The entity sees no difference: a due call goes through the same mailbox as any o
 ```go
 type account struct {
     balance  gor.State[int64]
-    schedule gor.Schedule
+    schedule gor.Schedule[Account]
 }
 
 func newAccount(b *gor.Binder) *account {
     return &account{
         balance:  gor.NewState[int64](b, "balance"),
-        schedule: gor.NewSchedule(b),
+        schedule: gor.NewSchedule[Account](b),
     }
 }
 
 func (a *account) Open(ctx context.Context) error {
-    return a.schedule.Set(ctx, "monthly-interest", gor.Every(30*24*time.Hour), "ApplyInterest")
+    return a.schedule.Set(ctx, "monthly-interest", gor.Every(30*24*time.Hour), gor.Handle(Account.ApplyInterest))
 }
 
 func (a *account) ApplyInterest(ctx context.Context) error { ... }
 ```
 
-**Only names can be stored in the table.** After a process crash, nobody can deserialize a closure back; so the scheduled task records the method name, and the poller sends an ordinary call by that name.
+**Only names can be stored in the table.** After a process crash, nobody can deserialize a closure back; so the scheduled task records the method name, and the poller sends an ordinary call by that name. What lives in the table is a string; nothing below changes that.
 
-The called method only takes `ctx` and only returns `error`, and it must be in the entity's interface — the dispatch table is produced by the generator from the interface, and a method not in it cannot be found at delivery time. A name that does not match makes delivery return an error — no registration-time check for this; a mistake is visible on the spot.
+**But authoring is typed, not a string.** The last argument to `Set` is a method handle built from a Go method expression on the entity's interface:
+
+```go
+type Schedule[T any] struct { /* bound to one entity identity */ }
+
+type MethodHandle[T any] struct { /* unexported: the method name */ }
+
+func Handle[T any](m func(T, context.Context) error) MethodHandle[T]
+
+func (s Schedule[T]) Set(ctx context.Context, name string, when ScheduleTime, m MethodHandle[T]) error
+```
+
+`Account.ApplyInterest` is a Go method expression. The compiler checks that `ApplyInterest` is a method of `Account` and that its signature is `func(Account, context.Context) error`; a typo, a rename, or a signature drift is a compile error at the call site — not a failure hours later at delivery. The type parameter ties the handle to the schedule's entity: a handle built from another entity's interface does not assign to `MethodHandle[Account]`, so it cannot reach an `Account`'s schedule.
+
+The name the table stores is read off the method expression once, when `Handle` is called, with `reflect` and `runtime.FuncForPC`. That runs at scheduling setup, never on the delivery path; what the poller reads at delivery is the same `method` column as before. `Handle` takes a method expression on the entity interface — a hand-written closure of the same function type also compiles, but the name read off it is not a real method name and delivery fails with "unknown method". The contract is stated, not guarded: the type signature admits only `func(T, context.Context) error`, and the rest is the caller using the documented form.
+
+The called method must be in the entity's interface — the dispatch table is produced by the generator from the interface, and a method not in it cannot be found at delivery time. Every interface method already has a dispatch case, so a method expression that compiles is a method delivery can find.
+
+**Why a method expression, not a generated handle value.** Schedules are set from inside entity methods, which live in the entity package. The entity package cannot import the package generated from its own interfaces: that package imports the entity package for the interface types used in its proxies and dispatch, so the import is a cycle — the same reason generated artifacts land in their own package that the entity package does not import (see [codegen.md](codegen.md)). A per-method handle symbol emitted by the generator therefore cannot be named from the code that sets a schedule. The method expression is the only compile-time-checked way to name a method from that code using just the `gor` package and the interface declared in the entity package, so the handle carries no generated symbol. The generator changes nothing for this.
 
 "One unified entry point" is rejected. Orleans has entities implement `ReceiveReminder(name)` and switch on the name themselves — that is bringing back the hand-written dispatcher deleted at [step 3](../ROADMAP.md#3-typed-proxy-code-generation), and in user code of all places. gor's selling point is compile-time typing; it must not open a string-dispatch loophole here.
 
-The method name is still a string; that is a gap. Closing it requires the generator to emit typed method handles — the generator's job, not this step.
+## The stored identifier is the method name
+
+The `method` column holds the method name read off the handle — exactly the string the old string API held. A typed handle changes how the name is authored, not what is stored; the table, the poller, and cross-restart recovery do not change.
+
+A method rename invalidates already-scheduled rows: the stored name no longer matches a dispatch case, and delivery returns "unknown method". gor does not introduce a separate stable id for the user to maintain alongside the method — that is a mapping the user must keep correct, and the library keeps its model to the necessary properties. The identifier follows the method name; a rename is a breaking change to scheduled tasks, stated plainly rather than papered over.
+
+The hazard is bounded. Where an entity re-asserts its schedules on activation or first use, the rename self-heals on the next activation: `Set` overwrites the row by name, including its `method`, so the new name replaces the old. A one-shot task waiting in the table across a rename is the real casualty — it fails once at delivery, the error reaches the configured sink, and the user sets it again.
+
+### Migration
+
+This is a planned v0 breaking change. `Schedule` becomes `Schedule[T]`; `NewSchedule(b)` becomes `NewSchedule[Account](b)`. Each `Set` call site changes its last argument from a string literal to `gor.Handle(InterfaceName.MethodName)`; `Cancel` is unchanged, since it takes the task name. The `method` column and the table are unchanged, so already-scheduled rows survive a restart across the upgrade — only source migrates, no data does. There is no deprecation period: at 0.0.x the call surface may change, and a typed handle and a string name sharing one parameter would only postpone the same edit.
 
 ## The handle comes from the Binder
 
-Like `State`: `gor.NewSchedule(b)` binds identity and storage at entity construction, and the methods use it directly afterwards.
+Like `State`: `gor.NewSchedule[Account](b)` binds identity and storage at entity construction, and the methods use it directly afterwards.
 
 Not fished out of `ctx`. Hiding runtime capabilities in `context.Value` makes "what this code needs" invisible and forces tests to build the right ctx before they can run. Constructor parameters are explicit; ctx is not.
 
@@ -195,4 +223,4 @@ Crashes, claim failures, two pollers scanning at the same time — none of these
 
 ## Gap
 
-The method name is a string. The generator does not yet produce typed method handles.
+The typed method handle is designed, not implemented. `Schedule.Set` still takes a method name string today; the `Schedule[T]`, `MethodHandle[T]`, and `gor.Handle` API above is the target. This section settles the design questions — the handle shape, why it carries no generated symbol, the stored-identifier policy, and the breaking-change scope — so the implementation makes no further design decisions. Implementation is tracked in a follow-up to #41.

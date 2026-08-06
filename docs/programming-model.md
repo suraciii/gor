@@ -188,11 +188,11 @@ State connects to the store via `gor.State[T]`; scheduled tasks take a cell from
 ```go
 type account struct {
     balance  gor.State[int64]
-    schedule gor.Schedule
+    schedule gor.Schedule[Account]
 }
 
 func (a *account) Open(ctx context.Context) error {
-    return a.schedule.Set(ctx, "monthly-interest", gor.Every(30*24*time.Hour), "ApplyInterest")
+    return a.schedule.Set(ctx, "monthly-interest", gor.Every(30*24*time.Hour), gor.Handle(Account.ApplyInterest))
 }
 
 func (a *account) ApplyInterest(ctx context.Context) error { ... }
@@ -200,7 +200,7 @@ func (a *account) ApplyInterest(ctx context.Context) error { ... }
 
 Scheduled tasks are persistent: after a process crash, a task that has come due still fires. If the object is not in memory when the task comes due, it is woken up.
 
-What comes due is a method name, not a function value — after a crash nobody can restore a closure; only the name can be stored. The invoked method takes only `ctx` and returns only `error`.
+The schedule is typed to the entity's interface, and the wake-up method is named by a method expression — a typo or a rename is a compile error, not a failure hours later at delivery. What comes due is still a method name, not a function value — after a crash nobody can restore a closure; only the name can be stored. The invoked method takes only `ctx` and returns only `error`.
 
 It is not `time.AfterFunc`: do not expect millisecond precision, and do not expect missed firings during downtime to be made up (it fires once on return, then moves on).
 
