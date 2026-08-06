@@ -17,6 +17,42 @@ The release note must at least include:
 - Known limitations, especially those related to cluster reliability.
 - For v1 and later major versions, a migration entry for users of the previous major version.
 
+## Planning
+
+This section is the front half the rest of the document assumes: when a release is cut and which issues belong to it. Version numbers and the release sequence describe a release already decided to happen.
+
+A milestone is the set of issues committed to one tag. It is the only planning object: there is no release calendar, no freeze window, no per-release branch. An issue either carries a milestone (committed to that tag) or carries none (backlog).
+
+### When a release is cut
+
+A **0.0.x** tag (publicly visible, not announced — see "0.0.x") may be cut when its milestone has zero open items and `make ci` is green on the candidate commit. GitHub counts open issues and open pull requests against a milestone; both must be closed. No date, no issue count, no feature threshold: the batch committed to the milestone is done. This is the default release kind while gor is pre-announcement.
+
+An **announced release** (v0.1.0 and later) is cut by maintainer judgment, not by a checklist — see "The bar for v1.0.0" and the 0.0.x note that readiness is complete and announcing is a choice. The 0.0.x chain leads up to it; the maintainer decides when to stop tagging 0.0.x and announce.
+
+Closing a milestone freezes its scope as a completed set; it is not the same act as pushing the tag, which stays the manual step in "Release sequence." The two may be separated — v0.0.1's milestone was closed as a scope marker, and its tag was pushed afterward.
+
+### Which issue goes in which milestone
+
+The current 0.0.x is the lowest-numbered open milestone. Route a new issue by three questions, in order.
+
+1. **Is it required before the first announced release?** Required means a spec already written in `design/` but not implemented, where that spec is part of what the release promises (the DST delay-injection gap is the case in point — a hole in the project's stated differentiator), or a defect in something the release promises. If required, the issue belongs somewhere in the 0.0.x chain ahead of v0.1.0. If not, go to question 3.
+2. **Is it cut-blocking?** A defect a user hits with ordinary use is cut-blocking: route it to the current 0.0.x. A written-but-unimplemented spec, or a defect that needs unusual input to trigger, is not cut-blocking: route it to the next 0.0.x (create one if none exists). Once in a milestone, an issue stays there until it is done or is moved at cut time.
+3. **Otherwise it is backlog.** An issue with no milestone is recorded work not committed to any tag — future direction, environment debt with no user impact, or a gap explicitly deferred. No milestone is a legitimate, intended state, not a mistake and not a queue to drain before a release.
+
+The one fork not decidable from the issue alone is "ordinary use" versus "unusual input" in question 2. That is a judgment about how likely a user is to hit the defect. Worked example: a codegen import collision triggered by two method-signature packages sharing a name (common — cut-blocking, current 0.0.x) versus one triggered only by an entity package literally named `context` (rare — next 0.0.x). The agent proposes a placement; the maintainer confirms that single fork. Seeding a milestone's initial batch and deciding to announce are also maintainer calls; routing, straggler-moving, and the zero-open cut check are mechanical.
+
+### Unfinished work at cut time
+
+When a 0.0.x is otherwise closeable but an issue in it is not done, move the unfinished issue to the next 0.0.x, then close and cut. A milestone is a completed set, not a promise; reaching zero-open by moving a straggler is correct.
+
+One exception: if the only open item is the milestone's reason for existing — the work its description was created to deliver — the cut waits for it. An empty milestone is not cut; if that work cannot finish, restructuring the plan is a maintainer decision, not an automatic move.
+
+The precedent: a narrow codegen defect found while fixing the common one was routed to the next 0.0.x rather than expanding the current milestone, so the current tag cut on its committed batch.
+
+### Creating and closing milestones
+
+Create a milestone when a batch of issues is committed to it; create the next 0.0.x when the current is seeded or when a straggler must move and no next exists. Do not pre-create empty milestones beyond what is planned. Close a 0.0.x when it is cut. The first 0.0.x may be created already-closed to mark what master was at the moment versioning started; v0.0.1 is that case.
+
 ## Version numbers
 
 Version tags use `vMAJOR.MINOR.PATCH`. Previews may use a suffix like `v1.0.0-rc.1`; a preview does not replace a proper release and does not change the compatibility rules of proper versions.
@@ -74,10 +110,10 @@ Steps 1, 2, 4, and 5 need maintainer judgment and stay manual. Step 3 already ha
 
 ## Gap
 
-There are no version tags today. The readiness work for an announced release is complete (every ROADMAP "required" item is done); the maintainer has not tagged 0.0.1, and staying in 0.0.x is a choice, not a missing gate. The `release-note` block in the PR template stays; the blocks accumulate and are read by hand when the first announced release is written.
+Two 0.0.x tags exist — `v0.0.1`, marking master at the moment versioning started, and `v0.0.2`, the first forward batch — both annotated, neither with a GitHub Release, both cut under the Planning rules. The readiness work for an announced release is complete (every ROADMAP "required" item is done); staying in 0.0.x rather than announcing is a choice, not a missing gate. The `release-note` block in the PR template stays; the blocks accumulate and are read by hand when the first announced release is written.
 
 The install half of release-sequence step 3 was run on the pseudo-version `v0.0.0-20260806024742-eda84d5c45d7` in a clean user module outside the repository, following the documented flow verbatim — `go get` of the module, `go get -tool` of the generator, `go tool gorgen -pkg ./domain` without `-out`, import of the generated `<entity-pkg>/gorgen`, the startup snippet from [docs/programming-model.md](../docs/programming-model.md) including its `os.MkdirAll` step, a minimal entity flow, close, reopen, and state survives — and it passes end to end with no extra steps. The two gaps previously listed here (a missing go.sum entry for `golang.org/x/tools` and the unimportable `internal/gorgen` default) are gone.
 
-The upgrade half of the step-3 check has no previous version until 0.0.1 exists. After 0.0.1, it applies — under the artifact-change or persistence-change condition — to later 0.0.x tags. Release-sequence step 6 (install the exact tagged version in a clean project after tagging) likewise becomes meaningful once there is an announced release; for 0.0.x the pre-tag install check in step 3 already covers installability.
+With `v0.0.1` and `v0.0.2` tagged, the upgrade half of the step-3 check now applies — under the artifact-change or persistence-change condition — to later 0.0.x tags. It was not run for the `v0.0.1` → `v0.0.2` cut: the codegen import-alias change in v0.0.2 touched generated artifacts, the very trigger, so the check is owed rather than done and is being run now. Release-sequence step 6 (install the exact tagged version in a clean project after tagging) becomes meaningful once there is an announced release; for 0.0.x the pre-tag install check in step 3 already covers installability.
 
 The release-prep audit's cluster-startup inconsistency is resolved: [design/cluster.md](cluster.md) always specified default values for the six probe parameters, and the implementation now honors them — a zero value means "use the default" (ProbeInterval 1 s, ProbeTimeout 500 ms, ProbeFailures 3, VoteTTL 6 s, MaxTickGap 2 s, MaxTableLatency 500 ms), and only a negative value returns `cluster.ErrInvalidConfig`. The documented cluster startup snippet now runs verbatim in a clean module, and `make bench` passes again on a real-disk path.
