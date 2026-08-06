@@ -75,7 +75,7 @@ Whether a seam carries this defect turns on one test: does its first-arrival con
 - **Schedule claim fault** — keyed by entity identity; the consuming `Claim` is CAS-unique, so the fault rides the one winner. Which node wins is scheduling, but the observable — one delivery, the fault applied — is invariant, and liveness is untouched. No defect; the residual scheduling dependence is the accepted outcome kind.
 - **Member fault** — single unkeyed field, first-arrival. Its consumption fixes restart-success, which moves liveness, which the decision encoding reads. **The defect.**
 - **Schedule list fault** — single unkeyed field, first-arrival, same *shape* as the member fault. But a list error is read-only and the poller retries next tick; it moves no quantity the decision encoding reads, so no divergence reaches the decision half. **Benign today; take the same target binding for consistency, not urgency** — a future seam that let schedule state feed a decision would reopen the leak through the same shape.
-- **Network fault** — not this shape. A partition is a deterministic group map applied per node pair; drop is a partition side effect; delay is drawn unconditionally in the driver and released by the clock. None latches onto a target by first arrival.
+- **Network fault** — not this shape. A partition is a deterministic group map applied per node pair (a whole pair goes silent); a per-message drop is drawn by the seed in the driver; delay is drawn unconditionally in the driver and released by the clock. None latches onto a target by first arrival.
 
 ### What does not change
 
