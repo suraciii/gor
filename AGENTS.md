@@ -37,6 +37,8 @@ research/   实测证据 —— 支撑 design 决策的事实
 
 提交前只检查和提交自己负责的文件。不要 push，不要开 PR。
 
+进度以 [ROADMAP.md](ROADMAP.md) 为准，它是叙事 spec：讲「做什么、为什么」，是大步骤和它们的理由。GitHub 的 milestone + issue 是执行单元：讲「这件具体的事、现在什么状态、归哪个版本」。issue 不复述设计，只指向 ROADMAP 或 design 文档的对应小节。
+
 ## Spec 先行
 
 先把方案写进 `docs/` 或 `design/`，再实现。实装追赶 spec，不是 spec 跟着实装走。文档里出现尚未实装的能力是正常的。
