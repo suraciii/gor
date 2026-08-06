@@ -192,6 +192,8 @@ No generation runs on `go build`: Go has no such hook, and forcing one would mak
 
 **Import aliases are assigned by the generator.** Two packages with the same name at different paths (`a/domain` and `b/domain`) in one method signature no longer produce code that does not compile; the generator aliases the colliding imports itself. The rule lives in "Import names" above.
 
+**Scheduled-method handles are not generated.** A typed handle for `Schedule.Set` is a Go method expression on the entity interface, built by a hand-written `gor.Handle` in the root package; the generator emits nothing for it. Schedules are set from inside entity methods, and the entity package cannot import the package generated from its own interfaces (it would be a cycle: the generated package already imports the entity package for the interface types in its proxies and dispatch). A generated handle symbol could not be named from the code that sets a schedule, so the handle uses Go's method expressions instead. See [timers.md](timers.md).
+
 ## Rejected approaches
 
 **Runtime reflect-synthesized proxies.** Go's `reflect.MakeFunc` can construct function values but not a type implementing an arbitrary interface. It cannot be done.
