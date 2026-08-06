@@ -39,7 +39,9 @@ Go's module major-version rules make v1 a valuable stability promise: v0 and v1 
 
 `v0.1.0` can only be released after all of [ROADMAP.md](../ROADMAP.md)'s "required before release" items are done. Completion is judged by the roadmap's explicit status, not by "the code looks close enough".
 
-What is not yet done is the documentation in English. Re-running the examples on [5.5](../ROADMAP.md#55-api-fixes-from-the-example)'s new signatures, observability, the performance baseline, and the cross-node forwarding baseline are all done; step 6c is done, but multi-node is still a preview capability and partitions can misjudge healthy nodes, so the first public release must not be treated as settled.
+Every "required before release" item except the last one is done: English documentation, public API doc comments, the error and cancellation contract, the root runtime shutdown contract, deactivation reasons and the background error sink, the example application, the performance and cross-node forwarding baselines, and observability. What remains is the "Versioning and release" item itself: the release process this document describes, including the install-and-upgrade check in release-sequence step 3.
+
+Multi-node is still a preview capability and partitions can misjudge healthy nodes, so the first public release must not be treated as settled.
 
 ## The bar for v1.0.0
 
@@ -66,4 +68,13 @@ Steps 1, 2, 4, and 5 need maintainer judgment and stay manual. Step 3 already ha
 
 ## Gap
 
-There are no version tags today, and `v0.1.0`'s roadmap thresholds are not yet met. The `release-note` block in the PR template stays; at release time it is still read and organized by hand per this document.
+There are no version tags today, and `v0.1.0`'s roadmap thresholds are not yet met — the "Versioning and release" item is the only one left. The `release-note` block in the PR template stays; at release time it is still read and organized by hand per this document.
+
+The install half of release-sequence step 3 was run on the master pseudo-version `v0.0.0-20260806020541-f69fa66383f8` in a clean user module outside the repository. What passed: `go get github.com/suraciii/gor@<sha>` resolves through the proxy; the generator emits artifacts that compile in the user module; a minimal entity flow works end to end — register, call (`Deposit` / `Balance`), close the runtime, reopen the store, and the state survives the restart.
+
+Two gaps in the documented flow were found, both on the user's first steps, not in the library runtime:
+
+1. `go get` of the module alone does not make the documented `go run github.com/suraciii/gor/cmd/gorgen -pkg ./domain` work. The run fails with a missing go.sum entry for `golang.org/x/tools/go/packages`, a dependency of the generator only. The user must run the extra `go get github.com/suraciii/gor/internal/codegen@<sha>` that the error itself suggests. [codegen.md](codegen.md)'s Invocation section does not mention this step.
+2. The generator's default output, the entity package's `internal/gorgen` subpackage, cannot be imported by the application's startup code: Go's `internal` rule only allows import from inside the entity package tree, while `Install` is documented to be called where the runtime is created, outside it. The documented flow therefore does not compile with default flags. The working invocation passes `-out` to place the generated package outside the entity package (for example `-out ./gorgen`); the example application's generated package sits outside `domain` for the same reason, but neither [codegen.md](codegen.md) nor [docs/programming-model.md](../docs/programming-model.md) tells the user so. Whether to change the default output location or to document `-out` in the user-visible flow is an open decision; either way, the first public release's install check must pass as documented.
+
+The upgrade half of the step-3 check could not be run: there are no version tags, so there is no previous version to upgrade from. It becomes meaningful only after `v0.1.0`, when release-sequence step 6 also becomes runnable for the first time.
