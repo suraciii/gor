@@ -88,6 +88,12 @@ func New(addr string) (*TCP, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newTCP(listener), nil
+}
+
+// newTCP assembles a TCP transport around an already-bound listener; the
+// transport's address is the listener's address.
+func newTCP(listener net.Listener) *TCP {
 	serveDone := make(chan struct{})
 	close(serveDone)
 	return &TCP{
@@ -97,7 +103,7 @@ func New(addr string) (*TCP, error) {
 		serveDone:   serveDone,
 		outgoing:    make(map[string]*connection),
 		connections: make(map[*connection]struct{}),
-	}, nil
+	}
 }
 
 // Addr returns the address selected when the TCP transport was created.
