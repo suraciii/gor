@@ -3,6 +3,7 @@ package codegen
 type Model struct {
 	PackageName       string
 	SourcePackageName string
+	SourceImportName  string // alias for the source package's import line; empty keeps the package name
 	SourceImportPath  string
 	Imports           []Import
 	Interfaces        []Interface

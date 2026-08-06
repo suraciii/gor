@@ -72,6 +72,9 @@ func Load(pattern string) (Loaded, error) {
 	// Import names cannot be chosen while loading: whether two packages
 	// collide is only known once every signature has been collected.
 	aliases := effectiveImportNames(imports, pkg.Name, pkg.PkgPath)
+	if alias, ok := aliases[pkg.PkgPath]; ok {
+		model.SourceImportName = alias
+	}
 	model.Interfaces = make([]Interface, len(pending))
 	for i, entity := range pending {
 		model.Interfaces[i] = materialize(entity, aliases)
@@ -208,19 +211,21 @@ var templateImportPaths = map[string]bool{
 // itself (the template's context, fmt and gor imports, and the source package
 // name). Only colliding imports are aliased; everything else keeps its
 // package name, so adding a new import never churns existing generated
-// output. The result is a deterministic function of the import set: the same
-// input always yields the same aliases.
+// output. The source package's own import line is part of the same
+// allocation: when its name is one of the template's fixed names, the map
+// holds an alias for the source import path. The result is a deterministic
+// function of the import set: the same input always yields the same aliases.
 func effectiveImportNames(imports map[string]Import, sourcePackageName, sourceImportPath string) map[string]string {
 	reserved := map[string]bool{
-		"context":         true,
-		"fmt":             true,
-		"gor":             true,
-		sourcePackageName: true,
+		"context": true,
+		"fmt":     true,
+		"gor":     true,
 	}
-	used := make(map[string]bool, len(reserved)+len(imports))
+	used := make(map[string]bool, len(reserved)+len(imports)+1)
 	for name := range reserved {
 		used[name] = true
 	}
+	used[sourcePackageName] = true
 	for _, imported := range imports {
 		used[imported.Name] = true
 	}
@@ -230,9 +235,15 @@ func effectiveImportNames(imports map[string]Import, sourcePackageName, sourceIm
 		if templateImportPaths[path] || path == sourceImportPath {
 			continue
 		}
-		if reserved[imported.Name] || countImportsNamed(imports, imported.Name) > 1 {
+		if reserved[imported.Name] || imported.Name == sourcePackageName || countImportsNamed(imports, imported.Name) > 1 {
 			conflicting = append(conflicting, imported)
 		}
+	}
+	// The source import line can only collide with the template's fixed
+	// names: a signature import that shares the source name is aliased away
+	// instead, so aliasing the source here never churns existing artifacts.
+	if reserved[sourcePackageName] {
+		conflicting = append(conflicting, Import{Name: sourcePackageName, Path: sourceImportPath})
 	}
 	sort.Slice(conflicting, func(i, j int) bool { return conflicting[i].Path < conflicting[j].Path })
 

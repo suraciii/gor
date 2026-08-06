@@ -89,6 +89,8 @@ The generated file imports packages by their declared package name. When a metho
 
 An alias is the concatenation of the package path's trailing segments, sanitized into an identifier, extended one segment deeper until it is unique among the run's names: `a/domain` → `adomain`, `billing/domain/v2` → `v2`, `a/x/domain` and `b/x/domain` → `axdomain` and `bxdomain`. A numeric suffix (`domain2`) is the last resort. Assignment is deterministic — the same input always produces the same aliases — so regenerating does not churn the file.
 
+The source package's own import line participates in the same allocation. When its name is one of the reserved names (`context`, `fmt`, `gor`), it collides with the generated file's fixed imports and is aliased like any other colliding import — an entity package `context` at `billing/context` imports as `billingcontext "billing/context"` — and every reference to the entity package in the generated file uses that alias. The source package keeps its name when it collides with nothing; a signature import that shares the source package's name is aliased away instead, never the other way around.
+
 ## How generated artifacts plug into the runtime
 
 The artifacts land in a subpackage, and the user's interface package does not import it (reason: the type-checking deadlock below). So how does the runtime know where `Account`'s dispatch function lives?
