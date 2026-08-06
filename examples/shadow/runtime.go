@@ -5,7 +5,7 @@ import (
 
 	"github.com/suraciii/gor"
 	"github.com/suraciii/gor/examples/shadow/domain"
-	"github.com/suraciii/gor/examples/shadow/gorgen"
+	"github.com/suraciii/gor/examples/shadow/domain/gorgen"
 )
 
 func LogBackgroundError(event gor.BackgroundError) {
