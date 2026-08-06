@@ -15,6 +15,7 @@ type renderModel struct {
 	PackageName      string
 	SourcePackage    string
 	SourceImportPath string
+	SourceImportName string
 	Imports          []renderImport
 	Interfaces       []renderInterface
 }
@@ -71,10 +72,15 @@ func Render(model Model) ([]byte, error) {
 }
 
 func prepare(model Model) renderModel {
+	sourcePackage := model.SourcePackageName
+	if model.SourceImportName != "" {
+		sourcePackage = model.SourceImportName
+	}
 	prepared := renderModel{
 		PackageName:      model.PackageName,
-		SourcePackage:    model.SourcePackageName,
+		SourcePackage:    sourcePackage,
 		SourceImportPath: model.SourceImportPath,
+		SourceImportName: model.SourceImportName,
 		Imports:          renderImports(model),
 		Interfaces:       make([]renderInterface, len(model.Interfaces)),
 	}
@@ -194,7 +200,7 @@ import (
 	"fmt"
 
 	"github.com/suraciii/gor"
-	"{{.SourceImportPath}}"
+	{{if .SourceImportName}}{{.SourceImportName}} {{end}}"{{.SourceImportPath}}"
 	{{range .Imports}}{{.Name}} "{{.Path}}"
 	{{end}}
 )

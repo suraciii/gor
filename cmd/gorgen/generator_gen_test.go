@@ -101,6 +101,42 @@ func TestGenerateResolvesImportAliasCollision(t *testing.T) {
 	}
 }
 
+func TestGenerateAliasesSourcePackageCollidingWithTemplateImport(t *testing.T) {
+	root := moduleRoot(t)
+	fixtureRoot := filepath.Join(root, "cmd", "gorgen", "testfixture", "reserved", "context")
+	outputDir, err := os.MkdirTemp(fixtureRoot, "generated-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(outputDir) })
+
+	runGorgen(t, root, "./cmd/gorgen/testfixture/reserved/context", outputDir)
+	generated, err := os.ReadFile(filepath.Join(outputDir, "generated.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `reservedcontext "github.com/suraciii/gor/cmd/gorgen/testfixture/reserved/context"`
+	if !strings.Contains(string(generated), want) {
+		t.Fatalf("generated file misses aliased source import %s:\n%s", want, generated)
+	}
+
+	buildPath, err := filepath.Rel(root, outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := "./" + filepath.ToSlash(buildPath)
+	build := exec.Command("go", "build", target)
+	build.Dir = root
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build generated package: %v\n%s", err, output)
+	}
+	vet := exec.Command("go", "vet", target)
+	vet.Dir = root
+	if output, err := vet.CombinedOutput(); err != nil {
+		t.Fatalf("go vet generated package: %v\n%s", err, output)
+	}
+}
+
 func TestGenerateReportsContractLine(t *testing.T) {
 	root := moduleRoot(t)
 	outputDir, err := os.MkdirTemp(filepath.Join(root, "cmd", "gorgen", "testfixture"), "invalid-generated-")
