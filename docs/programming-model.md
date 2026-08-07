@@ -181,6 +181,21 @@ Concurrency semantics, stated plainly: in cluster mode, the runtime does not gua
 
 This is not implementation laziness — Orleans' default directory has the same semantics, and its official docs say so (see [../research/orleans-internals.md](../research/orleans-internals.md) (in Chinese)). In single-node mode this window does not exist, so this failure does not occur there.
 
+## How durable a state write is
+
+A state change a call returns is confirmed. How much a confirmed change survives a crash is a setting you choose at startup.
+
+Two levels:
+
+- **Full** — the default. Every confirmed change is already on disk when the call returns. If the machine loses power or the operating system crashes, you lose nothing that was confirmed.
+- **Relaxed**. Confirmed changes are not forced to disk one at a time. A normal restart — the process exits and comes back — loses nothing. A power loss or an operating-system crash can lose the most recent changes; what is already on disk stays intact and readable, never corrupted.
+
+The trade is throughput. Forcing every write to disk costs time; most services can tolerate losing the most recent changes after a hard crash, and Relaxed lets those services change state faster.
+
+Relaxed touches state and nothing else. Scheduled tasks still fire at most once after a crash; if you run more than one node, the bookkeeping the nodes use to agree on who owns what is unaffected.
+
+If you do not choose, you get Full. The mechanism behind the trade and its exact limits are in the [persistence design](../design/persistence.md).
+
 ## Scheduled wake-up
 
 State connects to the store via `gor.State[T]`; scheduled tasks take a cell from `b` the same way:

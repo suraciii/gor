@@ -12,7 +12,7 @@ Two purposes; neither is about pretty numbers.
 
 **Invocation round trip** — in-memory store, single process, serial calls to a method that does nothing on one entity. It measures the runtime's own overhead: mailbox in and out, activation lookup, reflection dispatch. Mix in storage and it cannot be measured.
 
-**State write** — real disk; how long one `Set()` takes to land. This is the number users care about most, because it decides how many state changes per second one entity can do.
+**State write** — real disk; how long one `Set()` takes to land. This is the number users care about most, because it decides how many state changes per second one entity can do. This number is recorded at each durability tier the store offers ([persistence.md](persistence.md)); the throughput gap between tiers is the only reason a tier exists, and a single number would hide it. Both are measured on real disk — on tmpfs the sync that separates the tiers is a no-op, so both tiers measure the same fake-fast number and the comparison is void.
 
 **Cold activation** — after an entity is evicted, how long the first call takes. The core promise of virtual entities is "you do not manage the lifecycle"; this number states the price of that sentence.
 
