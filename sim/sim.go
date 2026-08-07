@@ -289,6 +289,36 @@ func chooseNetworkDelay(rng *rand.Rand) time.Duration {
 	return 0
 }
 
+// chooseNetworkDrop draws the per-step drop decision from the seeded PRNG in
+// the driver. The target is drawn the way node indices for calls and crashes
+// are — from the nodes that can produce transport traffic this step — and a
+// pair that can never carry a message is not drawable. The side (request or
+// reply) is a decision too: a request drop means nothing took effect, a
+// reply drop means the call took effect but the caller sees a failure.
+func chooseNetworkDrop(rng *rand.Rand, cluster *simulationCluster, restartNode int) networkDropSpec {
+	pool := cluster.targetPool(restartNode)
+	if len(pool) < 2 || rng.IntN(4) != 0 {
+		return networkDropSpec{}
+	}
+	source := pool[rng.IntN(len(pool))]
+	destPool := make([]int, 0, len(pool)-1)
+	for _, node := range pool {
+		if node != source {
+			destPool = append(destPool, node)
+		}
+	}
+	destination := destPool[rng.IntN(len(destPool))]
+	side := dropRequest
+	if rng.IntN(2) == 1 {
+		side = dropReply
+	}
+	return networkDropSpec{
+		source:      nodeAddress(source),
+		destination: nodeAddress(destination),
+		side:        side,
+	}
+}
+
 func networkDelays(cluster *simulationCluster, delay time.Duration) map[networkPair]time.Duration {
 	if delay == 0 {
 		return nil
@@ -346,6 +376,8 @@ func classifyOutcome(err error) (string, error) {
 		return "member-write-applied-then-error", nil
 	case simErrorIs(err, gor.ErrNodeDead):
 		return "cluster-node-dead", nil
+	case simErrorIs(err, gor.ErrTransportFailed):
+		return "transport-failed", nil
 	case simErrorIs(err, gor.ErrPersistenceConflict), simErrorIs(err, store.ErrConflict):
 		return "store-conflict", nil
 	case simErrorIs(err, gor.ErrPersistenceFailed):
@@ -477,7 +509,9 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 		cluster.backend.setMemberFault(memberFault)
 		networkDelay := chooseNetworkDelay(rng)
 		cluster.network.setDelays(networkDelays(cluster, networkDelay))
-		log.addNetworkDecision(networkDelay)
+		networkDrop := chooseNetworkDrop(rng, cluster, restartNode)
+		cluster.network.setDrops(networkDrop)
+		log.addNetworkDecision(networkDelay, networkDrop)
 		switch action {
 		case clusterCall:
 			entity := entities[rng.IntN(len(entities))]

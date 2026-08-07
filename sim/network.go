@@ -16,8 +16,28 @@ import (
 
 var (
 	errSimNetworkPartition = errors.New("sim network partition")
+	errSimNetworkDrop      = errors.New("sim network drop")
 	errSimNetworkClosed    = errors.New("sim network closed")
 )
+
+type dropSide uint8
+
+const (
+	dropNone dropSide = iota
+	dropRequest
+	dropReply
+)
+
+// networkDropSpec is the seed-drawn drop decision for one step: the request
+// direction it targets and which half of the exchange is dropped. A request
+// drop fires before the handler runs (nothing took effect); a reply drop
+// fires after the handler returns, before the result reaches the caller (the
+// call took effect but the caller sees a transport failure).
+type networkDropSpec struct {
+	source      string
+	destination string
+	side        dropSide
+}
 
 type networkPair struct {
 	source      string
@@ -33,11 +53,14 @@ type simulationNetwork struct {
 	groups           map[string]int
 	partitioned      bool
 	delays           map[networkPair]time.Duration
+	drop             networkDropSpec
 	activeDeliveries int
 	deliveriesIdle   chan struct{}
 	sends            atomic.Int64
 	delivered        atomic.Int64
 	dropped          atomic.Int64
+	dropRequests     atomic.Int64
+	dropReplies      atomic.Int64
 	held             atomic.Int64
 	completed        atomic.Int64
 }
@@ -72,6 +95,24 @@ func (n *simulationNetwork) delayFor(source, destination string) time.Duration {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.delays[networkPair{source: source, destination: destination}]
+}
+
+// setDrops arms the per-step drop decision. A message matching the spec's
+// source, destination, and side is dropped: it never reaches the handler
+// (request side) or its reply never reaches the caller (reply side). The
+// spec is a decision drawn in the driver; nothing on the delivery path draws
+// or consumes it by first arrival.
+func (n *simulationNetwork) setDrops(drop networkDropSpec) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.drop = drop
+}
+
+func (n *simulationNetwork) dropFor(source, destination string, side dropSide) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	spec := n.drop
+	return spec.side == side && spec.source == source && spec.destination == destination
 }
 
 // beginDelivery and endDelivery track in-flight message deliveries. The
@@ -166,8 +207,8 @@ func (n *simulationNetwork) blocked(source, destination string) bool {
 	return n.groups[source] != n.groups[destination]
 }
 
-func (n *simulationNetwork) stats() (sends, delivered, dropped, held, completed int64) {
-	return n.sends.Load(), n.delivered.Load(), n.dropped.Load(), n.held.Load(), n.completed.Load()
+func (n *simulationNetwork) stats() (sends, delivered, dropped, dropRequests, dropReplies, held, completed int64) {
+	return n.sends.Load(), n.delivered.Load(), n.dropped.Load(), n.dropRequests.Load(), n.dropReplies.Load(), n.held.Load(), n.completed.Load()
 }
 
 func cloneGroups(groups map[string]int) map[string]int {
@@ -231,6 +272,14 @@ func (t *simulationTransport) Send(ctx context.Context, addr string, payload []b
 		return nil, errors.New("sim network destination is not serving")
 	}
 
+	// A dropped request never reaches the handler: the caller gets the drop
+	// error at once and nothing took effect, unlike a partition, which also
+	// silences the member table and both directions of the pair.
+	if t.network.dropFor(t.addr, addr, dropRequest) {
+		t.network.dropRequests.Add(1)
+		return nil, errSimNetworkDrop
+	}
+
 	delay := t.network.delayFor(t.addr, addr)
 	result := make(chan struct {
 		payload []byte
@@ -247,6 +296,18 @@ func (t *simulationTransport) Send(ctx context.Context, addr string, payload []b
 			time.Sleep(delay)
 		}
 		response, err := handler(context.Background(), payload)
+		// A dropped reply: the handler already ran — the call took effect —
+		// but the reply never reaches the caller, who sees the drop error
+		// instead. The caller cannot tell a dropped request from a dropped
+		// reply; both surface as one transport failure.
+		if t.network.dropFor(t.addr, addr, dropReply) {
+			t.network.dropReplies.Add(1)
+			result <- struct {
+				payload []byte
+				err     error
+			}{err: errSimNetworkDrop}
+			return
+		}
 		result <- struct {
 			payload []byte
 			err     error
@@ -254,7 +315,9 @@ func (t *simulationTransport) Send(ctx context.Context, addr string, payload []b
 	}()
 	select {
 	case response := <-result:
-		t.network.delivered.Add(1)
+		if !errors.Is(response.err, errSimNetworkDrop) {
+			t.network.delivered.Add(1)
+		}
 		return response.payload, response.err
 	case <-ctx.Done():
 		return nil, ctx.Err()
