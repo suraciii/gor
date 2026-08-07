@@ -43,7 +43,7 @@ v0's usable scope is single-process. For the published single-process capabiliti
 
 These are product promises, not promises about implementation shape, throughput numbers, or exact execution instants.
 
-Multi-node is still a preview capability. Current failure detection is based on direct probing of neighbors and death votes with expiry, but a network partition can mistake healthy nodes for failed ones, even stopping every node from serving; recovery needs a new generation. So during v0, multi-node availability, failure-detection accuracy, and upgrade experience are not stable guarantees. Related behavior may be adjusted or withdrawn in a new v0 minor version.
+Multi-node is a preview capability. Failure detection is based on direct probing of neighbors and death votes with expiry, but a network partition can mistake healthy nodes for failed ones, even stopping every node from serving; recovery needs a new generation. So during v0, multi-node availability, failure-detection accuracy, and upgrade experience are not stable guarantees. Related behavior may be adjusted or withdrawn in a new v0 minor version.
 
 The application remains responsible for evolving its own business state. gor does not understand business fields and will not convert old business data into new for the application. When the application changes method contracts or state meaning, it arranges compatible reads/writes or a downtime switch itself.
 

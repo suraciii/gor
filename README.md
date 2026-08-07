@@ -6,7 +6,7 @@
 
 ## What this is
 
-A Go library that makes objects with an identity, state, single-threaded execution, and crash recovery your programming unit. You write ordinary Go interfaces and ordinary structs; `gor` handles activation, call serialization, persistence, and scheduled wake-ups. Cross-node distribution is an optional extension being implemented in stages.
+A Go library that makes objects with an identity, state, single-threaded execution, and crash recovery your programming unit. You write ordinary Go interfaces and ordinary structs; `gor` handles activation, call serialization, persistence, and scheduled wake-ups. Cross-node distribution is an optional extension, not the main line: it exists for workloads that have outgrown one machine, and single-node users are not asked to pay for it.
 
 The idea comes from Microsoft Orleans' virtual actor model, but this is not a port of Orleans. The trade-offs are recorded one by one in the [ADR and design documents](design/README.md); the three most important:
 
