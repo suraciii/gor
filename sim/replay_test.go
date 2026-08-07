@@ -75,7 +75,7 @@ func TestSim_ChecksSeedBatch(t *testing.T) {
 			}
 		}
 		for _, stat := range []string{"drop-requests", "drop-replies"} {
-			if networkStatPositive(output, stat) {
+			if networkStatPositive(first, stat) {
 				seenStats["network-"+stat] = true
 			}
 		}
