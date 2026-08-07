@@ -1,10 +1,14 @@
 # Roadmap
 
-**Current status:** steps 1 through 5.5, step 6a (membership table and ring), step 6t (transport), step 6b (cross-node forwarding), and step 6c (probing and death voting) are implemented.
+**Direction.** `gor` is for programs that need stateful objects on one machine. The main line is the single-node product; clustering is an optional extension that exists and is shipped, but is not the path the project is built around. See [docs/vision.md](docs/vision.md).
+
+**Status.** The single-node core (steps 1–5.5) is implemented and usable; for practical purposes, the single-node product is done. Clustering (step 6) is implemented and shipped in 0.0.x as a preview. Every item under "Required before an announced release" is done. Staying in 0.0.x rather than announcing is a choice the project has already made — see [design/release.md](design/release.md); it is a posture, not a roadmap step.
 
 Slicing principle: every step runs, is accepted, and delivers value on its own. Dependencies of the form "step 1 cannot be verified until step 6" are not allowed.
 
-## Steps
+## The single-node core
+
+Steps 1 through 5.5 form the single-node product: a per-key runtime, persistent state, typed proxies, the simulation harness, scheduled tasks, and the API fixes the first real example surfaced. They are implemented.
 
 ### 1. Single-process runtime
 
@@ -75,6 +79,34 @@ The first two are in [design/persistence.md](design/persistence.md), the third i
 
 Placed before step 6 because it changes the public API. API changes get more expensive the later they come, and the example app is waiting on the new signatures to get the README right.
 
+## The single-node line, going forward
+
+The single-node core above is, for practical purposes, done. A user who runs `gor` on one node has the whole product: typed entities, state that survives a crash, calls serialized per key, scheduled tasks that survive a restart, lifecycle hooks, observability, and a stable error contract. What follows is not "making single-node usable" — it already is. It is one honest capability gap, plus the shared test foundation that keeps every promise checkable. Clustering (step 6, below) is parked and is not a prerequisite for either.
+
+### A durability control for state writes
+
+**Whose problem, what problem.** A state write is the operation single-node users care about most — it bounds how many state changes one entity can do per second ([design/benchmarks.md](design/benchmarks.md)). The SQLite write path runs every write at full durability: the baseline is 1.8 ms per write, and there is no option to change it. A user whose workload can tolerate losing the last second of writes after a crash — most services — has no first-class way to trade durability for throughput. The only escape is to implement the store interface themselves. The single-node write path is correct but inflexible.
+
+**The step.** Give the single-node write path a durability control: a way to run writes at a looser durability tier when the application accepts the trade. The exact option, its default, and what a crash can cost at each tier belong in [design/persistence.md](design/persistence.md); this step is the capability and its measured baseline, not a redesign of the store interface.
+
+**Acceptance.** A single-node user can pick a durability tier without writing their own store; the benchmark records a number at the relaxed tier alongside the full-durability baseline; the durability trade is stated in product language in the docs.
+
+### Defend the reproducible-test foundation
+
+**Whose problem, what problem.** "Reproducible tests, not hope" is one of the two commitments the project rests on ([docs/vision.md](docs/vision.md)). That commitment leaks: the simulation's decision log is not a pure function of the seed on roughly a quarter of seeds, because liveness the cluster observed (who got voted dead) reaches the decision encoding. The design fix is ruled — the decision half reads only liveness the test driver itself caused, and the reproducibility gate replay-compares every seed in the batch against itself, not one fixed seed. This is not a cluster side-task: the same deterministic harness is what makes every promise — single-node included — checkable. Letting it leak erodes the project's main differentiator.
+
+**The step.** Land the ruled fix in `sim/`: the decision encoding reads driver-owned liveness only, and the reproducibility gate covers the batch. Design: [design/simulation.md](design/simulation.md). This step unblocks per-message drop and the transport-failed → unknown mapping test, which both build on a clean decision encoding.
+
+**Acceptance.** Every seed in the batch reproduces byte-identical decision lines across two runs; per-message drop and the transport-failed → unknown mapping test land on the repaired foundation; the reproducibility contract holds for the whole batch, not one seed.
+
+### Not a step: other storage backends
+
+bbolt and pebble are candidates for a single-node store, and a single-node-first store raises their relevance: the design leaned toward SQLite partly for cluster reasons — SQLite "satisfies both state storage and coordination tables", and coordination tables are a cluster need ([design/persistence.md](design/persistence.md)). Postgres was cluster-only and leaves with clustering. This is a goal, not a gap: the store interface is public, a user can ship their own backend, and no measured `gor`-specific number shows bbolt or pebble beating a relaxed-durability SQLite for this workload. The durability control above is the step with evidence; this becomes a step only when measurement shows a real user pain. They stay deliberately un-milestoned goals.
+
+## Optional extension: clustering
+
+Clustering is implemented and shipped in the 0.0.x tags. It is an optional extension, not the main line: it exists for workloads that have outgrown one machine, and single-node users are not asked to pay for it. The boundary is stated in [docs/vision.md](docs/vision.md) and in user terms in [docs/programming-model.md](docs/programming-model.md): during the window while nodes disagree about ownership, a write that always succeeds on a single node can return a conflict to the caller, who must retry. Further cluster work — rolling upgrades and operational cleanup — is deliberately deferred; it is not on the main line.
+
 ### 6. Multiple nodes
 
 A consistent-hash ring, shared-table membership, and death voting. Design: [design/cluster.md](design/cluster.md).
@@ -113,7 +145,7 @@ Implemented. Calls to entities not on this node are forwarded through the transp
 
 This step already changed the generated artifacts. `Invoke`'s argument went from `[]any` to `any`; each method has one request struct, and each type has one constructor like `newAccountCall`. Like step 3 taking over `dispatch`, this is a planned breaking change.
 
-**Acceptance:** DST scenarios cover network partitions and partition recovery; concurrent writes from the double activation during a partition are blocked by the ETag instead of silently overwritten; the view reconverges after the partition heals; forwarded calls and local calls go through the same `Invoke`, not a second execution path.
+**Acceptance:** DST scenarios cover network partitions and partition recovery; concurrent writes from the double activation during a partition are blocked by the ETag instead of being silently overwritten; the view reconverges after the partition heals; forwarded calls and local calls go through the same `Invoke`, not a second execution path.
 
 #### 6c. Probing and death voting
 
@@ -129,7 +161,7 @@ The boundary: the two sides of a partition can vote each other dead, even to the
 
 ## Required before an announced release
 
-Not part of any step above, but completed before gor points users at a version. All items below are done; gor currently sits at 0.0.x (publicly visible tags, not announced — see [design/release.md](design/release.md)). Whether and when to announce a version is a maintainer judgment, not a remaining checklist item.
+Not part of any step above, but completed before gor points users at a version. All items below are done; gor currently sits at 0.0.x (publicly visible tags, not announced — see [design/release.md](design/release.md)). Whether and when to announce a version is a maintainer judgment, and the current choice is not to announce; it is not a roadmap step.
 
 - ~~English documentation. Done last — the docs are still changing; translating early means translating twice.~~ **Done.** `README`, `ROADMAP`, `FINDINGS`, `benchmarks.md`, the six `docs/` files, `examples/shadow/README`, and all 17 `design/` files are now English-only, the Chinese originals fully replaced with nothing kept in both languages; `research/`, `AGENTS.md`, `CLAUDE.md`, and `.github/PULL_REQUEST_TEMPLATE.md` stay in Chinese as internal evidence and maintainer-facing text — commits and reviews are written in Chinese anyway — and every link to `research/` carries an `(in Chinese)` marker.
 - ~~Public API doc comments. To be completed after step 6c, once the public API is finalized as a release candidate; must meet [design/api-documentation.md](design/api-documentation.md) before `v0.1.0`.~~ **Done.**
