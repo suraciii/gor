@@ -87,12 +87,12 @@ The reproduction test does not change in shape. It still compares decision lines
 
 ## Liveness has two sources; only one may feed the decision
 
-*A fault names its target* opened with the rule that the liveness the decision reads must be seed-determined, then named the movers it knew — crash, leave, restart-success — and stopped, as if the list were complete. It was not. A node stops being live in one more way, and it is the way this section exists to name.
+The liveness the decision encoding reads must be a pure function of the seed. A node stops being live in two unrelated ways, and only one of them qualifies.
 
 - **Driver liveness.** The driver crashed the node, left it, or its restart failed. Crash and leave are decisions; restart-success is an observation pinned to the seed by *A fault names its target*. This liveness is a pure function of the seed.
 - **Cluster liveness.** Probes time out, neighbours vote, the vote clears the threshold, and the runtime collapses itself to dead (`becomeDead`, stop code `ErrNodeDead`). Which probe `select` wins when several are ready is scheduling. This is an **observation** by design — the probe loop is supposed to be scheduling-dependent; making it deterministic would defeat the test.
 
-Both close the same channel (`rt.Done()`), so one `runtimeStopped` check cannot tell them apart. The decision encoding reads that one check through `liveNodeIDs()`, `stoppedNodeIDs()`, `targetPool()`, and the action choice — so it reads both, and the second leaks. An observation that moves the decision half breaks reproduction; on master roughly three seeds in ten do break (see *Gap*). This is the member-fault leak from the read end: same defect, a different door.
+Both close the same channel (`rt.Done()`), so one `runtimeStopped` check cannot tell them apart. The decision encoding reads that one check through `liveNodeIDs()`, `stoppedNodeIDs()`, `targetPool()`, and the action choice — so it reads both, and the second leaks. An observation that moves the decision half breaks reproduction; the extent is in *Gap*. This is the member-fault leak from the read end: same defect, a different door.
 
 ### Why the fix is at the read, not the source
 
@@ -100,13 +100,15 @@ The member-fault defect was fixed at the source — a fault the driver owns, bou
 
 ### What disagreement costs, and buys
 
-When the driver thinks a node is live and the cluster has declared it dead, the driver still targets it. A call returns `ErrNodeDead` at admission; a crash is a no-op on an already-dead root; a restart closes and rebuilds it. None of this breaks an invariant — `ErrNodeDead` is a clean rejection and the store is untouched — and it is exactly the state the cluster exists to test: two views of who is alive, disagreeing. Today the driver folds to the cluster's view the instant a vote clears, so the disagreement window is never exercised; reading driver liveness presses on it instead.
+When the driver thinks a node is live and the cluster has declared it dead, the driver still targets it. A call returns `ErrNodeDead` at admission; a crash is a no-op on an already-dead root; a restart closes and rebuilds it. None of this breaks an invariant — `ErrNodeDead` is a clean rejection and the store is untouched — and it is exactly the state the cluster exists to test: two views of who is alive, disagreeing. Reading driver liveness presses on that window; a decision fed by cluster liveness would fold to the cluster's view the instant a vote clears and never reach it.
 
-The cost is narrow. The fault target pool grows by the cluster-dead-but-driver-live nodes, and a fault drawn against such a node may not fire — the node rejects at admission before the fault injection point. This lowers the trigger rate, but only inside the disagreement window, which is the same window that today causes divergence. Outside it the two liveness notions coincide and the rate is unchanged. The trigger rate must be re-measured after the fix; if it regresses past what *A fault names its target* fought to reach, the answer is more seeds, not re-conflating the read.
+The cost is narrow. The fault target pool grows by the cluster-dead-but-driver-live nodes, and a fault drawn against such a node may not fire — the node rejects at admission before the fault injection point. This lowers the trigger rate, but only inside the disagreement window. Outside it the two liveness notions coincide and the rate is unchanged. The trigger rate must be re-measured after the fix; if it regresses past what *A fault names its target* fought to reach, the answer is more seeds, not re-conflating the read.
 
 ### What stays
 
-The probe loop, the vote, and `becomeDead` are production code and are not touched. Concurrency is not reduced. The reproduction test still compares decision lines — across a population where three in ten used to split and now should not.
+The probe loop, the vote, and `becomeDead` are production code and are not touched. Concurrency is not reduced. The reproduction test still compares decision lines.
+
+The decision side and the invariant side each keep their own liveness reader. `checkInvariants` reads cluster liveness, and it must keep doing so — owner uniqueness is an observation. Swap the source on the decision side only: letting the swap reach the invariant side would make a cluster-dead-but-driver-live node read its stale last view and raise a false owner-uniqueness red, sending the fix the wrong way.
 
 ## What a "node" is
 
@@ -241,15 +243,15 @@ porcupine (`github.com/anishathalye/porcupine`) is a new dependency.
 
 The first is the skeleton drawing the PRNG from several goroutines. It scrambles the draw order, so *every* seed stops reproducing; one replayed seed catches it. This is the class the single-seed test was built for, and it is enough for this class alone.
 
-The second is a leak that breaks only *some* seeds — *Liveness has two sources* is one: about three seeds in ten diverge, the rest replay clean. A one-seed gate can sit inside the safe majority forever, green while the contract is broken. This is exactly how #73 hid: the fixed seed walks a trajectory that never clears a vote, and the batch test runs each of its 64 seeds once, so neither test ever compared a fragile seed against itself. About one seed in four inside the batch window diverges on replay; the batch stayed green.
+The second is a leak that breaks only *some* seeds (the liveness leak is one). A one-seed gate can sit inside the safe majority forever — green while the contract is broken. A batch that runs each seed once but never compares a seed against itself is just as blind: it walks many trajectories and checks none for replay fidelity.
 
 The gate must match the contract. Every seed the batch runs is run twice and its decision lines compared, alongside the coverage check it already does. The single-seed replay stays — it is still the right smoke alarm for the PRNG-draw class — but it is no longer mistaken for the reproducibility gate.
 
 ### Cost
 
-Running each seed twice doubles the batch's wall-clock. At the current 64-seed window that is about 1.3s becoming 2.6s — out of the default `test` target, and small. The only honest lever for cost is the window size, never skipping replay on some seeds: a gate that replays a subset reintroduces the same hole, just smaller.
+Running each seed twice doubles the batch's wall-clock — about 2.6s at a 64-seed window, out of the default `test` target and small. The only honest lever for cost is the window size, never skipping replay on some seeds: a gate that replays a subset reintroduces the same hole, just smaller.
 
-One wrinkle, faced honestly. The divergence is itself scheduling-dependent, so *which* seeds diverge moves a little run to run, and a fragile seed can pass a given pair by luck. With roughly fifteen fragile seeds in a 64-window, at least one fires on essentially every run, so the gate is reliably red while the contract is broken and reliably green once it is fixed. The wobble does not rescue a broken contract; it only blurs the exact count.
+One wrinkle, faced honestly. Replay divergence is itself scheduling-dependent, so *which* seeds diverge wobbles run to run, and a fragile seed can pass a given pair by luck. Over a population, at least one fragile seed fires on essentially every run while the contract is broken, so the gate is reliably red then and reliably green once fixed. The wobble does not rescue a broken contract; it only blurs the exact count.
 
 ## What the later steps hang on the skeleton
 
