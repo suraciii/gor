@@ -81,7 +81,7 @@ Placed before step 6 because it changes the public API. API changes get more exp
 
 ## The single-node line, going forward
 
-The single-node core above is, for practical purposes, done. A user who runs `gor` on one node has the whole product: typed entities, state that survives a crash, calls serialized per key, scheduled tasks that survive a restart, lifecycle hooks, observability, and a stable error contract. What follows is not "making single-node usable" — it already is. It is one honest capability gap, plus the shared test foundation that keeps every promise checkable. Clustering (step 6, below) is parked and is not a prerequisite for either.
+The single-node core above is, for practical purposes, done. A user who runs `gor` on one node has the whole product: typed entities, state that survives a crash, calls serialized per key, scheduled tasks that survive a restart, lifecycle hooks, observability, and a stable error contract. What follows is not "making single-node usable" — it already is. It is one honest capability gap. Clustering (step 6, below) is parked and is not a prerequisite for it.
 
 ### A durability control for state writes
 
@@ -93,9 +93,9 @@ The single-node core above is, for practical purposes, done. A user who runs `go
 
 ### Defend the reproducible-test foundation
 
-**Whose problem, what problem.** "Reproducible tests, not hope" is one of the two commitments the project rests on ([docs/vision.md](docs/vision.md)). That commitment leaks: the simulation's decision log is not a pure function of the seed on roughly a quarter of seeds, because liveness the cluster observed (who got voted dead) reaches the decision encoding. The design fix is ruled — the decision half reads only liveness the test driver itself caused, and the reproducibility gate replay-compares every seed in the batch against itself, not one fixed seed. This is not a cluster side-task: the same deterministic harness is what makes every promise — single-node included — checkable. Letting it leak erodes the project's main differentiator.
+"Reproducible tests, not hope" is one of the two commitments the project rests on ([docs/vision.md](docs/vision.md)). The deterministic harness is what makes every promise — single-node included — checkable, so keeping the decision half pure is not a cluster side-task. The ruling: the decision half reads only liveness the test driver itself caused, and the reproducibility gate covers the batch, not one seed. Design: [design/simulation.md](design/simulation.md).
 
-**The step.** Land the ruled fix in `sim/`: the decision encoding reads driver-owned liveness only, and the reproducibility gate covers the batch. Design: [design/simulation.md](design/simulation.md). This step unblocks per-message drop and the transport-failed → unknown mapping test, which both build on a clean decision encoding.
+Implemented. The decision encoding reads driver-owned liveness only — `simulationCluster` keeps a liveness model moved only by the driver's crash, leave, and restart decisions — and the reproducibility gate runs every seed in the batch twice and compares decision lines byte for byte. Per-message drop is wired into the fake network: whether a request or a reply is dropped is a seed-drawn decision, and a dropped reply produces the state where the write took effect but the caller saw failure. One acceptance item is open: the transport-failed → unknown mapping in the porcupine history classification has no test guarding it, and it is routed to the next 0.0.x.
 
 **Acceptance.** Every seed in the batch reproduces byte-identical decision lines across two runs; per-message drop and the transport-failed → unknown mapping test land on the repaired foundation; the reproducibility contract holds for the whole batch, not one seed.
 
