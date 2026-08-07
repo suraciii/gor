@@ -273,10 +273,6 @@ What the simulation must and does cover is the storage seam's correctness-releva
 
 The state-write baseline is recorded at each tier, because a single number would hide the only thing the tier exists for. Both numbers are measured on real disk: on tmpfs the sync that separates the tiers is a no-op, so both tiers measure the same fake-fast number and the comparison is void ([benchmarks.md](benchmarks.md)). The relaxed number is expected to be materially below the full-durability baseline; the measurement records by how much.
 
-### Gap
-
-The durability control is not implemented. `store.OpenSQLite` hardcodes full durability for the single shared database that holds the state, schedule, and membership tables together and exposes no option to change it; the separation of the state database from the coordination databases is not done, nor is the flush on close the Relaxed tier requires, nor is the one-time migration of existing databases. Everything in this section is the target, not the current code.
-
 ## The scheduled task table
 
 ```
