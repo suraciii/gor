@@ -55,9 +55,9 @@ This version does not register arbitrary error types, does not restore error fie
 
 ## Migration
 
-Application code that currently branches on sentinels should replace the sentinel with a declared `gor.Code` and keep using `errors.Is`. For example, the device-shadow HTTP handler's HTTP 400 check should test `shadow.workshop_id_required` instead of an error object only recognizable in-process.
+Application code that branches on sentinels should replace the sentinel with a declared `gor.Code` and keep using `errors.Is`. For example, the device-shadow HTTP handler's HTTP 400 check should test `shadow.workshop_id_required` instead of an error object only recognizable in-process.
 
-Simulators and tests must classify only by stable codes or the caller's own cancellation errors. The places in `sim/sim.go` that currently supplement `errors.Is` with error text must be deleted; errors without a determinate code must be reported as unclassified, not categorized by guessing at text.
+Simulators and tests must classify only by stable codes or the caller's own cancellation errors. Errors without a determinate code must be reported as unclassified, not categorized by guessing at text.
 
 ## Gap
 
