@@ -190,7 +190,7 @@ Two levels:
 - **Full** — the default. Every confirmed change is already on disk when the call returns. If the machine loses power or the operating system crashes, you lose nothing that was confirmed.
 - **Relaxed**. Confirmed changes are not forced to disk one at a time. A normal restart — the process exits and comes back — loses nothing. A power loss or an operating-system crash can lose the most recent changes; what is already on disk stays intact and readable, never corrupted.
 
-The trade is throughput. Forcing every write to disk costs time; most services can tolerate losing the last instant of writes after a hard crash, and Relaxed lets those services change state faster.
+The trade is throughput. Forcing every write to disk costs time; most services can tolerate losing the most recent changes after a hard crash, and Relaxed lets those services change state faster.
 
 Relaxed touches state and nothing else. Scheduled tasks still fire at most once after a crash; if you run more than one node, the bookkeeping the nodes use to agree on who owns what is unaffected.
 
