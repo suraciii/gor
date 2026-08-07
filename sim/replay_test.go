@@ -4,6 +4,7 @@ package sim
 
 import (
 	"bytes"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,15 +34,27 @@ func TestSim_ReplaysEventLog(t *testing.T) {
 
 func TestSim_ChecksSeedBatch(t *testing.T) {
 	seenStats := make(map[string]bool)
+	var replayFailures []string
 	for offset := uint64(0); offset < 64; offset++ {
-		output := runSimulationInBubble(t, simulationSeed+offset, clusterNodeCount)
+		seed := simulationSeed + offset
+		first := runSimulationInBubble(t, seed, clusterNodeCount)
+		// Every seed the batch runs is run twice and its decision lines
+		// compared. A one-run batch walks many trajectories but checks none
+		// for replay fidelity, so a leak that breaks only some seeds would
+		// pass green forever; the gate must match the contract.
+		second := runSimulationInBubble(t, seed, clusterNodeCount)
+		firstDecisions := decisionLines(first)
+		secondDecisions := decisionLines(second)
+		if firstDecisions != secondDecisions {
+			replayFailures = append(replayFailures, replayFailure(seed, first, firstDecisions, second, secondDecisions))
+		}
 		for _, stat := range []string{
 			"list-errors",
 			"list-delays",
 			"claim-errors",
 			"claim-applied-errors",
 		} {
-			if scheduleStatPositive(output, stat) {
+			if scheduleStatPositive(first, stat) {
 				seenStats[stat] = true
 			}
 		}
@@ -52,15 +65,18 @@ func TestSim_ChecksSeedBatch(t *testing.T) {
 			"delays",
 			"dead-writes",
 		} {
-			if memberStatPositive(output, stat) {
+			if memberStatPositive(first, stat) {
 				seenStats["member-"+stat] = true
 			}
 		}
 		for _, stat := range []string{"held", "completed"} {
-			if networkStatPositive(output, stat) {
+			if networkStatPositive(first, stat) {
 				seenStats["network-"+stat] = true
 			}
 		}
+	}
+	if len(replayFailures) > 0 {
+		t.Fatalf("seed batch did not replay byte-identically for %d seeds:\n%s", len(replayFailures), strings.Join(replayFailures, "\n"))
 	}
 	for _, stat := range []string{
 		"list-errors",
@@ -88,6 +104,35 @@ func TestSim_ChecksSeedBatch(t *testing.T) {
 			t.Fatalf("seed batch never triggered network stat %s", stat)
 		}
 	}
+}
+
+// replayFailure renders a diverging seed for the failure report: the whole
+// log of both runs — the observation half exists for exactly this moment —
+// and the first differing decision line marked.
+func replayFailure(seed uint64, first, firstDecisions, second, secondDecisions string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "seed %08x: decision lines differ between two runs of the same seed:\n", seed)
+	firstLines := strings.Split(strings.TrimSuffix(firstDecisions, "\n"), "\n")
+	secondLines := strings.Split(strings.TrimSuffix(secondDecisions, "\n"), "\n")
+	diverged := false
+	for index := 0; index < len(firstLines) || index < len(secondLines); index++ {
+		a, bLine := "<end>", "<end>"
+		if index < len(firstLines) {
+			a = firstLines[index]
+		}
+		if index < len(secondLines) {
+			bLine = secondLines[index]
+		}
+		if a != bLine && !diverged {
+			fmt.Fprintf(&b, "first divergence at line %d:\n", index)
+			diverged = true
+		}
+	}
+	b.WriteString("first run (full log):\n")
+	b.WriteString(first)
+	b.WriteString("second run (full log):\n")
+	b.WriteString(second)
+	return b.String()
 }
 
 func networkStatPositive(log, name string) bool {

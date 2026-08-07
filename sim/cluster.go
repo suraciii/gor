@@ -26,10 +26,19 @@ type clusterNode struct {
 }
 
 type simulationCluster struct {
-	backend           *fakeStore
-	tracker           *timerTracker
-	clock             *clock.Fake
-	generations       []int
+	backend     *fakeStore
+	tracker     *timerTracker
+	clock       *clock.Fake
+	generations []int
+	// driverLive is the liveness the decision encoding reads: nodes the
+	// driver crashed, left, or failed to restart. Crash and leave are
+	// decisions; restart-success is an observation pinned to the seed by the
+	// member-fault target binding, so this set is a pure function of the
+	// seed. Cluster-declared death (probe/vote) does not move it — that is
+	// an observation, and letting it feed the decision half would split the
+	// decision lines again. clusterLiveNodeIDs is the cluster's own view for
+	// the invariant side; the two routinely disagree after a vote.
+	driverLive        []bool
 	nodes             []*clusterNode
 	network           *simulationNetwork
 	operationSequence atomic.Int64
@@ -41,8 +50,12 @@ func newSimulationCluster(backend *fakeStore, count int, tracker *timerTracker) 
 		tracker:     tracker,
 		clock:       clock.NewFake(time.Unix(0, 0)),
 		generations: make([]int, count),
+		driverLive:  make([]bool, count),
 		nodes:       make([]*clusterNode, count),
 		network:     newSimulationNetwork(backend),
+	}
+	for id := range cluster.driverLive {
+		cluster.driverLive[id] = true
 	}
 	cluster.backend.setMemberClock(cluster.clock)
 	for id := range cluster.nodes {
@@ -100,6 +113,7 @@ func (c *simulationCluster) crash(id int) error {
 	}
 	node.rt.Kill()
 	node.rt = nil
+	c.driverLive[id] = false
 	return nil
 }
 
@@ -119,6 +133,7 @@ func (c *simulationCluster) leave(id int) error {
 	c.advance(10 * simulationStepDuration)
 	<-done
 	node.rt = nil
+	c.driverLive[id] = false
 	return nil
 }
 
@@ -150,9 +165,11 @@ func (c *simulationCluster) restart(id int) error {
 	c.advance(10 * simulationStepDuration)
 	created := <-result
 	if created.err != nil {
+		c.driverLive[id] = false
 		return created.err
 	}
 	node.rt = created.rt
+	c.driverLive[id] = true
 	return nil
 }
 
@@ -197,8 +214,8 @@ func (c *simulationCluster) partition(groups map[int]int) error {
 		}
 		addressGroups[fmt.Sprintf("node-%d", id)] = group
 	}
-	if len(addressGroups) != len(c.liveNodeIDs()) {
-		return fmt.Errorf("partition groups cover %d nodes, want %d", len(addressGroups), len(c.liveNodeIDs()))
+	if len(addressGroups) != len(c.clusterLiveNodeIDs()) {
+		return fmt.Errorf("partition groups cover %d nodes, want %d", len(addressGroups), len(c.clusterLiveNodeIDs()))
 	}
 	return c.network.partition(addressGroups)
 }
@@ -211,7 +228,11 @@ func (c *simulationCluster) checkInvariants(ids []store.Identity) error {
 	if err := c.backend.checkMemberStatuses(); err != nil {
 		return err
 	}
-	liveIDs := c.liveNodeIDs()
+	// The invariant side reads cluster liveness, not the driver's. Owner
+	// uniqueness is an observation: a cluster-declared-dead node must not be
+	// counted, and a cluster-dead-but-driver-live node read through the
+	// driver set would contribute its stale last view and raise a false red.
+	liveIDs := c.clusterLiveNodeIDs()
 	if len(liveIDs) == 0 {
 		return nil
 	}
@@ -236,7 +257,24 @@ func (c *simulationCluster) node(id int) (*clusterNode, error) {
 	return c.nodes[id], nil
 }
 
+// liveNodeIDs is the decision half's liveness reader: nodes the driver has
+// not crashed, left, or failed to restart. It never consults the runtime;
+// cluster-declared death is an observation and may not feed the decision
+// half. The invariant half reads clusterLiveNodeIDs instead.
 func (c *simulationCluster) liveNodeIDs() []int {
+	ids := make([]int, 0, len(c.nodes))
+	for _, node := range c.nodes {
+		if c.driverLive[node.id] {
+			ids = append(ids, node.id)
+		}
+	}
+	return ids
+}
+
+// clusterLiveNodeIDs is the invariant half's liveness reader: nodes whose
+// runtime still runs, in the cluster's own view. It is the observation the
+// probe/vote mechanism produces, so it may move with scheduling.
+func (c *simulationCluster) clusterLiveNodeIDs() []int {
 	ids := make([]int, 0, len(c.nodes))
 	for _, node := range c.nodes {
 		if node.rt != nil && !runtimeStopped(node.rt) {
@@ -246,12 +284,12 @@ func (c *simulationCluster) liveNodeIDs() []int {
 	return ids
 }
 
-// targetPool returns the nodes a fault target may draw this step — the nodes
-// that can produce member-table operations. Live nodes heartbeat, poll views,
-// and self-check; a node restarted this step joins, writing and listing its
-// new-generation row. A target outside this pool could never be addressed
-// this step, so it is not drawable — the same way calls and crashes draw
-// their node indices from live nodes.
+// targetPool returns the nodes a fault target may draw this step — the
+// driver's live nodes plus the node being restarted this step. The pool is
+// the driver's own model (liveNodeIDs), so the draw is a pure function of the
+// seed. A cluster-dead-but-driver-live node stays in the pool and rejects at
+// admission, so a fault drawn against it may not fire this step — the
+// accepted cost of keeping the decision half pure.
 func (c *simulationCluster) targetPool(restartNode int) []int {
 	pool := c.liveNodeIDs()
 	if restartNode >= 0 {
@@ -263,7 +301,7 @@ func (c *simulationCluster) targetPool(restartNode int) []int {
 func (c *simulationCluster) stoppedNodeIDs() []int {
 	ids := make([]int, 0, len(c.nodes))
 	for _, node := range c.nodes {
-		if node.rt == nil || runtimeStopped(node.rt) {
+		if !c.driverLive[node.id] {
 			ids = append(ids, node.id)
 		}
 	}
