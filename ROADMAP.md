@@ -2,7 +2,7 @@
 
 **Direction.** `gor` is for programs that need stateful objects on one machine. The main line is the single-node product; clustering is an optional extension that exists and is shipped, but is not the path the project is built around. See [docs/vision.md](docs/vision.md).
 
-**Status.** The single-node core (steps 1–5.5) is implemented and usable. Clustering (step 6) is implemented and shipped in 0.0.x as a preview. Every item under "Required before an announced release" is done; the single-node product is ready, and the remaining work on the main line is the section "The single-node line, going forward."
+**Status.** The single-node core (steps 1–5.5) is implemented and usable; it is the finished product. Clustering (step 6) is implemented and shipped in 0.0.x as a preview. Every item under "Required before an announced release" is done. Staying in 0.0.x rather than announcing is a choice the project has already made — see [design/release.md](design/release.md); it is a posture, not a roadmap step.
 
 Slicing principle: every step runs, is accepted, and delivers value on its own. Dependencies of the form "step 1 cannot be verified until step 6" are not allowed.
 
@@ -81,17 +81,7 @@ Placed before step 6 because it changes the public API. API changes get more exp
 
 ## The single-node line, going forward
 
-The core above is built. The main line refocuses on the single-node user. Clustering (step 6, below) is parked and is not a prerequisite for any of these.
-
-The question that shaped this section: a user who runs `gor` on one node — what do they still lack? Each step below answers that with evidence, not a feature wish.
-
-### Announce the single-node product
-
-**Whose problem, what problem.** A single-node user who wants to adopt `gor` today can `go get` a 0.0.x tag, but no version is announced: there is no release note, the v0 discipline is not yet in effect, and the only adoption signal is the README's "usable scope" line. The single-node product is functionally complete by the project's own readiness bar — every item in "Required before an announced release" below is done; see [design/release.md](design/release.md) and [docs/compatibility.md](docs/compatibility.md). The gap is not a missing feature; it is that finished work is unannounced, so users have no recommended version to pin and no document telling them what changes between versions.
-
-**The step.** Announce a version (0.1.0), which brings the v0 discipline into effect: an assembled release note, a "Breaking changes and migration" section where needed, and the version number as the upgrade-risk signal. The versioning design and the tag/release checklist already exist ([design/release.md](design/release.md)); this step executes the announcement, it does not redesign versioning. The go/no-go on announcing is a maintainer judgment; the work an announcement requires is the step.
-
-**Acceptance.** A 0.1.0 tag exists with an assembled release note; a single-node user can read what `gor` promises in that version and what to do when moving to the next.
+The single-node core above is, for practical purposes, done. A user who runs `gor` on one node today has the whole product: typed entities, state that survives a crash, calls serialized per key, scheduled tasks that survive a restart, lifecycle hooks, observability, and a stable error contract. What follows is not "making single-node usable" — it already is. It is one honest capability gap, plus the shared test foundation that keeps every promise checkable. Clustering (step 6, below) is parked and is not a prerequisite for either.
 
 ### A durability control for state writes
 
@@ -108,6 +98,10 @@ The question that shaped this section: a user who runs `gor` on one node — wha
 **The step.** Land the ruled fix in `sim/`: the decision encoding reads driver-owned liveness only, and the reproducibility gate covers the batch. Design: [design/simulation.md](design/simulation.md). This step unblocks #61 (per-message drop) and #77 (the transport-failed → unknown mapping test), which both build on a clean decision encoding.
 
 **Acceptance.** Every seed in the batch reproduces byte-identical decision lines across two runs; #61 and #77 land on the repaired foundation; the reproducibility contract holds for the whole batch, not one seed.
+
+### Not a step: other storage backends
+
+bbolt and pebble are candidates for a single-node store, and they are more relevant now that the store is single-node-first: the design's reason to lean toward SQLite was partly cluster-driven — SQLite "satisfies both state storage and coordination tables", and coordination tables are a cluster need ([design/persistence.md](design/persistence.md)). Postgres was cluster-only and leaves with clustering. This is a goal, not a gap: the store interface is public, a user can ship their own backend, and no measured `gor`-specific number shows bbolt or pebble beating a relaxed-durability SQLite for this workload. The durability control above is the step with evidence; this becomes a step only when measurement shows a real user pain. Tracked as a deliberately un-milestoned goal: #46.
 
 ## Optional extension: clustering
 
@@ -167,7 +161,7 @@ The boundary: the two sides of a partition can vote each other dead, even to the
 
 ## Required before an announced release
 
-Not part of any step above, but completed before gor points users at a version. All items below are done; gor currently sits at 0.0.x (publicly visible tags, not announced — see [design/release.md](design/release.md)). Whether and when to announce a version is a maintainer judgment, not a remaining checklist item; the work an announcement requires is the "Announce the single-node product" step above.
+Not part of any step above, but completed before gor points users at a version. All items below are done; gor currently sits at 0.0.x (publicly visible tags, not announced — see [design/release.md](design/release.md)). Whether and when to announce a version is a maintainer judgment, and the current choice is not to announce; it is not a roadmap step.
 
 - ~~English documentation. Done last — the docs are still changing; translating early means translating twice.~~ **Done.** `README`, `ROADMAP`, `FINDINGS`, `benchmarks.md`, the six `docs/` files, `examples/shadow/README`, and all 17 `design/` files are now English-only, the Chinese originals fully replaced with nothing kept in both languages; `research/`, `AGENTS.md`, `CLAUDE.md`, and `.github/PULL_REQUEST_TEMPLATE.md` stay in Chinese as internal evidence and maintainer-facing text — commits and reviews are written in Chinese anyway — and every link to `research/` carries an `(in Chinese)` marker.
 - ~~Public API doc comments. To be completed after step 6c, once the public API is finalized as a release candidate; must meet [design/api-documentation.md](design/api-documentation.md) before `v0.1.0`.~~ **Done.**
@@ -185,6 +179,5 @@ Only step 6 carries real distributed risk, and it contains no consensus algorith
 
 The real risks are not technical:
 
-- **Adoption risk.** The single-node product is finished but unannounced. A project in this spot that no one is told to use dies the same death as one that is unfinished — the ecosystem does not grade on effort. Announcing is on the main line for this reason.
 - **Ecosystem risk.** Orbit (EA's JVM virtual-actor implementation, inspired by Orleans) reached 1724 stars and was rewritten in Kotlin once, then was completely abandoned after 2021-06. Projects in this spot have died.
 - **Single-person maintenance.** goakt's situation shows how much this hurts credibility.
