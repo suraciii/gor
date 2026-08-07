@@ -118,4 +118,4 @@ Steps 1, 2, 4, and 5 need maintainer judgment and stay manual. Step 3 already ha
 
 ## Gap
 
-Three 0.0.x tags exist — `v0.0.1`, `v0.0.2`, and `v0.0.3` — all annotated, none with a GitHub Release, all cut under the Planning rules. The readiness work for an announced release is complete; staying in 0.0.x rather than announcing is a choice, not a missing gate.
+0.0.x tags are cut under the Planning rules: each is annotated, and no GitHub Release is created for any of them. The readiness work for an announced release is complete; staying in 0.0.x rather than announcing is a choice, not a missing gate.
