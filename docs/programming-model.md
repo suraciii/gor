@@ -177,9 +177,9 @@ Multiple `Set()` calls in one method are not a transaction. An earlier write may
 
 State must be JSON-encodable. The runtime does not carry applications through state-structure evolution; field additions, removals, or format changes are the application's job — read old formats, write new ones.
 
-Concurrency semantics, stated plainly: in cluster mode, the runtime does not guarantee that only one `Account("alice")` runs in the whole world at any moment. A double-activation window exists during node failures and network partitions. So `Set()` carries an optimistic-concurrency check: on conflict it returns an error instead of silently overwriting.
+Concurrency semantics, stated plainly: in cluster mode, the runtime does not guarantee that only one `Account("alice")` runs in the whole world at any moment. A double-activation window opens whenever the cluster's membership is changing — nodes joining, leaving, failing, or being partitioned — and closes once every node's view of the membership agrees. While it is open, two nodes may each have the same entity active and both accept a write to it; `Set()` carries an optimistic-concurrency check, so the write that lands second fails instead of silently overwriting the first. That failure is returned to the caller, who must retry; the runtime does not retry it. A call that always succeeds on a single node can therefore return an error on a cluster during this window — not because the work was wrong, but because a second activation raced it.
 
-This is not implementation laziness — Orleans' default directory has the same semantics, and its official docs say so (see [../research/orleans-internals.md](../research/orleans-internals.md) (in Chinese)). In single-node mode this window does not exist.
+This is not implementation laziness — Orleans' default directory has the same semantics, and its official docs say so (see [../research/orleans-internals.md](../research/orleans-internals.md) (in Chinese)). In single-node mode this window does not exist, so this failure does not occur there.
 
 ## Scheduled wake-up
 

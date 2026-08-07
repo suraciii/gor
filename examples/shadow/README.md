@@ -61,7 +61,7 @@ go run ./examples/shadow/cmd/shadow -cluster -addr 127.0.0.1:8083 -node-addr 127
 
 Run each in its own terminal. Every node serves the same HTTP API; send a request to any node and it is executed on the node that owns that entity, forwarded over the cluster transport when that node is a different one. The entity definitions and handlers are identical to the single-node service — clustering is a launcher concern, not a business-code one.
 
-A node begins serving the moment it joins. As the nodes discover each other, which node owns which entity settles within about a second; during that brief window an entity may be served by a node that is about to hand it off, but it is always served, from the shared state. `curl` any node the same way as the single-node service.
+A node begins serving the moment it joins. As the nodes discover each other, which node owns which entity settles within about a second. During that window the same entity may be active on two nodes at once, so two writes to it can collide: one succeeds, the other fails and is returned to the caller — a client should retry it. This does not happen in the single-node service. The full boundary, including when this window opens beyond startup, is in [../../docs/programming-model.md](../../docs/programming-model.md).
 
 ## Calling it
 
