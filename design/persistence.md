@@ -192,7 +192,7 @@ A durability control gives that user the trade inside the built-in store.
 
 ### Two tiers, and what each can lose
 
-Durability is stated in the only terms a user can act on: after a hard crash — power loss, operating-system crash, hard reset — which confirmed writes are gone. A clean restart (the process exits and comes back) is not part of this trade: a clean restart loses nothing at either tier. At Full every commit is already on storage, so this costs nothing extra. At Relaxed the store must flush what the write-ahead log is holding when it closes — a new requirement: today `Close` only closes the handles, and there is no Relaxed tier yet to exercise it. So the Relaxed tier's "clean restart loses nothing" is a guarantee the implementation adds at close time, not one it inherits.
+Durability is stated in the only terms a user can act on: after a hard crash — power loss, operating-system crash, hard reset — which confirmed writes are gone. A clean restart (the process exits and comes back) is not part of this trade: a clean restart loses nothing at either tier. At Full every commit is already on storage, so this costs nothing extra. At Relaxed the store must flush what the write-ahead log is holding when it closes — that flush is what makes "clean restart loses nothing" hold at this tier.
 
 **Full.** A write the call returns is already on storage. A hard crash loses zero confirmed writes.
 
@@ -210,7 +210,7 @@ Two tiers, because exactly two behaviors are supported.
 
 The default is unchanged: Full.
 
-The product rests on "state survives a crash" being true without the user reading a tuning guide. A user who runs the default and loses confirmed state to a power outage has met a broken promise, even if a footnote somewhere permitted it. Relaxed is therefore opt-in: choosing it is the act that says "I accept the trade." Choosing Full leaves the durability behavior exactly as today — no silent change to what survives a crash. The storage layout underneath may still change to isolate the state rows' sync level from the coordination tables; that layout change is a compatibility event, and what it must preserve is nailed in "Old databases" below. The durability option itself is a freely changeable option at 0.0.x and touches neither of the two things 0.0.x keeps stable (error codes; state format) — see [compatibility.md](../docs/compatibility.md).
+The product rests on "state survives a crash" being true without the user reading a tuning guide. A user who runs the default and loses confirmed state to a power outage has met a broken promise, even if a footnote somewhere permitted it. Relaxed is therefore opt-in: choosing it is the act that says "I accept the trade." The default, Full, keeps every confirmed write safe through a hard crash — no silent weakening of what survives. The storage layout underneath may still change to isolate the state rows' sync level from the coordination tables; that layout change is a compatibility event, and what it must preserve is nailed in "Old databases" below. The durability option itself is a freely changeable option at 0.0.x and touches neither of the two things 0.0.x keeps stable (error codes; state format) — see [compatibility.md](../docs/compatibility.md).
 
 ### Where the tier is chosen
 
@@ -226,7 +226,7 @@ db, err := store.OpenSQLite("data/gor.db",
 )
 ```
 
-`Durability` and its two values (`DurabilityFull`, `DurabilityRelaxed`) live in the `store` package: every backend that implements `Store` shares one type, and the dependency direction (`gor` imports `store`, never the reverse) is what forces it there. Both SQLite constructors take the option — `OpenSQLite` and `OpenSQLiteWithClock` — so a cluster node, which opens with a clock for membership snapshots, sets the state tier the same way a single-node program does. The option does not add a second path to the API: the user names one database, as today, and the store derives the location of any additional database file from it (see "What this means for the SQLite backend"). The in-memory store has no durability tier — it holds nothing across a crash by design, so the option does not apply to it; the tiers are a property of the on-disk backends only. The runtime, the entity, and the write path are unaware of the tier. `Store.Write`'s contract — write the bytes, return the new ETag — is identical at both tiers; only how hard the backend pushes the bytes to storage differs.
+`Durability` and its two values (`DurabilityFull`, `DurabilityRelaxed`) live in the `store` package: every backend that implements `Store` shares one type, and the dependency direction (`gor` imports `store`, never the reverse) is what forces it there. Both SQLite constructors take the option — `OpenSQLite` and `OpenSQLiteWithClock` — so a cluster node, which opens with a clock for membership snapshots, sets the state tier the same way a single-node program does. The option does not add a second path to the API: the user names one database, and the store derives the location of any additional database file from it (see "What this means for the SQLite backend"). The in-memory store has no durability tier — it holds nothing across a crash by design, so the option does not apply to it; the tiers are a property of the on-disk backends only. The runtime, the entity, and the write path are unaware of the tier. `Store.Write`'s contract — write the bytes, return the new ETag — is identical at both tiers; only how hard the backend pushes the bytes to storage differs.
 
 ### Scope: the state table only
 
@@ -247,13 +247,13 @@ Because SQLite's sync level is set per database file, not per table, running the
 
 Putting the tables in separate files does not break atomicity that existed before. State writes, schedule writes, and membership writes never shared a transaction: the schedule and membership tables have their own interfaces, and a state `Set` and a schedule `Set` are deliberately not atomic ([timers.md](timers.md)). The split changes where each table lives, not whether any two of them commit together.
 
-On disk the store may now hold more than one database file, each carrying its own `-wal`/`-shm` sidecars. Backups and direct `sqlite3` inspection must cover every file the store creates, not just the path the user named — copying only the main file leaves the write-ahead log behind, and the recovered state is stale or torn.
+On disk the store may hold more than one database file, each carrying its own `-wal`/`-shm` sidecars. Backups and direct `sqlite3` inspection must cover every file the store creates, not just the path the user named — copying only the main file leaves the write-ahead log behind, and the recovered state is stale or torn.
 
 ### Old databases
 
-Today the store keeps the state, schedule, and membership tables in one database file. Isolating the state rows' sync level from the coordination tables means the state rows move to their own database, so an existing database written by an earlier 0.0.x is read into the new layout on first open. The constraint is fixed, not optional: every confirmed state row must come through the move — nothing lost, and the store stays readable. This is not a new promise; it is the 0.0.x promise that a later 0.0.x reads state an earlier 0.0.x wrote, applied to the layout change ([compatibility.md](../docs/compatibility.md)).
+An earlier 0.0.x database keeps the state, schedule, and membership tables in one database file. When the state tier calls for it, the state rows move to their own database, and such a database is read into the new layout on first open. The constraint is fixed, not optional: every confirmed state row must come through the move — nothing lost, and the store stays readable. This is not a new promise; it is the 0.0.x promise that a later 0.0.x reads state an earlier 0.0.x wrote, applied to the layout change ([compatibility.md](../docs/compatibility.md)).
 
-The migration is the store's job, done once on first open of an old database, not the user's; the user does not hand-move rows or convert formats. Whether the implementation keeps the single-file layout when the tier is Full and splits only at Relaxed, or splits uniformly regardless of tier, is the implementer's choice — but whichever it is, the constraint above holds: confirmed state survives the upgrade, and the user passes one path either way.
+The migration is the store's job, done once on first open of an old database, not the user's; the user does not hand-move rows or convert formats. An interrupted migration must be redoable or resumable on the next open: the old database is not destroyed until the new one is complete, so a crash mid-move leaves the store recoverable. Whether the implementation keeps the single-file layout when the tier is Full and splits only at Relaxed, or splits uniformly regardless of tier, is the implementer's choice — but whichever it is, the constraint above holds: confirmed state survives the upgrade, and the user passes one path either way.
 
 ### Relationship to ETag and optimistic concurrency
 
@@ -275,7 +275,7 @@ The state-write baseline is recorded at each tier, because a single number would
 
 ### Gap
 
-The durability control is not implemented. `store.OpenSQLite` hardcodes full durability for the single shared database that holds the state, schedule, and membership tables together and exposes no option to change it; the separation of the state database from the coordination databases, the flush on close the Relaxed tier requires, and the one-time migration of existing databases are also not done. Everything in this section is the target, not the current code.
+The durability control is not implemented. `store.OpenSQLite` hardcodes full durability for the single shared database that holds the state, schedule, and membership tables together and exposes no option to change it; the separation of the state database from the coordination databases is not done, nor is the flush on close the Relaxed tier requires, nor is the one-time migration of existing databases. Everything in this section is the target, not the current code.
 
 ## The scheduled task table
 
