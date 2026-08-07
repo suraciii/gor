@@ -81,7 +81,7 @@ Placed before step 6 because it changes the public API. API changes get more exp
 
 ## The single-node line, going forward
 
-The single-node core above is, for practical purposes, done. A user who runs `gor` on one node has the whole product: typed entities, state that survives a crash, calls serialized per key, scheduled tasks that survive a restart, lifecycle hooks, observability, and a stable error contract. What follows is not "making single-node usable" — it already is. It is one honest capability gap, plus the shared test foundation that keeps every promise checkable. Clustering (step 6, below) is parked and is not a prerequisite for either.
+The single-node core above is, for practical purposes, done. A user who runs `gor` on one node has the whole product: typed entities, state that survives a crash, calls serialized per key, scheduled tasks that survive a restart, lifecycle hooks, observability, and a stable error contract. What follows is not "making single-node usable" — it already is. It is one honest capability gap. Clustering (step 6, below) is parked and is not a prerequisite for it.
 
 ### A durability control for state writes
 

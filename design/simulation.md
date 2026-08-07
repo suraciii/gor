@@ -92,7 +92,7 @@ The liveness the decision encoding reads must be a pure function of the seed. A 
 - **Driver liveness.** The driver crashed the node, left it, or its restart failed. Crash and leave are decisions; restart-success is an observation pinned to the seed by *A fault names its target*. This liveness is a pure function of the seed.
 - **Cluster liveness.** Probes time out, neighbours vote, the vote clears the threshold, and the runtime collapses itself to dead (`becomeDead`, stop code `ErrNodeDead`). Which probe `select` wins when several are ready is scheduling. This is an **observation** by design — the probe loop is supposed to be scheduling-dependent; making it deterministic would defeat the test.
 
-Both close the same channel (`rt.Done()`), so one `runtimeStopped` check cannot tell them apart. The decision encoding reads that one check through `liveNodeIDs()`, `stoppedNodeIDs()`, `targetPool()`, and the action choice — so it reads both, and the second leaks. An observation that moves the decision half breaks reproduction; the extent is in *Gap*. This is the member-fault leak from the read end: same defect, a different door.
+Both close the same channel (`rt.Done()`), so one `runtimeStopped` check cannot tell them apart. The decision encoding reads that one check through `liveNodeIDs()`, `stoppedNodeIDs()`, `targetPool()`, and the action choice — so it reads both, and the second leaks. An observation that moves the decision half breaks reproduction. This is the member-fault leak from the read end: same defect, a different door.
 
 ### Why the fix is at the read, not the source
 
