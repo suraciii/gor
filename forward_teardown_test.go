@@ -27,7 +27,7 @@ type blockingHoldReply struct{}
 
 type blockingEntityProxy struct {
 	invoker Invoker
-	id      Identity
+	id      GrainId
 }
 
 func (p *blockingEntityProxy) Hold(ctx context.Context) error {
@@ -61,7 +61,7 @@ func newBlockingEntityCall(method string) (args any, reply any) {
 
 func installBlockingEntity(t *testing.T, rt *Runtime, entries, release chan struct{}) {
 	t.Helper()
-	if err := InstallType[blockingEntity](rt, dispatchBlockingEntity, func(invoker Invoker, id Identity) blockingEntity {
+	if err := InstallType[blockingEntity](rt, dispatchBlockingEntity, func(invoker Invoker, id GrainId) blockingEntity {
 		return &blockingEntityProxy{invoker: invoker, id: id}
 	}, newBlockingEntityCall); err != nil {
 		t.Fatal(err)
@@ -107,21 +107,21 @@ func TestScenario_ForwardedCallSurvivesOwnerClose(t *testing.T) {
 
 		targetView := target.clusterView.Load()
 		var owned cluster.View
-		var id Identity
+		var id GrainId
 		for index := 0; index < 4096; index++ {
-			candidate := Identity{Type: TypeName[blockingEntity](), Key: strconv.Itoa(index)}
-			owner, ok := cluster.Owner(*targetView, store.Identity(candidate))
+			candidate := GrainId{GrainType: TypeName[blockingEntity](), GrainKey: strconv.Itoa(index)}
+			owner, ok := cluster.Owner(*targetView, store.GrainId(candidate))
 			if ok && owner == "node-b" {
 				id = candidate
 				owned = *targetView
 				break
 			}
 		}
-		if id == (Identity{}) {
+		if id == (GrainId{}) {
 			t.Fatal("no identity owned by the target node")
 		}
 		// Sanity: the source routes this identity to the target.
-		if owner, _ := cluster.Owner(owned, store.Identity(id)); owner != "node-b" {
+		if owner, _ := cluster.Owner(owned, store.GrainId(id)); owner != "node-b" {
 			t.Fatalf("source routes %v to %q, want node-b", id, owner)
 		}
 

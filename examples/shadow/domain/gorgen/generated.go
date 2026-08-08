@@ -9,7 +9,7 @@ import (
 )
 
 type deviceProxy struct {
-	id gor.Identity
+	id gor.GrainId
 	rt gor.Invoker
 }
 
@@ -94,12 +94,12 @@ func newDeviceCall(method string) (args any, reply any) {
 	}
 }
 
-func newDeviceProxy(rt gor.Invoker, id gor.Identity) domain.Device {
+func newDeviceProxy(rt gor.Invoker, id gor.GrainId) domain.Device {
 	return &deviceProxy{id: id, rt: rt}
 }
 
 type workshopProxy struct {
-	id gor.Identity
+	id gor.GrainId
 	rt gor.Invoker
 }
 
@@ -169,7 +169,7 @@ func newWorkshopCall(method string) (args any, reply any) {
 	}
 }
 
-func newWorkshopProxy(rt gor.Invoker, id gor.Identity) domain.Workshop {
+func newWorkshopProxy(rt gor.Invoker, id gor.GrainId) domain.Workshop {
 	return &workshopProxy{id: id, rt: rt}
 }
 

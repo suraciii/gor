@@ -36,7 +36,7 @@ ORDER BY due_at, entity_type, entity_key, name`, timeValue(now))
 			return nil, err
 		}
 		result = append(result, Schedule{
-			Identity: Identity{Type: entityType, Key: entityKey},
+			GrainId:  GrainId{GrainType: entityType, GrainKey: entityKey},
 			Name:     name,
 			Method:   method,
 			DueAt:    timeFromValue(dueAt),
@@ -62,8 +62,8 @@ func (s *SQLite) Claim(ctx context.Context, schedule Schedule, nextDueAt time.Ti
 		result, err = s.writeDB.ExecContext(ctx, `
 DELETE FROM schedule
 WHERE entity_type = ? AND entity_key = ? AND name = ? AND etag = ?`,
-			schedule.Identity.Type,
-			schedule.Identity.Key,
+			schedule.GrainId.GrainType,
+			schedule.GrainId.GrainKey,
 			schedule.Name,
 			int64(schedule.ETag),
 		)
@@ -73,8 +73,8 @@ UPDATE schedule
 SET due_at = ?, etag = etag + 1
 WHERE entity_type = ? AND entity_key = ? AND name = ? AND etag = ?`,
 			timeValue(nextDueAt),
-			schedule.Identity.Type,
-			schedule.Identity.Key,
+			schedule.GrainId.GrainType,
+			schedule.GrainId.GrainKey,
 			schedule.Name,
 			int64(schedule.ETag),
 		)
@@ -99,8 +99,8 @@ ON CONFLICT (entity_type, entity_key, name) DO UPDATE SET
 	due_at = excluded.due_at,
 	interval = excluded.interval,
 	etag = schedule.etag + 1`,
-		schedule.Identity.Type,
-		schedule.Identity.Key,
+		schedule.GrainId.GrainType,
+		schedule.GrainId.GrainKey,
 		schedule.Name,
 		schedule.Method,
 		timeValue(schedule.DueAt),
@@ -110,9 +110,9 @@ ON CONFLICT (entity_type, entity_key, name) DO UPDATE SET
 }
 
 // Delete unconditionally removes the schedule identified by id and name.
-func (s *SQLite) Delete(ctx context.Context, id Identity, name string) error {
+func (s *SQLite) Delete(ctx context.Context, id GrainId, name string) error {
 	_, err := s.writeDB.ExecContext(ctx, `
 DELETE FROM schedule
-WHERE entity_type = ? AND entity_key = ? AND name = ?`, id.Type, id.Key, name)
+WHERE entity_type = ? AND entity_key = ? AND name = ?`, id.GrainType, id.GrainKey, name)
 	return err
 }

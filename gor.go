@@ -19,8 +19,8 @@ import (
 	"github.com/suraciii/gor/transport"
 )
 
-// Identity identifies an entity by its registered type name and key.
-type Identity = runtimepkg.Identity
+// GrainId identifies an entity by its registered type name and key.
+type GrainId = runtimepkg.GrainId
 type Activation = runtimepkg.Activation
 
 // DeactivationReason describes why an activation left the active state. The
@@ -42,7 +42,7 @@ const (
 )
 
 // CallObservation describes one invocation observed by an OnCall callback.
-// EntityType and Method identify the call, Duration is measured with the
+// GrainType and Method identify the call, Duration is measured with the
 // observing Runtime's configured clock, and Err is the error returned to the
 // caller.
 //
@@ -51,10 +51,10 @@ const (
 // observation. A remote coded error is reconstructed so errors.Is matches its
 // Code; an opaque remote error retains only its diagnostic text.
 type CallObservation struct {
-	EntityType string
-	Method     string
-	Duration   time.Duration
-	Err        error
+	GrainType string
+	Method    string
+	Duration  time.Duration
+	Err       error
 }
 
 // Scope is the generated-reference scope accepted by Ref. Runtime and Binder
@@ -66,12 +66,12 @@ type Scope interface {
 
 // BackgroundError reports a failure of an application callback that has no
 // caller waiting for its result: a claimed scheduled invocation, or a normal
-// deactivation hook. Identity is the affected entity, Err is the callback's
+// deactivation hook. GrainId is the affected entity, Err is the callback's
 // error, and Source identifies which kind of callback failed.
 type BackgroundError struct {
-	Identity Identity
-	Err      error
-	Source   ErrorSource
+	GrainId GrainId
+	Err     error
+	Source  ErrorSource
 }
 
 // ErrorSource identifies the kind of callback that produced a BackgroundError.
@@ -182,14 +182,14 @@ type Invoker interface {
 	// the initiating Runtime. A forwarded call may continue on the owning
 	// Runtime after ctx is canceled, and errors returned from that Runtime do
 	// not preserve the original errors.Is or errors.As identity.
-	Invoke(context.Context, Identity, string, any, any) error
+	Invoke(context.Context, GrainId, string, any, any) error
 }
 
 var _ Invoker = (*Runtime)(nil)
 
 type typeRegistration struct {
 	dispatch runtimepkg.Dispatch
-	newProxy func(Invoker, Identity) any
+	newProxy func(Invoker, GrainId) any
 	newCall  func(string) (any, any)
 }
 
@@ -515,22 +515,22 @@ func WithMaxTableLatency(value time.Duration) Option {
 // admission gate with a stable stop error before ownership is decided or a
 // call is forwarded: gor.runtime_closed after Close or Kill, and gor.node_dead
 // once the cluster has declared this node dead.
-func (rt *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
+func (rt *Runtime) Invoke(ctx context.Context, id GrainId, method string, args any, reply any) error {
 	if rt.onCall == nil {
 		return publicError(rt.invoke(ctx, id, method, args, reply))
 	}
 	started := rt.clock.Now()
 	err := publicError(rt.invoke(ctx, id, method, args, reply))
 	rt.onCall(CallObservation{
-		EntityType: id.Type,
-		Method:     method,
-		Duration:   rt.clock.Now().Sub(started),
-		Err:        err,
+		GrainType: id.GrainType,
+		Method:    method,
+		Duration:  rt.clock.Now().Sub(started),
+		Err:       err,
 	})
 	return err
 }
 
-func (rt *Runtime) invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
+func (rt *Runtime) invoke(ctx context.Context, id GrainId, method string, args any, reply any) error {
 	release, err := rt.admit()
 	if err != nil {
 		return err
@@ -540,7 +540,7 @@ func (rt *Runtime) invoke(ctx context.Context, id Identity, method string, args 
 		return rt.invokeLocal(ctx, id, method, args, reply)
 	}
 	view := rt.clusterView.Load()
-	owner, ok := cluster.Owner(*view, store.Identity(id))
+	owner, ok := cluster.Owner(*view, store.GrainId(id))
 	if !ok {
 		return fmt.Errorf("%w: identity currently has no active owner", ErrNoOwner)
 	}
@@ -550,14 +550,14 @@ func (rt *Runtime) invoke(ctx context.Context, id Identity, method string, args 
 	return rt.invokeLocal(ctx, id, method, args, reply)
 }
 
-func (rt *Runtime) invokeLocal(ctx context.Context, id Identity, method string, args any, reply any) error {
+func (rt *Runtime) invokeLocal(ctx context.Context, id GrainId, method string, args any, reply any) error {
 	return rt.engine.Invoke(ctx, id, method, args, reply)
 }
 
 // Owns reports whether this runtime currently owns id. It is an integration
 // seam for scheduling and cluster plumbing; application code should normally
 // invoke a reference or Runtime.Invoke and let routing choose the owner.
-func (rt *Runtime) Owns(id store.Identity) bool {
+func (rt *Runtime) Owns(id store.GrainId) bool {
 	if rt.clusterNode == nil {
 		return true
 	}
@@ -575,7 +575,7 @@ type boundInstance struct {
 // Generated Install code calls it; application code should use the generated
 // installer rather than hand-writing this integration seam. It returns an
 // error when T is already installed in rt.
-func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, any, any) error, newProxy func(Invoker, Identity) T, newCall func(string) (any, any)) error {
+func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, any, any) error, newProxy func(Invoker, GrainId) T, newCall func(string) (any, any)) error {
 	name := TypeName[T]()
 	rt.typesMu.Lock()
 	defer rt.typesMu.Unlock()
@@ -586,7 +586,7 @@ func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, a
 		dispatch: func(ctx context.Context, instance any, method string, args any, reply any) error {
 			return dispatch(ctx, instance.(T), method, args, reply)
 		},
-		newProxy: func(invoker Invoker, id Identity) any {
+		newProxy: func(invoker Invoker, id GrainId) any {
 			return newProxy(invoker, id)
 		},
 		newCall: newCall,
@@ -608,7 +608,7 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 		return fmt.Errorf("%w: %s", ErrTypeNotInstalled, name)
 	}
 	return rt.engine.Register(name, runtimepkg.Registration{
-		Factory: func(ctx context.Context, id runtimepkg.Identity) (any, error) {
+		Factory: func(ctx context.Context, id runtimepkg.GrainId) (any, error) {
 			binder := newBinder(rt, id)
 			entity := factory(binder)
 			if err := binder.load(ctx); err != nil {
@@ -629,7 +629,7 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 			}
 			return err
 		},
-		OnDeactivate: func(ctx context.Context, id runtimepkg.Identity, reason runtimepkg.DeactivationReason, instance any) {
+		OnDeactivate: func(ctx context.Context, id runtimepkg.GrainId, reason runtimepkg.DeactivationReason, instance any) {
 			bound := instance.(boundInstance)
 			deactivatable, ok := bound.entity.(Deactivatable)
 			if !ok {
@@ -638,9 +638,9 @@ func Register[T any](rt *Runtime, factory func(*Binder) T) error {
 			err := deactivatable.OnDeactivate(ctx, reason)
 			if err != nil && rt.onError != nil {
 				rt.onError(BackgroundError{
-					Identity: Identity(id),
-					Err:      err,
-					Source:   Deactivation{Reason: reason},
+					GrainId: GrainId(id),
+					Err:     err,
+					Source:  Deactivation{Reason: reason},
 				})
 			}
 		},
@@ -664,7 +664,7 @@ func Ref[T any](scope Scope, key string) T {
 	if !ok {
 		panic(fmt.Sprintf("%v: %s", ErrTypeNotInstalled, name))
 	}
-	return registration.newProxy(rt, Identity{Type: name, Key: key}).(T)
+	return registration.newProxy(rt, GrainId{GrainType: name, GrainKey: key}).(T)
 }
 
 func (rt *Runtime) typeRegistration(name string) (typeRegistration, bool) {
@@ -938,10 +938,10 @@ func (rt *Runtime) watchCluster() {
 }
 
 func (rt *Runtime) deactivateMovedActivations(view cluster.View) {
-	for _, id := range rt.engine.Identities() {
-		owner, ok := cluster.Owner(view, store.Identity(id))
+	for _, id := range rt.engine.GrainIds() {
+		owner, ok := cluster.Owner(view, store.GrainId(id))
 		if !ok || owner != rt.nodeAddr {
-			rt.engine.Deactivate(runtimepkg.Identity(id))
+			rt.engine.Deactivate(runtimepkg.GrainId(id))
 		}
 	}
 }
@@ -950,23 +950,23 @@ type scheduleInvoker struct {
 	runtime *Runtime
 }
 
-func (i scheduleInvoker) Invoke(ctx context.Context, id store.Identity, method string) error {
-	err := i.runtime.Invoke(ctx, Identity(id), method, nil, nil)
+func (i scheduleInvoker) Invoke(ctx context.Context, id store.GrainId, method string) error {
+	err := i.runtime.Invoke(ctx, GrainId(id), method, nil, nil)
 	// A delivery that failed because the poller's context was canceled is a
 	// clean shutdown, not a callback failure: reporting it would raise a false
 	// alarm on every orderly close. The judge is the poller context, not the
 	// shape of the error.
 	if err != nil && ctx.Err() == nil && i.runtime.onError != nil {
 		i.runtime.onError(BackgroundError{
-			Identity: Identity(id),
-			Err:      err,
-			Source:   ScheduledInvocation{Method: method},
+			GrainId: GrainId(id),
+			Err:     err,
+			Source:  ScheduledInvocation{Method: method},
 		})
 	}
 	return err
 }
 
-func (i scheduleInvoker) Owns(id store.Identity) bool {
+func (i scheduleInvoker) Owns(id store.GrainId) bool {
 	return i.runtime.Owns(id)
 }
 

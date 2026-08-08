@@ -11,19 +11,19 @@ import (
 )
 
 type callRequest struct {
-	Kind     string             `json:"kind"`
-	Type     string             `json:"type"`
-	Key      string             `json:"key"`
-	Method   string             `json:"method"`
-	Args     json.RawMessage    `json:"args"`
-	Occupied []occupiedIdentity `json:"occupied,omitempty"`
+	Kind      string             `json:"kind"`
+	GrainType string             `json:"type"`
+	GrainKey  string             `json:"key"`
+	Method    string             `json:"method"`
+	Args      json.RawMessage    `json:"args"`
+	Occupied  []occupiedIdentity `json:"occupied,omitempty"`
 }
 
 // occupiedIdentity is the wire form of one entity on a forwarded call's
 // occupied chain, shaped like the request's own type/key fields.
 type occupiedIdentity struct {
-	Type string `json:"type"`
-	Key  string `json:"key"`
+	GrainType string `json:"type"`
+	GrainKey  string `json:"key"`
 }
 
 type callResponse struct {
@@ -79,18 +79,18 @@ func errorResponse(err error) ([]byte, error) {
 	return encodeCallResponse(callResponse{Error: errorEnvelopeFor(publicError(err))})
 }
 
-func (rt *Runtime) forward(ctx context.Context, owner string, id Identity, method string, args any, reply any) error {
+func (rt *Runtime) forward(ctx context.Context, owner string, id GrainId, method string, args any, reply any) error {
 	encodedArgs, err := json.Marshal(args)
 	if err != nil {
 		return withCode(ErrRequestEncodeFailed, fmt.Errorf("encode %s arguments: %w", method, err))
 	}
 	payload, err := json.Marshal(callRequest{
-		Kind:     requestKindInvoke,
-		Type:     id.Type,
-		Key:      id.Key,
-		Method:   method,
-		Args:     encodedArgs,
-		Occupied: occupiedToWire(runtimepkg.OccupiedFrom(ctx)),
+		Kind:      requestKindInvoke,
+		GrainType: id.GrainType,
+		GrainKey:  id.GrainKey,
+		Method:    method,
+		Args:      encodedArgs,
+		Occupied:  occupiedToWire(runtimepkg.OccupiedFrom(ctx)),
 	})
 	if err != nil {
 		return withCode(ErrRequestEncodeFailed, fmt.Errorf("encode invocation request: %w", err))
@@ -149,9 +149,9 @@ func (rt *Runtime) handleInvoke(ctx context.Context, request callRequest) ([]byt
 	}
 	defer release()
 
-	registration, ok := rt.typeRegistration(request.Type)
+	registration, ok := rt.typeRegistration(request.GrainType)
 	if !ok {
-		return errorResponse(fmt.Errorf("%w: %s", ErrTypeNotInstalled, request.Type))
+		return errorResponse(fmt.Errorf("%w: %s", ErrTypeNotInstalled, request.GrainType))
 	}
 	args, reply := registration.newCall(request.Method)
 	if args == nil && reply == nil {
@@ -169,7 +169,7 @@ func (rt *Runtime) handleInvoke(ctx context.Context, request callRequest) ([]byt
 	if occupied := occupiedFromWire(request.Occupied); len(occupied) > 0 {
 		ctx = runtimepkg.WithOccupied(ctx, occupied)
 	}
-	invokeErr := publicError(rt.engine.Invoke(ctx, runtimepkg.Identity{Type: request.Type, Key: request.Key}, request.Method, args, reply))
+	invokeErr := publicError(rt.engine.Invoke(ctx, runtimepkg.GrainId{GrainType: request.GrainType, GrainKey: request.GrainKey}, request.Method, args, reply))
 	if invokeErr != nil {
 		// The handler context belongs to the serving runtime, so cancellation
 		// after a stop transition is a runtime outcome rather than caller
@@ -223,24 +223,24 @@ func encodeCallResponse(response callResponse) ([]byte, error) {
 	return encoded, nil
 }
 
-func occupiedToWire(chain []runtimepkg.Identity) []occupiedIdentity {
+func occupiedToWire(chain []runtimepkg.GrainId) []occupiedIdentity {
 	if len(chain) == 0 {
 		return nil
 	}
 	wire := make([]occupiedIdentity, 0, len(chain))
 	for _, id := range chain {
-		wire = append(wire, occupiedIdentity{Type: id.Type, Key: id.Key})
+		wire = append(wire, occupiedIdentity{GrainType: id.GrainType, GrainKey: id.GrainKey})
 	}
 	return wire
 }
 
-func occupiedFromWire(wire []occupiedIdentity) []runtimepkg.Identity {
+func occupiedFromWire(wire []occupiedIdentity) []runtimepkg.GrainId {
 	if len(wire) == 0 {
 		return nil
 	}
-	chain := make([]runtimepkg.Identity, 0, len(wire))
+	chain := make([]runtimepkg.GrainId, 0, len(wire))
 	for _, id := range wire {
-		chain = append(chain, runtimepkg.Identity{Type: id.Type, Key: id.Key})
+		chain = append(chain, runtimepkg.GrainId{GrainType: id.GrainType, GrainKey: id.GrainKey})
 	}
 	return chain
 }

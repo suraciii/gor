@@ -9,7 +9,7 @@ import (
 )
 
 type accountProxy struct {
-	id gor.Identity
+	id gor.GrainId
 	rt gor.Invoker
 }
 
@@ -82,7 +82,7 @@ func newAccountCall(method string) (args any, reply any) {
 	}
 }
 
-func newAccountProxy(rt gor.Invoker, id gor.Identity) domain.Account {
+func newAccountProxy(rt gor.Invoker, id gor.GrainId) domain.Account {
 	return &accountProxy{id: id, rt: rt}
 }
 

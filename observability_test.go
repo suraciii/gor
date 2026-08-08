@@ -88,7 +88,7 @@ func newObservedRuntime(t *testing.T, sourceClock clock.Clock, events chan<- Cal
 		}))
 	}
 	rt := mustNew(t, append(base, options...)...)
-	if err := InstallType[observedAccount](rt, dispatchObservedAccount, func(Invoker, Identity) observedAccount {
+	if err := InstallType[observedAccount](rt, dispatchObservedAccount, func(Invoker, GrainId) observedAccount {
 		return nil
 	}, func(string) (any, any) {
 		return nil, nil
@@ -103,8 +103,8 @@ func newObservedRuntime(t *testing.T, sourceClock clock.Clock, events chan<- Cal
 
 func assertObservation(t *testing.T, got CallObservation, method string, wantErr error) {
 	t.Helper()
-	if got.EntityType != TypeName[observedAccount]() {
-		t.Fatalf("EntityType = %q, want %q", got.EntityType, TypeName[observedAccount]())
+	if got.GrainType != TypeName[observedAccount]() {
+		t.Fatalf("GrainType = %q, want %q", got.GrainType, TypeName[observedAccount]())
 	}
 	if got.Method != method {
 		t.Fatalf("Method = %q, want %q", got.Method, method)
@@ -124,7 +124,7 @@ func TestOnCallReportsSuccessfulInvocationWithInjectedDuration(t *testing.T) {
 		})
 		defer rt.Close()
 
-		if err := rt.Invoke(context.Background(), Identity{Type: TypeName[observedAccount](), Key: "alice"}, "Success", nil, nil); err != nil {
+		if err := rt.Invoke(context.Background(), GrainId{GrainType: TypeName[observedAccount](), GrainKey: "alice"}, "Success", nil, nil); err != nil {
 			t.Fatalf("Invoke error = %v", err)
 		}
 		got := <-events
@@ -144,7 +144,7 @@ func TestOnCallDoesNotReportDeactivation(t *testing.T) {
 			return &observedAccountEntity{deactivated: deactivated}
 		}, WithIdleTimeout(time.Second), WithEvictionInterval(time.Second))
 		defer rt.Close()
-		id := Identity{Type: TypeName[observedAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[observedAccount](), GrainKey: "alice"}
 
 		if err := rt.Invoke(context.Background(), id, "Success", nil, nil); err != nil {
 			t.Fatalf("Invoke error = %v", err)
@@ -182,21 +182,21 @@ func TestOnCallReportsScheduledInvocation(t *testing.T) {
 		)
 		defer rt.Close()
 		installScheduledAccount(t, rt, new(atomic.Int32))
-		id := Identity{Type: TypeName[scheduledAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[scheduledAccount](), GrainKey: "alice"}
 
-		if err := Ref[scheduledAccount](rt, id.Key).Arm(context.Background()); err != nil {
+		if err := Ref[scheduledAccount](rt, id.GrainKey).Arm(context.Background()); err != nil {
 			t.Fatalf("Arm error = %v", err)
 		}
 		arm := <-events
-		if arm.EntityType != id.Type || arm.Method != "Arm" || arm.Err != nil {
-			t.Fatalf("arm observation = %#v, want %s/Arm with nil error", arm, id.Type)
+		if arm.GrainType != id.GrainType || arm.Method != "Arm" || arm.Err != nil {
+			t.Fatalf("arm observation = %#v, want %s/Arm with nil error", arm, id.GrainType)
 		}
 		fakeClock.Advance(12 * time.Second)
 		synctest.Wait()
 
 		got := <-events
-		if got.EntityType != id.Type || got.Method != "Wake" || got.Err != nil {
-			t.Fatalf("scheduled observation = %#v, want %s/Wake with nil error", got, id.Type)
+		if got.GrainType != id.GrainType || got.Method != "Wake" || got.Err != nil {
+			t.Fatalf("scheduled observation = %#v, want %s/Wake with nil error", got, id.GrainType)
 		}
 		select {
 		case duplicate := <-events:
@@ -215,7 +215,7 @@ func TestOnCallReportsMethodError(t *testing.T) {
 		})
 		defer rt.Close()
 
-		err := rt.Invoke(context.Background(), Identity{Type: TypeName[observedAccount](), Key: "alice"}, "Failure", nil, nil)
+		err := rt.Invoke(context.Background(), GrainId{GrainType: TypeName[observedAccount](), GrainKey: "alice"}, "Failure", nil, nil)
 		if !errors.Is(err, methodErr) {
 			t.Fatalf("Invoke error = %v, want %v", err, methodErr)
 		}
@@ -233,7 +233,7 @@ func TestOnCallReportsActivationFailure(t *testing.T) {
 		})
 		defer rt.Close()
 
-		err := rt.Invoke(context.Background(), Identity{Type: TypeName[observedAccount](), Key: "alice"}, "Success", nil, nil)
+		err := rt.Invoke(context.Background(), GrainId{GrainType: TypeName[observedAccount](), GrainKey: "alice"}, "Success", nil, nil)
 		if !errors.Is(err, activationErr) {
 			t.Fatalf("Invoke error = %v, want %v", err, activationErr)
 		}
@@ -251,7 +251,7 @@ func TestOnCallReportsOverload(t *testing.T) {
 			return &observedAccountEntity{started: started, release: release}
 		}, WithMailboxCapacity(1))
 		defer rt.Close()
-		id := Identity{Type: TypeName[observedAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[observedAccount](), GrainKey: "alice"}
 
 		firstDone := make(chan error, 1)
 		go func() { firstDone <- rt.Invoke(context.Background(), id, "Block", nil, nil) }()
@@ -295,7 +295,7 @@ func TestOnCallReportsCancellationOnceAfterMethodFinishes(t *testing.T) {
 			return &observedAccountEntity{started: started, release: release, finished: finished}
 		})
 		defer rt.Close()
-		id := Identity{Type: TypeName[observedAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[observedAccount](), GrainKey: "alice"}
 		ctx, cancel := context.WithCancel(context.Background())
 		callDone := make(chan error, 1)
 		go func() { callDone <- rt.Invoke(ctx, id, "Block", nil, nil) }()
@@ -344,7 +344,7 @@ func TestOnCallDisabledDoesNotReadAnExtraClock(t *testing.T) {
 		})
 		defer rt.Close()
 
-		if err := rt.Invoke(context.Background(), Identity{Type: TypeName[observedAccount](), Key: "alice"}, "Success", nil, nil); err != nil {
+		if err := rt.Invoke(context.Background(), GrainId{GrainType: TypeName[observedAccount](), GrainKey: "alice"}, "Success", nil, nil); err != nil {
 			t.Fatalf("Invoke error = %v", err)
 		}
 		if got := counting.nowCalls.Load(); got != 2 {

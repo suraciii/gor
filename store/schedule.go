@@ -8,11 +8,11 @@ import (
 
 // Schedule describes one persisted invocation deadline.
 //
-// Identity and Name identify the row. DueAt is inclusive when queried by
+// GrainId and Name identify the row. DueAt is inclusive when queried by
 // ListDue. Interval is retained for the scheduler, and ETag is the version
 // used by Claim.
 type Schedule struct {
-	Identity Identity
+	GrainId  GrainId
 	Name     string
 	Method   string
 	DueAt    time.Time
@@ -40,16 +40,16 @@ type ScheduleStore interface {
 	// ETag. The input ETag is ignored.
 	Put(context.Context, Schedule) error
 	// Delete unconditionally removes the named schedule, if it exists.
-	Delete(context.Context, Identity, string) error
+	Delete(context.Context, GrainId, string) error
 }
 
 type scheduleKey struct {
-	identity Identity
+	identity GrainId
 	name     string
 }
 
 func keyForSchedule(schedule Schedule) scheduleKey {
-	return scheduleKey{identity: schedule.Identity, name: schedule.Name}
+	return scheduleKey{identity: schedule.GrainId, name: schedule.Name}
 }
 
 func sortSchedules(schedules []Schedule) {
@@ -57,11 +57,11 @@ func sortSchedules(schedules []Schedule) {
 		if schedules[i].DueAt != schedules[j].DueAt {
 			return schedules[i].DueAt.Before(schedules[j].DueAt)
 		}
-		if schedules[i].Identity.Type != schedules[j].Identity.Type {
-			return schedules[i].Identity.Type < schedules[j].Identity.Type
+		if schedules[i].GrainId.GrainType != schedules[j].GrainId.GrainType {
+			return schedules[i].GrainId.GrainType < schedules[j].GrainId.GrainType
 		}
-		if schedules[i].Identity.Key != schedules[j].Identity.Key {
-			return schedules[i].Identity.Key < schedules[j].Identity.Key
+		if schedules[i].GrainId.GrainKey != schedules[j].GrainId.GrainKey {
+			return schedules[i].GrainId.GrainKey < schedules[j].GrainId.GrainKey
 		}
 		return schedules[i].Name < schedules[j].Name
 	})
@@ -130,7 +130,7 @@ func (m *Memory) Put(ctx context.Context, schedule Schedule) error {
 }
 
 // Delete unconditionally removes the schedule identified by id and name.
-func (m *Memory) Delete(ctx context.Context, id Identity, name string) error {
+func (m *Memory) Delete(ctx context.Context, id GrainId, name string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

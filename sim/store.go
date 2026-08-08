@@ -118,12 +118,12 @@ var (
 )
 
 type scheduleKey struct {
-	identity store.Identity
+	identity store.GrainId
 	name     string
 }
 
 type writeEvent struct {
-	id   store.Identity
+	id   store.GrainId
 	data []byte
 }
 
@@ -139,14 +139,14 @@ type memberWriteEvent struct {
 
 type fakeStore struct {
 	mu                  sync.Mutex
-	records             map[store.Identity]store.Record
-	plans               map[store.Identity]faultPlan
-	readBarriers        map[store.Identity]readBarrier
+	records             map[store.GrainId]store.Record
+	plans               map[store.GrainId]faultPlan
+	readBarriers        map[store.GrainId]readBarrier
 	members             map[fakeMemberKey]store.Member
 	memberFault         memberFaultSpec
 	schedules           map[scheduleKey]store.Schedule
 	scheduleListFault   scheduleFaultSpec
-	scheduleClaimFaults map[store.Identity]scheduleFaultKind
+	scheduleClaimFaults map[store.GrainId]scheduleFaultKind
 	timerTracker        *timerTracker
 	memberClock         clock.Clock
 	stats               scheduleStats
@@ -166,12 +166,12 @@ func newFakeStore(tracker *timerTracker) *fakeStore {
 	idle := make(chan struct{})
 	close(idle)
 	return &fakeStore{
-		records:             make(map[store.Identity]store.Record),
-		plans:               make(map[store.Identity]faultPlan),
-		readBarriers:        make(map[store.Identity]readBarrier),
+		records:             make(map[store.GrainId]store.Record),
+		plans:               make(map[store.GrainId]faultPlan),
+		readBarriers:        make(map[store.GrainId]readBarrier),
 		members:             make(map[fakeMemberKey]store.Member),
 		schedules:           make(map[scheduleKey]store.Schedule),
-		scheduleClaimFaults: make(map[store.Identity]scheduleFaultKind),
+		scheduleClaimFaults: make(map[store.GrainId]scheduleFaultKind),
 		timerTracker:        tracker,
 		memberClock:         clock.Real{},
 		idle:                idle,
@@ -191,10 +191,10 @@ func (s *fakeStore) memberTableNow() time.Time {
 	return memberClock.Now()
 }
 
-func (s *fakeStore) setFaultPlans(plans map[store.Identity]faultPlan) {
+func (s *fakeStore) setFaultPlans(plans map[store.GrainId]faultPlan) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.plans = make(map[store.Identity]faultPlan, len(plans))
+	s.plans = make(map[store.GrainId]faultPlan, len(plans))
 	for id, plan := range plans {
 		s.plans[id] = plan
 	}
@@ -206,7 +206,7 @@ func (s *fakeStore) setMemberFault(fault memberFaultSpec) {
 	s.mu.Unlock()
 }
 
-func (s *fakeStore) setScheduleFault(id store.Identity, fault scheduleFaultSpec) {
+func (s *fakeStore) setScheduleFault(id store.GrainId, fault scheduleFaultSpec) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scheduleListFault = scheduleFaultSpec{}
@@ -229,13 +229,13 @@ func nodeAddress(node int) string {
 	return fmt.Sprintf("node-%d", node)
 }
 
-func (s *fakeStore) faultPlan(id store.Identity) faultPlan {
+func (s *fakeStore) faultPlan(id store.GrainId) faultPlan {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.plans[id]
 }
 
-func (s *fakeStore) setReadBarrier(id store.Identity, barrier readBarrier) {
+func (s *fakeStore) setReadBarrier(id store.GrainId, barrier readBarrier) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if barrier.release == nil {
@@ -245,13 +245,13 @@ func (s *fakeStore) setReadBarrier(id store.Identity, barrier readBarrier) {
 	s.readBarriers[id] = barrier
 }
 
-func (s *fakeStore) readBarrier(id store.Identity) readBarrier {
+func (s *fakeStore) readBarrier(id store.GrainId) readBarrier {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.readBarriers[id]
 }
 
-func (s *fakeStore) Read(_ context.Context, id store.Identity) (store.Record, error) {
+func (s *fakeStore) Read(_ context.Context, id store.GrainId) (store.Record, error) {
 	defer s.endOperation(s.beginOperation())
 	plan := s.faultPlan(id).read
 	if plan.kind == faultDelay {
@@ -277,7 +277,7 @@ func (s *fakeStore) Read(_ context.Context, id store.Identity) (store.Record, er
 	return record, nil
 }
 
-func (s *fakeStore) Write(_ context.Context, id store.Identity, data []byte, expect store.ETag) (store.ETag, error) {
+func (s *fakeStore) Write(_ context.Context, id store.GrainId, data []byte, expect store.ETag) (store.ETag, error) {
 	defer s.endOperation(s.beginOperation())
 	plan := s.faultPlan(id).write
 	if plan.kind == faultDelay {
@@ -422,11 +422,11 @@ func (s *fakeStore) snapshotDue(now time.Time, caller string) ([]store.Schedule,
 		if !result[i].DueAt.Equal(result[j].DueAt) {
 			return result[i].DueAt.Before(result[j].DueAt)
 		}
-		if result[i].Identity.Type != result[j].Identity.Type {
-			return result[i].Identity.Type < result[j].Identity.Type
+		if result[i].GrainId.GrainType != result[j].GrainId.GrainType {
+			return result[i].GrainId.GrainType < result[j].GrainId.GrainType
 		}
-		if result[i].Identity.Key != result[j].Identity.Key {
-			return result[i].Identity.Key < result[j].Identity.Key
+		if result[i].GrainId.GrainKey != result[j].GrainId.GrainKey {
+			return result[i].GrainId.GrainKey < result[j].GrainId.GrainKey
 		}
 		return result[i].Name < result[j].Name
 	})
@@ -467,32 +467,32 @@ func (s *fakeStore) listDueFor(_ context.Context, caller string, now time.Time) 
 func (s *fakeStore) Claim(_ context.Context, schedule store.Schedule, nextDueAt time.Time) (bool, error) {
 	defer s.endOperation(s.beginOperation())
 	s.mu.Lock()
-	current, ok := s.schedules[scheduleKey{identity: schedule.Identity, name: schedule.Name}]
+	current, ok := s.schedules[scheduleKey{identity: schedule.GrainId, name: schedule.Name}]
 	if !ok || current.ETag != schedule.ETag {
 		s.stats.claimLost++
 		s.mu.Unlock()
 		return false, nil
 	}
-	fault := s.scheduleClaimFaults[schedule.Identity]
-	delete(s.scheduleClaimFaults, schedule.Identity)
+	fault := s.scheduleClaimFaults[schedule.GrainId]
+	delete(s.scheduleClaimFaults, schedule.GrainId)
 	if fault == scheduleClaimError {
 		s.stats.claimErrors++
 		s.mu.Unlock()
 		return false, errScheduleClaimFailure
 	}
 	if nextDueAt.IsZero() {
-		delete(s.schedules, scheduleKey{identity: schedule.Identity, name: schedule.Name})
+		delete(s.schedules, scheduleKey{identity: schedule.GrainId, name: schedule.Name})
 	} else {
 		current.DueAt = nextDueAt
 		current.ETag++
-		s.schedules[scheduleKey{identity: schedule.Identity, name: schedule.Name}] = current
+		s.schedules[scheduleKey{identity: schedule.GrainId, name: schedule.Name}] = current
 	}
 	s.stats.claimWon++
 	if fault == scheduleClaimAppliedError {
 		s.stats.claimAppliedErrors++
 	}
 	s.mu.Unlock()
-	s.timerTracker.claim(schedule.Identity, fault != scheduleClaimAppliedError)
+	s.timerTracker.claim(schedule.GrainId, fault != scheduleClaimAppliedError)
 	if fault == scheduleClaimAppliedError {
 		return false, errScheduleClaimAppliedFailure
 	}
@@ -502,7 +502,7 @@ func (s *fakeStore) Claim(_ context.Context, schedule store.Schedule, nextDueAt 
 func (s *fakeStore) Put(_ context.Context, schedule store.Schedule) error {
 	defer s.endOperation(s.beginOperation())
 	s.mu.Lock()
-	key := scheduleKey{identity: schedule.Identity, name: schedule.Name}
+	key := scheduleKey{identity: schedule.GrainId, name: schedule.Name}
 	current, ok := s.schedules[key]
 	schedule.ETag = 1
 	if ok {
@@ -513,7 +513,7 @@ func (s *fakeStore) Put(_ context.Context, schedule store.Schedule) error {
 	return nil
 }
 
-func (s *fakeStore) Delete(_ context.Context, id store.Identity, name string) error {
+func (s *fakeStore) Delete(_ context.Context, id store.GrainId, name string) error {
 	defer s.endOperation(s.beginOperation())
 	s.mu.Lock()
 	delete(s.schedules, scheduleKey{identity: id, name: name})
@@ -565,10 +565,10 @@ func (s *fakeStore) waitForIdle() {
 	<-idle
 }
 
-func (s *fakeStore) snapshot(ids []store.Identity) map[store.Identity]store.Record {
+func (s *fakeStore) snapshot(ids []store.GrainId) map[store.GrainId]store.Record {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result := make(map[store.Identity]store.Record, len(ids))
+	result := make(map[store.GrainId]store.Record, len(ids))
 	for _, id := range ids {
 		record := s.records[id]
 		record.Data = cloneBytes(record.Data)

@@ -107,14 +107,14 @@ func run(ctx context.Context, args []string) (runErr error) {
 }
 
 func waitForDeactivations(ctx context.Context, events <-chan domain.LifecycleEvent, expected int) error {
-	deactivated := make(map[gor.Identity]struct{}, expected)
+	deactivated := make(map[gor.GrainId]struct{}, expected)
 	for len(deactivated) < expected {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("wait for idle eviction: %w", ctx.Err())
 		case event := <-events:
 			if event.Kind == domain.LifecycleDeactivated {
-				deactivated[event.Identity] = struct{}{}
+				deactivated[event.GrainId] = struct{}{}
 			}
 		}
 	}

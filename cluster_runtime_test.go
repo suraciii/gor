@@ -80,16 +80,16 @@ func TestRuntime_ClusterForwardsInvocationToAnotherOwner(t *testing.T) {
 		fakeClock.Advance(time.Second)
 		synctest.Wait()
 
-		var target Identity
+		var target GrainId
 		for index := 0; index < 4096; index++ {
-			candidate := Identity{Type: TypeName[Account](), Key: strconv.Itoa(index)}
-			owner, ok := cluster.Owner(*first.clusterView.Load(), store.Identity(candidate))
+			candidate := GrainId{GrainType: TypeName[Account](), GrainKey: strconv.Itoa(index)}
+			owner, ok := cluster.Owner(*first.clusterView.Load(), store.GrainId(candidate))
 			if ok && owner == "node-b" {
 				target = candidate
 				break
 			}
 		}
-		if target == (Identity{}) {
+		if target == (GrainId{}) {
 			t.Fatal("no identity was routed to the other owner")
 		}
 
@@ -136,17 +136,17 @@ func TestRuntime_ClusterDeactivatesMovedActivation(t *testing.T) {
 				Status:     store.MemberActive,
 			},
 		})
-		var target Identity
+		var target GrainId
 		for index := 0; index < 4096; index++ {
-			candidate := Identity{Type: TypeName[Account](), Key: strconv.Itoa(index)}
-			beforeOwner, beforeOK := cluster.Owner(before, store.Identity(candidate))
-			afterOwner, afterOK := cluster.Owner(after, store.Identity(candidate))
+			candidate := GrainId{GrainType: TypeName[Account](), GrainKey: strconv.Itoa(index)}
+			beforeOwner, beforeOK := cluster.Owner(before, store.GrainId(candidate))
+			afterOwner, afterOK := cluster.Owner(after, store.GrainId(candidate))
 			if beforeOK && afterOK && beforeOwner == "node-a" && afterOwner == "node-b" {
 				target = candidate
 				break
 			}
 		}
-		if target == (Identity{}) {
+		if target == (GrainId{}) {
 			t.Fatal("no identity moved from node-a to node-b")
 		}
 
@@ -240,7 +240,7 @@ func TestRuntime_ClusterDeathStopsAndDeactivates(t *testing.T) {
 		)
 		second := mustNew(t, secondOptions...)
 
-		id := Identity{Type: TypeName[Account](), Key: "self-death"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "self-death"}
 		if err := first.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); err != nil {
 			t.Fatalf("initial invocation error = %v", err)
 		}
@@ -388,7 +388,7 @@ func TestRuntime_ClusterDeathSkipsOnDeactivate(t *testing.T) {
 			entity.deactivateErr = errors.New("deactivate failed")
 		})
 
-		id := Identity{Type: TypeName[lifecycleAccount](), Key: "self-death"}
+		id := GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: "self-death"}
 		if err := first.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial invocation error = %v", err)
 		}
@@ -430,7 +430,7 @@ type sideEffectTouchReply struct{}
 
 type sideEffectEntityProxy struct {
 	invoker Invoker
-	id      Identity
+	id      GrainId
 }
 
 func (p *sideEffectEntityProxy) Touch(ctx context.Context) error {
@@ -462,7 +462,7 @@ func newSideEffectEntityCall(method string) (args any, reply any) {
 
 func installSideEffectEntity(t *testing.T, rt *Runtime, calls *atomic.Int32) {
 	t.Helper()
-	if err := InstallType[sideEffectEntity](rt, dispatchSideEffectEntity, func(invoker Invoker, id Identity) sideEffectEntity {
+	if err := InstallType[sideEffectEntity](rt, dispatchSideEffectEntity, func(invoker Invoker, id GrainId) sideEffectEntity {
 		return &sideEffectEntityProxy{invoker: invoker, id: id}
 	}, newSideEffectEntityCall); err != nil {
 		t.Fatal(err)
@@ -518,15 +518,15 @@ func TestScenario_ClusterDeathStopsNodeAndHandsoff(t *testing.T) {
 		fakeClock.Advance(time.Second)
 		synctest.Wait()
 
-		var id Identity
+		var id GrainId
 		for index := 0; index < 4096; index++ {
-			candidate := Identity{Type: TypeName[sideEffectEntity](), Key: strconv.Itoa(index)}
-			if owner, ok := cluster.Owner(*nodeA.clusterView.Load(), store.Identity(candidate)); ok && owner == "node-a" {
+			candidate := GrainId{GrainType: TypeName[sideEffectEntity](), GrainKey: strconv.Itoa(index)}
+			if owner, ok := cluster.Owner(*nodeA.clusterView.Load(), store.GrainId(candidate)); ok && owner == "node-a" {
 				id = candidate
 				break
 			}
 		}
-		if id == (Identity{}) {
+		if id == (GrainId{}) {
 			t.Fatal("no identity owned by node-a")
 		}
 		if err := nodeA.Invoke(context.Background(), id, "Touch", &sideEffectTouchRequest{}, &sideEffectTouchReply{}); err != nil {

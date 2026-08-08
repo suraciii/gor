@@ -28,7 +28,7 @@ func benchmarkStateWrite(b *testing.B, durability Durability) {
 		}
 	})
 
-	id := Identity{Type: "benchmark", Key: "state"}
+	id := GrainId{GrainType: "benchmark", GrainKey: "state"}
 	data := []byte(`{"value":1}`)
 	if _, err := s.Write(context.Background(), id, data, 0); err != nil {
 		b.Fatal(err)

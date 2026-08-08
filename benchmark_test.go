@@ -27,7 +27,7 @@ type benchmarkEntityImpl struct {
 
 type benchmarkEntityProxy struct {
 	invoker Invoker
-	id      Identity
+	id      GrainId
 }
 
 type benchmarkNoopRequest struct{}
@@ -92,7 +92,7 @@ func newBenchmarkRuntime(b *testing.B, backend store.Store, sourceClock clock.Cl
 
 func installBenchmarkEntity(b *testing.B, rt *Runtime) {
 	b.Helper()
-	if err := InstallType[benchmarkEntity](rt, dispatchBenchmarkEntity, func(invoker Invoker, id Identity) benchmarkEntity {
+	if err := InstallType[benchmarkEntity](rt, dispatchBenchmarkEntity, func(invoker Invoker, id GrainId) benchmarkEntity {
 		return &benchmarkEntityProxy{invoker: invoker, id: id}
 	}, newBenchmarkEntityCall); err != nil {
 		rt.Close()
@@ -139,8 +139,8 @@ func BenchmarkInvocationRoundTripWithOnCall(b *testing.B) {
 
 func BenchmarkForwardingRoundTrip(b *testing.B) {
 	first, _, localID, remoteID := newBenchmarkForwardingRuntimes(b)
-	local := Ref[benchmarkEntity](first, localID.Key)
-	remote := Ref[benchmarkEntity](first, remoteID.Key)
+	local := Ref[benchmarkEntity](first, localID.GrainKey)
+	remote := Ref[benchmarkEntity](first, remoteID.GrainKey)
 	if err := local.Noop(context.Background()); err != nil {
 		b.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func BenchmarkForwardingRoundTrip(b *testing.B) {
 	})
 }
 
-func newBenchmarkForwardingRuntimes(b *testing.B) (*Runtime, *Runtime, Identity, Identity) {
+func newBenchmarkForwardingRuntimes(b *testing.B) (*Runtime, *Runtime, GrainId, GrainId) {
 	b.Helper()
 	backend := store.NewMemory()
 	members := store.NewMemory()
@@ -213,10 +213,10 @@ func newBenchmarkForwardingRuntimes(b *testing.B) (*Runtime, *Runtime, Identity,
 	first.clusterView.Store(&view)
 	second.clusterView.Store(&view)
 
-	var localID, remoteID Identity
+	var localID, remoteID GrainId
 	for index := 0; index < 4096; index++ {
-		id := Identity{Type: TypeName[benchmarkEntity](), Key: fmt.Sprintf("forward-%04d", index)}
-		owner, ok := cluster.Owner(view, store.Identity(id))
+		id := GrainId{GrainType: TypeName[benchmarkEntity](), GrainKey: fmt.Sprintf("forward-%04d", index)}
+		owner, ok := cluster.Owner(view, store.GrainId(id))
 		if !ok {
 			continue
 		}
@@ -226,12 +226,12 @@ func newBenchmarkForwardingRuntimes(b *testing.B) (*Runtime, *Runtime, Identity,
 		case secondTransport.Addr():
 			remoteID = id
 		}
-		if localID != (Identity{}) && remoteID != (Identity{}) {
+		if localID != (GrainId{}) && remoteID != (GrainId{}) {
 			return first, second, localID, remoteID
 		}
 	}
 	b.Fatal("could not find local and forwarded benchmark identities")
-	return nil, nil, Identity{}, Identity{}
+	return nil, nil, GrainId{}, GrainId{}
 }
 
 func BenchmarkStateWrite(b *testing.B) {
@@ -242,7 +242,7 @@ func BenchmarkStateWrite(b *testing.B) {
 	}
 	b.Cleanup(func() { rt.Close() })
 
-	binder := newBinder(rt, Identity{Type: "benchmark", Key: "state"})
+	binder := newBinder(rt, GrainId{GrainType: "benchmark", GrainKey: "state"})
 	state := NewState[uint64](binder, "value")
 	if err := state.Set(context.Background(), 0); err != nil {
 		b.Fatal(err)

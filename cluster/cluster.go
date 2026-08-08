@@ -38,12 +38,12 @@ func NewView(snapshot []store.Member) View {
 	return View{points: buildPoints(members), members: activeMemberIDs(members)}
 }
 
-func Owner(view View, identity store.Identity) (string, bool) {
+func Owner(view View, identity store.GrainId) (string, bool) {
 	if len(view.points) == 0 {
 		return "", false
 	}
 
-	identityHash := hashParts(identity.Type, identity.Key)
+	identityHash := hashParts(identity.GrainType, identity.GrainKey)
 	index := sort.Search(len(view.points), func(i int) bool {
 		return view.points[i].hash >= identityHash
 	})

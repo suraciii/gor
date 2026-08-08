@@ -20,7 +20,7 @@ type failingStore struct {
 	*store.Memory
 }
 
-func (s *failingStore) Write(_ context.Context, _ store.Identity, _ []byte, _ store.ETag) (store.ETag, error) {
+func (s *failingStore) Write(_ context.Context, _ store.GrainId, _ []byte, _ store.ETag) (store.ETag, error) {
 	return 0, errors.New("simulated write failure")
 }
 
@@ -40,7 +40,7 @@ func TestDeactivationReason_Idle(t *testing.T) {
 			entity.deactivateReasons = reasons
 		})
 
-		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial Value: %v", err)
 		}
@@ -75,7 +75,7 @@ func TestDeactivationReason_ContextIsBackground(t *testing.T) {
 			entity.deactivateContexts = contexts
 		})
 
-		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial Value: %v", err)
 		}
@@ -112,7 +112,7 @@ func TestDeactivationReason_RuntimeClosed(t *testing.T) {
 			entity.releaseDeactivate = releaseHook
 		})
 
-		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial Value: %v", err)
 		}
@@ -229,7 +229,7 @@ func TestDeactivationReason_IdleSurvivesClose(t *testing.T) {
 			entity.releaseDeactivate = releaseHook
 		})
 
-		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial Value: %v", err)
 		}
@@ -295,17 +295,17 @@ func TestDeactivationReason_OwnershipLost(t *testing.T) {
 				Status:     store.MemberActive,
 			},
 		})
-		var target Identity
+		var target GrainId
 		for index := 0; index < 4096; index++ {
-			candidate := Identity{Type: TypeName[lifecycleAccount](), Key: strconv.Itoa(index)}
-			beforeOwner, beforeOK := cluster.Owner(before, store.Identity(candidate))
-			afterOwner, afterOK := cluster.Owner(after, store.Identity(candidate))
+			candidate := GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: strconv.Itoa(index)}
+			beforeOwner, beforeOK := cluster.Owner(before, store.GrainId(candidate))
+			afterOwner, afterOK := cluster.Owner(after, store.GrainId(candidate))
 			if beforeOK && afterOK && beforeOwner == "node-a" && afterOwner == "node-b" {
 				target = candidate
 				break
 			}
 		}
-		if target == (Identity{}) {
+		if target == (GrainId{}) {
 			t.Fatal("no identity moved from node-a to node-b")
 		}
 

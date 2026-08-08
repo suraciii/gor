@@ -76,33 +76,33 @@ var counterModel = (&porcupine.NondeterministicModel{
 }).ToModel()
 
 type counterHistory struct {
-	operations map[store.Identity][]porcupine.Operation
+	operations map[store.GrainId][]porcupine.Operation
 }
 
 func newCounterHistory() *counterHistory {
 	return &counterHistory{
-		operations: make(map[store.Identity][]porcupine.Operation),
+		operations: make(map[store.GrainId][]porcupine.Operation),
 	}
 }
 
-func (h *counterHistory) add(id store.Identity, operation porcupine.Operation) {
+func (h *counterHistory) add(id store.GrainId, operation porcupine.Operation) {
 	h.operations[id] = append(h.operations[id], operation)
 }
 
 func (h *counterHistory) check() error {
-	ids := make([]store.Identity, 0, len(h.operations))
+	ids := make([]store.GrainId, 0, len(h.operations))
 	for id := range h.operations {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool {
-		if ids[i].Type != ids[j].Type {
-			return ids[i].Type < ids[j].Type
+		if ids[i].GrainType != ids[j].GrainType {
+			return ids[i].GrainType < ids[j].GrainType
 		}
-		return ids[i].Key < ids[j].Key
+		return ids[i].GrainKey < ids[j].GrainKey
 	})
 	for _, id := range ids {
 		if !porcupine.CheckOperations(counterModel, h.operations[id]) {
-			return fmt.Errorf("counter history is not linearizable for %s/%s", id.Type, id.Key)
+			return fmt.Errorf("counter history is not linearizable for %s/%s", id.GrainType, id.GrainKey)
 		}
 	}
 	return nil

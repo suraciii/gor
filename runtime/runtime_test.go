@@ -32,7 +32,7 @@ func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
 		releaseFactory := make(chan struct{})
 		var factoryCalls atomic.Int32
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) {
+			Factory: func(context.Context, GrainId) (any, error) {
 				factoryCalls.Add(1)
 				close(factoryStarted)
 				<-releaseFactory
@@ -52,7 +52,7 @@ func TestRuntime_ConcurrentFirstCallsDeduplicateActivation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		firstDone := make(chan error, 1)
 		secondDone := make(chan error, 1)
 		firstReply := new(int)
@@ -92,7 +92,7 @@ func TestRuntime_DifferentKeysRunConcurrently(t *testing.T) {
 		entered := make(chan struct{}, 2)
 		release := make(chan struct{})
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Factory: func(context.Context, GrainId) (any, error) { return &testEntity{}, nil },
 			Dispatch: func(_ context.Context, instance any, method string, _ any, _ any) error {
 				if method != "Block" {
 					return errors.New("unknown method")
@@ -109,10 +109,10 @@ func TestRuntime_DifferentKeysRunConcurrently(t *testing.T) {
 		firstDone := make(chan error, 1)
 		secondDone := make(chan error, 1)
 		go func() {
-			firstDone <- rt.Invoke(context.Background(), Identity{Type: "account", Key: "alice"}, "Block", nil, nil)
+			firstDone <- rt.Invoke(context.Background(), GrainId{GrainType: "account", GrainKey: "alice"}, "Block", nil, nil)
 		}()
 		go func() {
-			secondDone <- rt.Invoke(context.Background(), Identity{Type: "account", Key: "bob"}, "Block", nil, nil)
+			secondDone <- rt.Invoke(context.Background(), GrainId{GrainType: "account", GrainKey: "bob"}, "Block", nil, nil)
 		}()
 
 		synctest.Wait()
@@ -151,7 +151,7 @@ func TestRuntime_EvictsIdleActivationAndReactivates(t *testing.T) {
 
 		var factoryCalls atomic.Int32
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) {
+			Factory: func(context.Context, GrainId) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
 			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
@@ -165,7 +165,7 @@ func TestRuntime_EvictsIdleActivationAndReactivates(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); err != nil {
 			t.Fatal(err)
 		}
@@ -194,7 +194,7 @@ func TestRuntime_DeactivateStopsActivationAndReactivates(t *testing.T) {
 
 		var factoryCalls atomic.Int32
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) {
+			Factory: func(context.Context, GrainId) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
 			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
@@ -208,17 +208,17 @@ func TestRuntime_DeactivateStopsActivationAndReactivates(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); err != nil {
 			t.Fatalf("initial Invoke: %v", err)
 		}
-		if identities := rt.Identities(); len(identities) != 1 || identities[0] != id {
-			t.Fatalf("Identities = %#v, want [%#v]", identities, id)
+		if identities := rt.GrainIds(); len(identities) != 1 || identities[0] != id {
+			t.Fatalf("GrainIds = %#v, want [%#v]", identities, id)
 		}
 		rt.Deactivate(id)
 		synctest.Wait()
-		if identities := rt.Identities(); len(identities) != 0 {
-			t.Fatalf("Identities after Deactivate = %#v, want empty", identities)
+		if identities := rt.GrainIds(); len(identities) != 0 {
+			t.Fatalf("GrainIds after Deactivate = %#v, want empty", identities)
 		}
 		if err := rt.Invoke(context.Background(), id, "Value", nil, new(int)); err != nil {
 			t.Fatalf("reactivated Invoke: %v", err)
@@ -236,7 +236,7 @@ func TestRuntime_CloseWaitsForRunningCall(t *testing.T) {
 		started := make(chan struct{})
 		release := make(chan struct{})
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Factory: func(context.Context, GrainId) (any, error) { return &testEntity{}, nil },
 			Dispatch: func(_ context.Context, _ any, _ string, _ any, _ any) error {
 				close(started)
 				<-release
@@ -248,7 +248,7 @@ func TestRuntime_CloseWaitsForRunningCall(t *testing.T) {
 
 		callDone := make(chan error, 1)
 		go func() {
-			callDone <- rt.Invoke(context.Background(), Identity{Type: "account", Key: "alice"}, "Run", nil, nil)
+			callDone <- rt.Invoke(context.Background(), GrainId{GrainType: "account", GrainKey: "alice"}, "Run", nil, nil)
 		}()
 		synctest.Wait()
 		<-started
@@ -284,7 +284,7 @@ func TestRuntime_KillCancelsRunningCallAndRejectsQueuedCalls(t *testing.T) {
 		queuedStarted := make(chan struct{})
 		var calls atomic.Int32
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Factory: func(context.Context, GrainId) (any, error) { return &testEntity{}, nil },
 			Dispatch: func(ctx context.Context, _ any, method string, _ any, _ any) error {
 				if method != "Block" {
 					return errors.New("unknown method")
@@ -304,7 +304,7 @@ func TestRuntime_KillCancelsRunningCallAndRejectsQueuedCalls(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		firstDone := make(chan error, 1)
 		go func() {
 			firstDone <- rt.Invoke(context.Background(), id, "Block", nil, nil)
@@ -372,16 +372,16 @@ func TestRuntime_KillSkipsPendingDeactivationHook(t *testing.T) {
 		defer stopEngine(rt)
 		hookCalled := make(chan struct{}, 1)
 		if err := rt.Register("account", Registration{
-			Factory:  func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Factory:  func(context.Context, GrainId) (any, error) { return &testEntity{}, nil },
 			Dispatch: func(context.Context, any, string, any, any) error { return nil },
-			OnDeactivate: func(context.Context, Identity, DeactivationReason, any) {
+			OnDeactivate: func(context.Context, GrainId, DeactivationReason, any) {
 				hookCalled <- struct{}{}
 			},
 		}); err != nil {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", nil, nil); err != nil {
 			t.Fatalf("initial Invoke: %v", err)
 		}
@@ -430,16 +430,16 @@ func TestRuntime_DeactivationReasonIsNotRewritten(t *testing.T) {
 		defer stopEngine(rt)
 		defer release()
 		if err := rt.Register("account", Registration{
-			Factory:  func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Factory:  func(context.Context, GrainId) (any, error) { return &testEntity{}, nil },
 			Dispatch: func(context.Context, any, string, any, any) error { return nil },
-			OnDeactivate: func(context.Context, Identity, DeactivationReason, any) {
+			OnDeactivate: func(context.Context, GrainId, DeactivationReason, any) {
 				<-releaseHook
 			},
 		}); err != nil {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", nil, nil); err != nil {
 			t.Fatalf("initial Invoke: %v", err)
 		}
@@ -490,7 +490,7 @@ func TestRuntime_KillEscalationSkipsPendingDeactivationHook(t *testing.T) {
 		started := make(chan struct{})
 		release := make(chan struct{})
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Factory: func(context.Context, GrainId) (any, error) { return &testEntity{}, nil },
 			Dispatch: func(ctx context.Context, _ any, method string, _ any, _ any) error {
 				if method != "Block" {
 					return errors.New("unknown method")
@@ -500,14 +500,14 @@ func TestRuntime_KillEscalationSkipsPendingDeactivationHook(t *testing.T) {
 				<-release
 				return nil
 			},
-			OnDeactivate: func(context.Context, Identity, DeactivationReason, any) {
+			OnDeactivate: func(context.Context, GrainId, DeactivationReason, any) {
 				hookCalled <- struct{}{}
 			},
 		}); err != nil {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		blockDone := make(chan error, 1)
 		go func() {
 			blockDone <- rt.Invoke(context.Background(), id, "Block", nil, nil)
@@ -545,7 +545,7 @@ func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 		release := make(chan struct{})
 		var factoryCalls atomic.Int32
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) {
+			Factory: func(context.Context, GrainId) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
 			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
@@ -565,7 +565,7 @@ func TestRuntime_PanicStopsActivationAndQueuedCalls(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		panicDone := make(chan error, 1)
 		queuedDone := make(chan error, 1)
 		go func() { panicDone <- rt.Invoke(context.Background(), id, "Panic", nil, nil) }()
@@ -600,7 +600,7 @@ func TestRuntime_FactoryPanicReleasesActivationWaiters(t *testing.T) {
 		started := make(chan struct{})
 		release := make(chan struct{})
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) {
+			Factory: func(context.Context, GrainId) (any, error) {
 				close(started)
 				<-release
 				panic("factory failure")
@@ -610,7 +610,7 @@ func TestRuntime_FactoryPanicReleasesActivationWaiters(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		creatorDone := make(chan error, 1)
 		waiterDone := make(chan error, 1)
 		go func() {
@@ -639,7 +639,7 @@ func TestRuntime_FactoryErrorIsReturned(t *testing.T) {
 
 		factoryErr := errors.New("factory failed")
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) {
+			Factory: func(context.Context, GrainId) (any, error) {
 				return nil, factoryErr
 			},
 			Dispatch: func(context.Context, any, string, any, any) error { return nil },
@@ -647,7 +647,7 @@ func TestRuntime_FactoryErrorIsReturned(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err := rt.Invoke(context.Background(), Identity{Type: "account", Key: "alice"}, "Value", nil, nil)
+		err := rt.Invoke(context.Background(), GrainId{GrainType: "account", GrainKey: "alice"}, "Value", nil, nil)
 		if !errors.Is(err, factoryErr) {
 			t.Fatalf("factory error = %v, want %v", err, factoryErr)
 		}
@@ -662,7 +662,7 @@ func TestRuntime_DiscardStopsActivationAndReturnsCause(t *testing.T) {
 		var factoryCalls atomic.Int32
 		discardErr := errors.New("discard activation")
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) {
+			Factory: func(context.Context, GrainId) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
 			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
@@ -676,7 +676,7 @@ func TestRuntime_DiscardStopsActivationAndReturnsCause(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Discard", nil, nil); !errors.Is(err, discardErr) {
 			t.Fatalf("discard error = %v, want %v", err, discardErr)
 		}
@@ -698,7 +698,7 @@ func TestRuntime_DiscardWithNilErrorStillStopsActivation(t *testing.T) {
 
 		var factoryCalls atomic.Int32
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) {
+			Factory: func(context.Context, GrainId) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
 			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
@@ -712,7 +712,7 @@ func TestRuntime_DiscardWithNilErrorStillStopsActivation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Discard", nil, nil); err != nil {
 			t.Fatalf("nil discard error = %v, want nil", err)
 		}
@@ -742,7 +742,7 @@ func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
 		release := make(chan struct{})
 		var factoryCalls atomic.Int32
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) {
+			Factory: func(context.Context, GrainId) (any, error) {
 				return int(factoryCalls.Add(1)), nil
 			},
 			Dispatch: func(_ context.Context, instance any, method string, _ any, reply any) error {
@@ -762,7 +762,7 @@ func TestRuntime_ReactivatesCallsArrivingDuringDeactivation(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		oldDone := make(chan error, 1)
 		go func() { oldDone <- rt.Invoke(context.Background(), id, "Block", nil, nil) }()
 		synctest.Wait()
@@ -821,7 +821,7 @@ func TestRuntime_SerializesConcurrentCallsPerKey(t *testing.T) {
 		secondStarted := make(chan struct{})
 		release := make(chan struct{})
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Factory: func(context.Context, GrainId) (any, error) { return &testEntity{}, nil },
 			Dispatch: func(_ context.Context, _ any, method string, _ any, _ any) error {
 				if method != "Block" {
 					return errors.New("unknown method")
@@ -839,7 +839,7 @@ func TestRuntime_SerializesConcurrentCallsPerKey(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		firstDone := make(chan error, 1)
 		secondDone := make(chan error, 1)
 		go func() { firstDone <- rt.Invoke(context.Background(), id, "Block", nil, nil) }()
@@ -873,7 +873,7 @@ func TestRuntime_ActivationsReportsQueuedCallsAndSorts(t *testing.T) {
 		release := make(chan struct{})
 		var blockCalls atomic.Int32
 		registration := Registration{
-			Factory: func(context.Context, Identity) (any, error) { return &testEntity{}, nil },
+			Factory: func(context.Context, GrainId) (any, error) { return &testEntity{}, nil },
 			Dispatch: func(_ context.Context, _ any, method string, _ any, _ any) error {
 				if method == "Block" && blockCalls.Add(1) == 1 {
 					close(started)
@@ -891,16 +891,16 @@ func TestRuntime_ActivationsReportsQueuedCallsAndSorts(t *testing.T) {
 		firstDone := make(chan error, 1)
 		queuedDone := make(chan error, 1)
 		go func() {
-			firstDone <- rt.Invoke(context.Background(), Identity{Type: "account", Key: "zulu"}, "Block", nil, nil)
+			firstDone <- rt.Invoke(context.Background(), GrainId{GrainType: "account", GrainKey: "zulu"}, "Block", nil, nil)
 		}()
 		synctest.Wait()
 		<-started
 		go func() {
-			queuedDone <- rt.Invoke(context.Background(), Identity{Type: "account", Key: "zulu"}, "Block", nil, nil)
+			queuedDone <- rt.Invoke(context.Background(), GrainId{GrainType: "account", GrainKey: "zulu"}, "Block", nil, nil)
 		}()
 		synctest.Wait()
 
-		if got, want := rt.Activations(), []Activation{{Identity: Identity{Type: "account", Key: "zulu"}, Queued: 1}}; !reflect.DeepEqual(got, want) {
+		if got, want := rt.Activations(), []Activation{{GrainId: GrainId{GrainType: "account", GrainKey: "zulu"}, Queued: 1}}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("Activations while call is blocked = %#v, want %#v", got, want)
 		}
 
@@ -913,10 +913,10 @@ func TestRuntime_ActivationsReportsQueuedCallsAndSorts(t *testing.T) {
 			t.Fatalf("queued call error = %v", err)
 		}
 
-		ids := []Identity{
-			{Type: "zeta", Key: "a"},
-			{Type: "alpha", Key: "z"},
-			{Type: "alpha", Key: "a"},
+		ids := []GrainId{
+			{GrainType: "zeta", GrainKey: "a"},
+			{GrainType: "alpha", GrainKey: "z"},
+			{GrainType: "alpha", GrainKey: "a"},
 		}
 		for _, id := range ids {
 			if err := rt.Invoke(context.Background(), id, "Done", nil, nil); err != nil {
@@ -924,10 +924,10 @@ func TestRuntime_ActivationsReportsQueuedCallsAndSorts(t *testing.T) {
 			}
 		}
 		want := []Activation{
-			{Identity: Identity{Type: "account", Key: "zulu"}},
-			{Identity: Identity{Type: "alpha", Key: "a"}},
-			{Identity: Identity{Type: "alpha", Key: "z"}},
-			{Identity: Identity{Type: "zeta", Key: "a"}},
+			{GrainId: GrainId{GrainType: "account", GrainKey: "zulu"}},
+			{GrainId: GrainId{GrainType: "alpha", GrainKey: "a"}},
+			{GrainId: GrainId{GrainType: "alpha", GrainKey: "z"}},
+			{GrainId: GrainId{GrainType: "zeta", GrainKey: "a"}},
 		}
 		if got := rt.Activations(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("Activations = %#v, want %#v", got, want)
@@ -946,7 +946,7 @@ func TestRuntime_ActivationsExcludesNonActiveStates(t *testing.T) {
 		releaseDeactivate := make(chan struct{})
 		var factoryCalls atomic.Int32
 		if err := rt.Register("account", Registration{
-			Factory: func(context.Context, Identity) (any, error) {
+			Factory: func(context.Context, GrainId) (any, error) {
 				if factoryCalls.Add(1) == 1 {
 					close(creating)
 					<-releaseCreate
@@ -954,7 +954,7 @@ func TestRuntime_ActivationsExcludesNonActiveStates(t *testing.T) {
 				return &testEntity{}, nil
 			},
 			Dispatch: func(context.Context, any, string, any, any) error { return nil },
-			OnDeactivate: func(context.Context, Identity, DeactivationReason, any) {
+			OnDeactivate: func(context.Context, GrainId, DeactivationReason, any) {
 				close(deactivating)
 				<-releaseDeactivate
 			},
@@ -962,7 +962,7 @@ func TestRuntime_ActivationsExcludesNonActiveStates(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: "account", Key: "alice"}
+		id := GrainId{GrainType: "account", GrainKey: "alice"}
 		callDone := make(chan error, 1)
 		go func() { callDone <- rt.Invoke(context.Background(), id, "Value", nil, nil) }()
 		synctest.Wait()

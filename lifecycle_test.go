@@ -17,7 +17,7 @@ func TestRootLifecycle_RejectsNewCallsAfterClose(t *testing.T) {
 	registerAccount(t, rt)
 	rt.Close()
 
-	id := Identity{Type: TypeName[Account](), Key: "alice"}
+	id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 	err := rt.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{})
 	if !errors.Is(err, ErrRuntimeClosed) {
 		t.Fatalf("invoke after close = %v, want ErrRuntimeClosed", err)
@@ -50,7 +50,7 @@ func TestRootLifecycle_AdmittedCallFinishesDuringClose(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 		admittedDone := make(chan error, 1)
 		go func() {
 			admittedDone <- rt.Invoke(context.Background(), id, "Block", nil, nil)
@@ -112,7 +112,7 @@ func TestRootLifecycle_QueuedCallRejectedWithoutRunning(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 		blockDone := make(chan error, 1)
 		go func() {
 			blockDone <- rt.Invoke(context.Background(), id, "Block", nil, nil)
@@ -220,7 +220,7 @@ func TestRootLifecycle_AdmitGatesBeforeEngineClose(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
 		registerAccount(t, rt)
-		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 5}, &accountDepositReply{}); err != nil {
 			t.Fatal(err)
 		}
@@ -250,11 +250,11 @@ func TestRootLifecycle_HandleInvokeGatedBeforeEngineClose(t *testing.T) {
 		rt.beginClose()
 
 		payload, err := rt.handleInvoke(context.Background(), callRequest{
-			Kind:   requestKindInvoke,
-			Type:   TypeName[Account](),
-			Key:    "alice",
-			Method: "Balance",
-			Args:   json.RawMessage(`{}`),
+			Kind:      requestKindInvoke,
+			GrainType: TypeName[Account](),
+			GrainKey:  "alice",
+			Method:    "Balance",
+			Args:      json.RawMessage(`{}`),
 		})
 		if err != nil {
 			t.Fatalf("handleInvoke error = %v, want nil", err)
@@ -282,7 +282,7 @@ func TestRootLifecycle_KillAfterStoppedIsIdempotent(t *testing.T) {
 		rt.Close()
 		rt.Kill()
 
-		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Balance", &accountBalanceRequest{}, &accountBalanceReply{}); !errors.Is(err, ErrRuntimeClosed) {
 			t.Fatalf("invoke after close-then-kill = %v, want ErrRuntimeClosed", err)
 		}

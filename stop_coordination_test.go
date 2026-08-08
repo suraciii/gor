@@ -36,7 +36,7 @@ func TestRootLifecycle_KillDuringCloseEscalatesAndCancels(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 		admittedDone := make(chan error, 1)
 		go func() {
 			admittedDone <- rt.Invoke(context.Background(), id, "Block", nil, nil)
@@ -104,7 +104,7 @@ func TestRootLifecycle_KillDoesNotWaitForUserMethod(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 		go func() {
 			_ = rt.Invoke(context.Background(), id, "Block", nil, nil)
 		}()
@@ -158,10 +158,10 @@ func TestScenario_ConcurrentCloseDrainsAllAdmitted(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		ids := []Identity{
-			{Type: TypeName[Account](), Key: "a"},
-			{Type: TypeName[Account](), Key: "b"},
-			{Type: TypeName[Account](), Key: "c"},
+		ids := []GrainId{
+			{GrainType: TypeName[Account](), GrainKey: "a"},
+			{GrainType: TypeName[Account](), GrainKey: "b"},
+			{GrainType: TypeName[Account](), GrainKey: "c"},
 		}
 		admitted := make([]chan error, len(ids))
 		for i := range ids {

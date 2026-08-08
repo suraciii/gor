@@ -15,10 +15,10 @@ import (
 	"github.com/suraciii/gor/clock"
 )
 
-// Identity names one entity record by its registered type and key.
-type Identity struct {
-	Type string
-	Key  string
+// GrainId names one Grain State record by its GrainType and GrainKey.
+type GrainId struct {
+	GrainType string
+	GrainKey  string
 }
 
 // ETag identifies the version of a record, member, or schedule row.
@@ -39,7 +39,7 @@ type Record struct {
 	ETag ETag
 }
 
-// Store persists one entity-state record per Identity.
+// Store persists one entity-state record per GrainId.
 //
 // Implementations must support concurrent calls. Write must atomically compare
 // the current ETag with expect and commit only on an exact match. A missing
@@ -50,9 +50,9 @@ type Record struct {
 // complete.
 type Store interface {
 	// Read returns the record for id, or a zero Record and nil when it is absent.
-	Read(context.Context, Identity) (Record, error)
+	Read(context.Context, GrainId) (Record, error)
 	// Write replaces id's data when its current ETag equals expect.
-	Write(context.Context, Identity, []byte, ETag) (ETag, error)
+	Write(context.Context, GrainId, []byte, ETag) (ETag, error)
 }
 
 func timeValue(value time.Time) int64 {
@@ -67,7 +67,7 @@ func timeFromValue(value int64) time.Time {
 // ScheduleStore.
 type Memory struct {
 	mu          sync.RWMutex
-	records     map[Identity]Record
+	records     map[GrainId]Record
 	schedules   map[scheduleKey]Schedule
 	members     map[memberKey]Member
 	memberClock clock.Clock
@@ -87,7 +87,7 @@ func NewMemory(memberClocks ...clock.Clock) *Memory {
 		memberClock = memberClocks[0]
 	}
 	return &Memory{
-		records:     make(map[Identity]Record),
+		records:     make(map[GrainId]Record),
 		schedules:   make(map[scheduleKey]Schedule),
 		members:     make(map[memberKey]Member),
 		memberClock: memberClock,
@@ -96,7 +96,7 @@ func NewMemory(memberClocks ...clock.Clock) *Memory {
 
 // Read returns a copy of the stored record for id, or a zero Record and nil
 // when id has not been written.
-func (m *Memory) Read(ctx context.Context, id Identity) (Record, error) {
+func (m *Memory) Read(ctx context.Context, id GrainId) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, err
 	}
@@ -114,7 +114,7 @@ func (m *Memory) Read(ctx context.Context, id Identity) (Record, error) {
 // Write atomically replaces id's data when expect matches its current ETag.
 // It returns the incremented ETag, or an error matching ErrConflict when the
 // comparison fails.
-func (m *Memory) Write(ctx context.Context, id Identity, data []byte, expect ETag) (ETag, error) {
+func (m *Memory) Write(ctx context.Context, id GrainId, data []byte, expect ETag) (ETag, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}

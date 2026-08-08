@@ -19,8 +19,8 @@ const (
 )
 
 type LifecycleEvent struct {
-	Identity gor.Identity
-	Kind     string
+	GrainId gor.GrainId
+	Kind    string
 }
 
 type Shadow struct {
@@ -48,7 +48,7 @@ type Workshop interface {
 
 type device struct {
 	binder          *gor.Binder
-	id              gor.Identity
+	id              gor.GrainId
 	shadow          gor.State[Shadow]
 	schedule        gor.Schedule[Device]
 	lifecycleEvents chan<- LifecycleEvent
@@ -90,12 +90,12 @@ func (d *device) Report(ctx context.Context, workshopID string, state string) er
 	}
 
 	if previous.Online && previous.WorkshopID != workshopID {
-		if err := gor.Ref[Workshop](d.binder, previous.WorkshopID).DeviceOffline(ctx, d.id.Key); err != nil {
+		if err := gor.Ref[Workshop](d.binder, previous.WorkshopID).DeviceOffline(ctx, d.id.GrainKey); err != nil {
 			return err
 		}
 	}
 	if !previous.Online || previous.WorkshopID != workshopID {
-		if err := gor.Ref[Workshop](d.binder, workshopID).DeviceOnline(ctx, d.id.Key); err != nil {
+		if err := gor.Ref[Workshop](d.binder, workshopID).DeviceOnline(ctx, d.id.GrainKey); err != nil {
 			return err
 		}
 	}
@@ -113,20 +113,20 @@ func (d *device) Shadow(context.Context) (Shadow, error) {
 }
 
 func (d *device) OnActivate(context.Context) error {
-	log.Printf("%s activated", d.id.Key)
+	log.Printf("%s activated", d.id.GrainKey)
 	d.emitLifecycle(LifecycleActivated)
 	return nil
 }
 
 func (d *device) OnDeactivate(_ context.Context, reason gor.DeactivationReason) error {
-	log.Printf("%s deactivated: %v", d.id.Key, reason)
+	log.Printf("%s deactivated: %v", d.id.GrainKey, reason)
 	d.emitLifecycle(LifecycleDeactivated)
 	return nil
 }
 
 func (d *device) emitLifecycle(kind string) {
 	if d.lifecycleEvents != nil {
-		d.lifecycleEvents <- LifecycleEvent{Identity: d.id, Kind: kind}
+		d.lifecycleEvents <- LifecycleEvent{GrainId: d.id, Kind: kind}
 	}
 }
 
@@ -136,11 +136,11 @@ func (d *device) MarkOffline(ctx context.Context) error {
 	if err := d.shadow.Set(ctx, shadow); err != nil {
 		return err
 	}
-	return gor.Ref[Workshop](d.binder, shadow.WorkshopID).DeviceOffline(ctx, d.id.Key)
+	return gor.Ref[Workshop](d.binder, shadow.WorkshopID).DeviceOffline(ctx, d.id.GrainKey)
 }
 
 type workshop struct {
-	id              gor.Identity
+	id              gor.GrainId
 	online          gor.State[map[string]struct{}]
 	lifecycleEvents chan<- LifecycleEvent
 }
@@ -173,7 +173,7 @@ func (w *workshop) OnDeactivate(_ context.Context, _ gor.DeactivationReason) err
 
 func (w *workshop) emitLifecycle(kind string) {
 	if w.lifecycleEvents != nil {
-		w.lifecycleEvents <- LifecycleEvent{Identity: w.id, Kind: kind}
+		w.lifecycleEvents <- LifecycleEvent{GrainId: w.id, Kind: kind}
 	}
 }
 

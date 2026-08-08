@@ -57,7 +57,7 @@ type misnamedScheduleEntity struct {
 
 type misnamedScheduleProxy struct {
 	invoker Invoker
-	id      Identity
+	id      GrainId
 }
 
 func (e *misnamedScheduleEntity) Arm(ctx context.Context) error {
@@ -100,7 +100,7 @@ func newMisnamedScheduleCall(method string) (any, any) {
 
 func installMisnamedSchedule(t *testing.T, rt *Runtime, wakeErr error) {
 	t.Helper()
-	if err := InstallType[misnamedSchedule](rt, dispatchMisnamedSchedule, func(invoker Invoker, id Identity) misnamedSchedule {
+	if err := InstallType[misnamedSchedule](rt, dispatchMisnamedSchedule, func(invoker Invoker, id GrainId) misnamedSchedule {
 		return &misnamedScheduleProxy{invoker: invoker, id: id}
 	}, newMisnamedScheduleCall); err != nil {
 		t.Fatal(err)
@@ -142,12 +142,12 @@ func TestBackgroundError_ScheduledMethodNamedOnDeactivate(t *testing.T) {
 
 		select {
 		case got := <-errorsSeen:
-			wantID := Identity{Type: TypeName[misnamedSchedule](), Key: "alice"}
+			wantID := GrainId{GrainType: TypeName[misnamedSchedule](), GrainKey: "alice"}
 			source, ok := got.Source.(ScheduledInvocation)
 			if !ok {
 				t.Fatalf("source = %#v, want ScheduledInvocation", got.Source)
 			}
-			if got.Identity != wantID || source.Method != "OnDeactivate" || !errors.Is(got.Err, wakeErr) {
+			if got.GrainId != wantID || source.Method != "OnDeactivate" || !errors.Is(got.Err, wakeErr) {
 				t.Fatalf("event = %#v, want identity %v, ScheduledInvocation{Method: OnDeactivate}, error %v", got, wantID, wakeErr)
 			}
 			if _, isDeactivation := got.Source.(Deactivation); isDeactivation {
@@ -219,7 +219,7 @@ func TestBackgroundError_DeactivationCarriesStopReason(t *testing.T) {
 			entity.deactivateErr = deactivateErr
 		})
 
-		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial Value: %v", err)
 		}
@@ -231,7 +231,7 @@ func TestBackgroundError_DeactivationCarriesStopReason(t *testing.T) {
 			if !ok {
 				t.Fatalf("source = %#v, want Deactivation", got.Source)
 			}
-			if got.Identity != id || source.Reason != RuntimeClosed || !errors.Is(got.Err, deactivateErr) {
+			if got.GrainId != id || source.Reason != RuntimeClosed || !errors.Is(got.Err, deactivateErr) {
 				t.Fatalf("event = %#v, want identity %v, Deactivation{Reason: RuntimeClosed}, error %v", got, id, deactivateErr)
 			}
 		default:
@@ -329,7 +329,7 @@ func TestBackgroundError_CanceledDeliveryNotReported(t *testing.T) {
 		if err := Ref[scheduledAccount](rt, "alice").Arm(context.Background()); err != nil {
 			t.Fatalf("Arm: %v", err)
 		}
-		id := Identity{Type: TypeName[lifecycleAccount](), Key: "bob"}
+		id := GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: "bob"}
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial Value: %v", err)
 		}
@@ -349,7 +349,7 @@ func TestBackgroundError_CanceledDeliveryNotReported(t *testing.T) {
 		select {
 		case got := <-errorsSeen:
 			source, ok := got.Source.(Deactivation)
-			if !ok || got.Identity != id || source.Reason != RuntimeClosed || !errors.Is(got.Err, deactivateErr) {
+			if !ok || got.GrainId != id || source.Reason != RuntimeClosed || !errors.Is(got.Err, deactivateErr) {
 				t.Fatalf("event = %#v, want identity %v, Deactivation{Reason: RuntimeClosed}, error %v", got, id, deactivateErr)
 			}
 		default:

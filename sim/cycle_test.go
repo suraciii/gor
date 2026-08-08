@@ -39,7 +39,7 @@ func (e *cycleCallerEntity) Chain(ctx context.Context, ring []string) error {
 
 type cycleCallerProxy struct {
 	invoker gor.Invoker
-	id      gor.Identity
+	id      gor.GrainId
 }
 
 func (p *cycleCallerProxy) Chain(ctx context.Context, ring []string) error {
@@ -65,7 +65,7 @@ func newCycleCallerCall(method string) (args any, reply any) {
 }
 
 func installCycleCaller(rt *gor.Runtime) error {
-	if err := gor.InstallType[cycleCaller](rt, dispatchCycleCaller, func(invoker gor.Invoker, id gor.Identity) cycleCaller {
+	if err := gor.InstallType[cycleCaller](rt, dispatchCycleCaller, func(invoker gor.Invoker, id gor.GrainId) cycleCaller {
 		return &cycleCallerProxy{invoker: invoker, id: id}
 	}, newCycleCallerCall); err != nil {
 		return err
@@ -92,14 +92,14 @@ func TestSim_CallCycleAcrossNodesNamesTheCycle(t *testing.T) {
 
 		cycleType := gor.TypeName[cycleCaller]()
 		local, remote := findPartitionIdentities(t, cluster, cycleType)
-		first := gor.Identity(local)
-		second := gor.Identity(remote)
+		first := gor.GrainId(local)
+		second := gor.GrainId(remote)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 20*simulationStepDuration)
 		defer cancel()
 		done := make(chan error, 1)
 		go func() {
-			done <- cluster.nodes[0].rt.Invoke(ctx, first, "Chain", &cycleCallerRequest{A0: []string{second.Key, first.Key}}, &cycleCallerReply{})
+			done <- cluster.nodes[0].rt.Invoke(ctx, first, "Chain", &cycleCallerRequest{A0: []string{second.GrainKey, first.GrainKey}}, &cycleCallerReply{})
 		}()
 		synctest.Wait()
 		err = <-done
@@ -108,8 +108,8 @@ func TestSim_CallCycleAcrossNodesNamesTheCycle(t *testing.T) {
 		}
 		message := err.Error()
 		if !strings.Contains(message, "call cycle detected") ||
-			!strings.Contains(message, local.Key) || !strings.Contains(message, remote.Key) {
-			t.Fatalf("cycle error message = %q, want it to name %q and %q", message, local.Key, remote.Key)
+			!strings.Contains(message, local.GrainKey) || !strings.Contains(message, remote.GrainKey) {
+			t.Fatalf("cycle error message = %q, want it to name %q and %q", message, local.GrainKey, remote.GrainKey)
 		}
 	})
 }

@@ -9,7 +9,7 @@ import (
 
 func TestMemoryStore_WriteWithMatchingETagReturnsNewETag(t *testing.T) {
 	memory := NewMemory()
-	id := Identity{Type: "account", Key: "alice"}
+	id := GrainId{GrainType: "account", GrainKey: "alice"}
 
 	etag, err := memory.Write(context.Background(), id, []byte("first"), 0)
 	if err != nil {
@@ -38,7 +38,7 @@ func TestMemoryStore_WriteWithMatchingETagReturnsNewETag(t *testing.T) {
 
 func TestMemoryStore_ConflictLeavesRecordUnchanged(t *testing.T) {
 	memory := NewMemory()
-	id := Identity{Type: "account", Key: "alice"}
+	id := GrainId{GrainType: "account", GrainKey: "alice"}
 
 	etag, err := memory.Write(context.Background(), id, []byte("original"), 0)
 	if err != nil {
@@ -64,7 +64,7 @@ func TestMemoryStore_ConflictLeavesRecordUnchanged(t *testing.T) {
 
 func TestMemoryStore_ZeroETagConflictsWithExistingRecord(t *testing.T) {
 	memory := NewMemory()
-	id := Identity{Type: "account", Key: "alice"}
+	id := GrainId{GrainType: "account", GrainKey: "alice"}
 
 	if _, err := memory.Write(context.Background(), id, []byte("existing"), 0); err != nil {
 		t.Fatalf("seed Write: %v", err)
@@ -77,7 +77,7 @@ func TestMemoryStore_ZeroETagConflictsWithExistingRecord(t *testing.T) {
 
 func TestMemoryStore_NonzeroETagConflictsWithMissingRecord(t *testing.T) {
 	memory := NewMemory()
-	id := Identity{Type: "account", Key: "missing"}
+	id := GrainId{GrainType: "account", GrainKey: "missing"}
 
 	if _, err := memory.Write(context.Background(), id, []byte("unexpected"), 5); !errors.Is(err, ErrConflict) {
 		t.Fatalf("Write error = %v, want ErrConflict", err)
@@ -87,7 +87,7 @@ func TestMemoryStore_NonzeroETagConflictsWithMissingRecord(t *testing.T) {
 func TestMemoryStore_ReadMissingReturnsZeroRecord(t *testing.T) {
 	memory := NewMemory()
 
-	record, err := memory.Read(context.Background(), Identity{Type: "account", Key: "missing"})
+	record, err := memory.Read(context.Background(), GrainId{GrainType: "account", GrainKey: "missing"})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -98,8 +98,8 @@ func TestMemoryStore_ReadMissingReturnsZeroRecord(t *testing.T) {
 
 func TestMemoryStore_DifferentIdentitiesAreIndependent(t *testing.T) {
 	memory := NewMemory()
-	alice := Identity{Type: "account", Key: "alice"}
-	bob := Identity{Type: "account", Key: "bob"}
+	alice := GrainId{GrainType: "account", GrainKey: "alice"}
+	bob := GrainId{GrainType: "account", GrainKey: "bob"}
 
 	if _, err := memory.Write(context.Background(), alice, []byte("alice"), 0); err != nil {
 		t.Fatalf("alice Write: %v", err)
@@ -126,7 +126,7 @@ func TestMemoryStore_DifferentIdentitiesAreIndependent(t *testing.T) {
 
 func TestMemoryStore_ReadAndWriteCopyData(t *testing.T) {
 	memory := NewMemory()
-	id := Identity{Type: "account", Key: "alice"}
+	id := GrainId{GrainType: "account", GrainKey: "alice"}
 	data := []byte("original")
 
 	if _, err := memory.Write(context.Background(), id, data, 0); err != nil {
@@ -160,9 +160,9 @@ func TestMemoryStore_MethodsHonorCanceledContext(t *testing.T) {
 		}
 	}
 
-	_, err := memory.Read(ctx, Identity{Type: "account", Key: "alice"})
+	_, err := memory.Read(ctx, GrainId{GrainType: "account", GrainKey: "alice"})
 	wantCanceled(err)
-	_, err = memory.Write(ctx, Identity{Type: "account", Key: "alice"}, nil, 0)
+	_, err = memory.Write(ctx, GrainId{GrainType: "account", GrainKey: "alice"}, nil, 0)
 	wantCanceled(err)
 	_, err = memory.ListDue(ctx, time.Time{})
 	wantCanceled(err)
@@ -170,7 +170,7 @@ func TestMemoryStore_MethodsHonorCanceledContext(t *testing.T) {
 	wantCanceled(err)
 	err = memory.Put(ctx, Schedule{})
 	wantCanceled(err)
-	err = memory.Delete(ctx, Identity{Type: "account", Key: "alice"}, "daily")
+	err = memory.Delete(ctx, GrainId{GrainType: "account", GrainKey: "alice"}, "daily")
 	wantCanceled(err)
 	_, err = memory.WriteMember(ctx, Member{NodeAddr: "node-a", Generation: "generation-a"})
 	wantCanceled(err)

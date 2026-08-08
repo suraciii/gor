@@ -132,7 +132,7 @@ func mustClusterRuntime(t *testing.T, shared *store.Memory, tr *transport.TCP, g
 func findKey(view cluster.View, entityType, owner string) (string, bool) {
 	for i := 1; i <= 100000; i++ {
 		key := fmt.Sprintf("probe-%06d", i)
-		got, ok := cluster.Owner(view, store.Identity{Type: entityType, Key: key})
+		got, ok := cluster.Owner(view, store.GrainId{GrainType: entityType, GrainKey: key})
 		if ok && got == owner {
 			return key, true
 		}
@@ -142,7 +142,7 @@ func findKey(view cluster.View, entityType, owner string) (string, bool) {
 
 func hasActivation(rt *gor.Runtime, entityType, key string) bool {
 	for _, activation := range rt.Activations() {
-		if activation.Identity.Type == entityType && activation.Identity.Key == key {
+		if activation.GrainId.GrainType == entityType && activation.GrainId.GrainKey == key {
 			return true
 		}
 	}

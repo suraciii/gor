@@ -137,11 +137,11 @@ func TestDeviceIdleEvictionRunsLifecycleAndReloadsState(t *testing.T) {
 		if err := device.Configure(context.Background(), "sample-rate=10s"); err != nil {
 			t.Fatal(err)
 		}
-		expectLifecycleEvent(t, events, gor.Identity{Type: gor.TypeName[domain.Device](), Key: "device-1"}, domain.LifecycleActivated)
+		expectLifecycleEvent(t, events, gor.GrainId{GrainType: gor.TypeName[domain.Device](), GrainKey: "device-1"}, domain.LifecycleActivated)
 
 		sourceClock.Advance(3 * time.Second)
 		synctest.Wait()
-		expectLifecycleEvent(t, events, gor.Identity{Type: gor.TypeName[domain.Device](), Key: "device-1"}, domain.LifecycleDeactivated)
+		expectLifecycleEvent(t, events, gor.GrainId{GrainType: gor.TypeName[domain.Device](), GrainKey: "device-1"}, domain.LifecycleDeactivated)
 
 		value, err := device.Shadow(context.Background())
 		if err != nil {
@@ -150,17 +150,17 @@ func TestDeviceIdleEvictionRunsLifecycleAndReloadsState(t *testing.T) {
 		if value.Configuration != "sample-rate=10s" {
 			t.Fatalf("shadow after reactivation = %#v, want configuration restored from store", value)
 		}
-		expectLifecycleEvent(t, events, gor.Identity{Type: gor.TypeName[domain.Device](), Key: "device-1"}, domain.LifecycleActivated)
+		expectLifecycleEvent(t, events, gor.GrainId{GrainType: gor.TypeName[domain.Device](), GrainKey: "device-1"}, domain.LifecycleActivated)
 	})
 }
 
-func expectLifecycleEvent(t *testing.T, events <-chan domain.LifecycleEvent, id gor.Identity, kind string) {
+func expectLifecycleEvent(t *testing.T, events <-chan domain.LifecycleEvent, id gor.GrainId, kind string) {
 	t.Helper()
 	pending := make([]domain.LifecycleEvent, 0)
 	for {
 		select {
 		case event := <-events:
-			if event.Identity == id && event.Kind == kind {
+			if event.GrainId == id && event.Kind == kind {
 				return
 			}
 			pending = append(pending, event)
@@ -204,9 +204,9 @@ func TestScheduledFailureReachesOnError(t *testing.T) {
 
 		select {
 		case got := <-errorsSeen:
-			wantID := gor.Identity{Type: gor.TypeName[domain.Device](), Key: "device-1"}
+			wantID := gor.GrainId{GrainType: gor.TypeName[domain.Device](), GrainKey: "device-1"}
 			source, ok := got.Source.(gor.ScheduledInvocation)
-			if !ok || got.Identity != wantID || source.Method != "MarkOffline" || !errors.Is(got.Err, errWorkshopWrite) {
+			if !ok || got.GrainId != wantID || source.Method != "MarkOffline" || !errors.Is(got.Err, errWorkshopWrite) {
 				t.Fatalf("OnError event = %#v, want %v.MarkOffline with %v", got, wantID, errWorkshopWrite)
 			}
 		default:
@@ -222,8 +222,8 @@ type failingWorkshopStore struct {
 	failWorkshopWrites atomic.Bool
 }
 
-func (s *failingWorkshopStore) Write(ctx context.Context, id store.Identity, data []byte, expect store.ETag) (store.ETag, error) {
-	if s.failWorkshopWrites.Load() && id.Type == gor.TypeName[domain.Workshop]() {
+func (s *failingWorkshopStore) Write(ctx context.Context, id store.GrainId, data []byte, expect store.ETag) (store.ETag, error) {
+	if s.failWorkshopWrites.Load() && id.GrainType == gor.TypeName[domain.Workshop]() {
 		return 0, errWorkshopWrite
 	}
 	return s.Memory.Write(ctx, id, data, expect)

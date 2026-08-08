@@ -15,7 +15,7 @@ func TestNewViewIncludesOnlyActiveMembers(t *testing.T) {
 	})
 
 	for i := 0; i < 1024; i++ {
-		owner, ok := Owner(view, store.Identity{Type: "account", Key: fmt.Sprintf("key-%d", i)})
+		owner, ok := Owner(view, store.GrainId{GrainType: "account", GrainKey: fmt.Sprintf("key-%d", i)})
 		if !ok || owner != "active" {
 			t.Fatalf("Owner(key-%d) = (%q, %t), want (active, true)", i, owner, ok)
 		}
@@ -23,7 +23,7 @@ func TestNewViewIncludesOnlyActiveMembers(t *testing.T) {
 }
 
 func TestOwnerEmptyView(t *testing.T) {
-	if owner, ok := Owner(NewView(nil), store.Identity{Type: "account", Key: "alice"}); ok || owner != "" {
+	if owner, ok := Owner(NewView(nil), store.GrainId{GrainType: "account", GrainKey: "alice"}); ok || owner != "" {
 		t.Fatalf("Owner(empty) = (%q, %t), want (empty, false)", owner, ok)
 	}
 }
@@ -36,7 +36,7 @@ func TestOwnerSingleMember(t *testing.T) {
 	}})
 
 	for i := 0; i < 128; i++ {
-		owner, ok := Owner(view, store.Identity{Type: "account", Key: fmt.Sprintf("key-%d", i)})
+		owner, ok := Owner(view, store.GrainId{GrainType: "account", GrainKey: fmt.Sprintf("key-%d", i)})
 		if !ok || owner != "node-a" {
 			t.Fatalf("Owner(key-%d) = (%q, %t), want (node-a, true)", i, owner, ok)
 		}
@@ -67,7 +67,7 @@ func TestOwnerMemberJoinMovesKeys(t *testing.T) {
 
 	moved := 0
 	for i := 0; i < keyCount; i++ {
-		identity := store.Identity{Type: "account", Key: fmt.Sprintf("key-%d", i)}
+		identity := store.GrainId{GrainType: "account", GrainKey: fmt.Sprintf("key-%d", i)}
 		beforeOwner, beforeOK := Owner(before, identity)
 		afterOwner, afterOK := Owner(after, identity)
 		if !beforeOK || !afterOK {
@@ -96,7 +96,7 @@ func TestOwnerIsDeterministicForEquivalentViews(t *testing.T) {
 	second := NewView([]store.Member{snapshot[1], snapshot[2], snapshot[0]})
 
 	for i := 0; i < 4096; i++ {
-		identity := store.Identity{Type: "account", Key: fmt.Sprintf("key-%d", i)}
+		identity := store.GrainId{GrainType: "account", GrainKey: fmt.Sprintf("key-%d", i)}
 		firstOwner, firstOK := Owner(first, identity)
 		secondOwner, secondOK := Owner(second, identity)
 		if firstOwner != secondOwner || firstOK != secondOK {
@@ -121,7 +121,7 @@ func TestOwnerDistributionWithVirtualPoints(t *testing.T) {
 	view := NewView(viewMembers)
 	counts := make(map[string]int, nodeCount)
 	for i := 0; i < keyCount; i++ {
-		owner, ok := Owner(view, store.Identity{Type: "account", Key: fmt.Sprintf("key-%d", i)})
+		owner, ok := Owner(view, store.GrainId{GrainType: "account", GrainKey: fmt.Sprintf("key-%d", i)})
 		if !ok {
 			t.Fatalf("Owner(key-%d) returned no owner", i)
 		}

@@ -79,7 +79,7 @@ func newChainCall(method string) (args any, reply any) {
 
 type chainEntityProxy struct {
 	invoker Invoker
-	id      Identity
+	id      GrainId
 }
 
 func (p *chainEntityProxy) Chain(ctx context.Context, ring []string) error {
@@ -94,7 +94,7 @@ func (p *chainEntityProxy) Block(ctx context.Context) error {
 
 func installChainWithFactory(t *testing.T, rt *Runtime, factory func(*Binder) chainEntity) {
 	t.Helper()
-	if err := InstallType[chainEntity](rt, dispatchChain, func(invoker Invoker, id Identity) chainEntity {
+	if err := InstallType[chainEntity](rt, dispatchChain, func(invoker Invoker, id GrainId) chainEntity {
 		return &chainEntityProxy{invoker: invoker, id: id}
 	}, newChainCall); err != nil {
 		t.Fatal(err)
@@ -118,8 +118,8 @@ func installBlockingChain(t *testing.T, rt *Runtime, started, release chan struc
 	})
 }
 
-func chainID(key string) Identity {
-	return Identity{Type: TypeName[chainEntity](), Key: key}
+func chainID(key string) GrainId {
+	return GrainId{GrainType: TypeName[chainEntity](), GrainKey: key}
 }
 
 func assertCallCycle(t *testing.T, err error, keys ...string) {
@@ -211,7 +211,7 @@ func (*selfCallingEntity) Block(context.Context) error {
 }
 
 func (e *selfCallingEntity) OnActivate(ctx context.Context) error {
-	return Ref[chainEntity](e.b, Self(e.b).Key).Chain(ctx, []string{Self(e.b).Key})
+	return Ref[chainEntity](e.b, Self(e.b).GrainKey).Chain(ctx, []string{Self(e.b).GrainKey})
 }
 
 func TestCallCycle_SlowCallWithoutCycleTimesOutPlainly(t *testing.T) {
@@ -275,20 +275,20 @@ func TestCallCycle_ForwardedCycleNamesBothEntities(t *testing.T) {
 		b := findChainOwner(t, first, "node-b")
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		err := first.Invoke(ctx, a, "Chain", &chainRequest{A0: []string{b.Key, a.Key}}, &chainReply{})
-		assertCallCycle(t, err, a.Key, b.Key)
+		err := first.Invoke(ctx, a, "Chain", &chainRequest{A0: []string{b.GrainKey, a.GrainKey}}, &chainReply{})
+		assertCallCycle(t, err, a.GrainKey, b.GrainKey)
 	})
 }
 
-func findChainOwner(t *testing.T, rt *Runtime, owner string) Identity {
+func findChainOwner(t *testing.T, rt *Runtime, owner string) GrainId {
 	t.Helper()
 	view := rt.clusterView.Load()
 	for index := 0; index < 4096; index++ {
 		candidate := chainID(fmt.Sprintf("chain-%d", index))
-		if candidateOwner, ok := cluster.Owner(*view, store.Identity(candidate)); ok && candidateOwner == owner {
+		if candidateOwner, ok := cluster.Owner(*view, store.GrainId(candidate)); ok && candidateOwner == owner {
 			return candidate
 		}
 	}
 	t.Fatalf("no identity owned by %q", owner)
-	return Identity{}
+	return GrainId{}
 }

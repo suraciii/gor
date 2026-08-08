@@ -208,7 +208,7 @@ func TestRuntime_HandleRejectsWhileClosing(t *testing.T) {
 
 		callDone := make(chan error, 1)
 		go func() {
-			callDone <- rt.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Block", nil, nil)
+			callDone <- rt.Invoke(context.Background(), GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}, "Block", nil, nil)
 		}()
 		synctest.Wait()
 		<-started
@@ -584,7 +584,7 @@ func TestRuntime_InvokeDoesNotSendWithoutOwner(t *testing.T) {
 		synctest.Wait()
 
 		var reply routedAccountWhoReply
-		err := rt.Invoke(context.Background(), Identity{Type: TypeName[routedAccount](), Key: "alice"}, "Who", &routedAccountWhoRequest{}, &reply)
+		err := rt.Invoke(context.Background(), GrainId{GrainType: TypeName[routedAccount](), GrainKey: "alice"}, "Who", &routedAccountWhoRequest{}, &reply)
 		if !errors.Is(err, ErrNodeDead) {
 			t.Fatalf("invocation on a dead node error = %v, want ErrNodeDead", err)
 		}
@@ -700,7 +700,7 @@ func newEnvelopeAccountCall(method string) (args any, reply any) {
 
 func installEnvelopeAccount(t *testing.T, rt *Runtime) {
 	t.Helper()
-	if err := InstallType[envelopeAccount](rt, dispatchEnvelopeAccount, func(invoker Invoker, id Identity) envelopeAccount {
+	if err := InstallType[envelopeAccount](rt, dispatchEnvelopeAccount, func(invoker Invoker, id GrainId) envelopeAccount {
 		return &envelopeAccountProxy{invoker: invoker, id: id}
 	}, newEnvelopeAccountCall); err != nil {
 		t.Fatal(err)
@@ -714,7 +714,7 @@ func installEnvelopeAccount(t *testing.T, rt *Runtime) {
 
 type envelopeAccountProxy struct {
 	invoker Invoker
-	id      Identity
+	id      GrainId
 }
 
 func (p *envelopeAccountProxy) Fail(ctx context.Context) error {
@@ -858,7 +858,7 @@ func installRoutedAccount(t *testing.T, rt *Runtime, label string) {
 
 func installRoutedAccountWithFactory(t *testing.T, rt *Runtime, factory func(*Binder) routedAccount) {
 	t.Helper()
-	if err := InstallType[routedAccount](rt, dispatchRoutedAccount, func(invoker Invoker, id Identity) routedAccount {
+	if err := InstallType[routedAccount](rt, dispatchRoutedAccount, func(invoker Invoker, id GrainId) routedAccount {
 		return &routedAccountProxy{invoker: invoker, id: id}
 	}, newRoutedAccountCall); err != nil {
 		t.Fatal(err)
@@ -870,7 +870,7 @@ func installRoutedAccountWithFactory(t *testing.T, rt *Runtime, factory func(*Bi
 
 type routedAccountProxy struct {
 	invoker Invoker
-	id      Identity
+	id      GrainId
 }
 
 func (p *routedAccountProxy) Echo(ctx context.Context, value string) (string, error) {
@@ -900,18 +900,18 @@ func (p *routedAccountProxy) Opaque(ctx context.Context) error {
 	return p.invoker.Invoke(ctx, p.id, "Opaque", &routedAccountOpaqueRequest{}, &reply)
 }
 
-func findForwardTarget(t *testing.T, rt *Runtime, owner string) Identity {
+func findForwardTarget(t *testing.T, rt *Runtime, owner string) GrainId {
 	t.Helper()
 	view := rt.clusterView.Load()
 	for index := 0; index < 4096; index++ {
-		candidate := Identity{Type: TypeName[routedAccount](), Key: fmt.Sprintf("forward-%d", index)}
-		candidateOwner, ok := cluster.Owner(*view, store.Identity(candidate))
+		candidate := GrainId{GrainType: TypeName[routedAccount](), GrainKey: fmt.Sprintf("forward-%d", index)}
+		candidateOwner, ok := cluster.Owner(*view, store.GrainId(candidate))
 		if ok && candidateOwner == owner {
 			return candidate
 		}
 	}
 	t.Fatalf("no identity owned by %q", owner)
-	return Identity{}
+	return GrainId{}
 }
 
 type testTransportNetwork struct {

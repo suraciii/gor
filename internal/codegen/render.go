@@ -207,7 +207,7 @@ import (
 
 {{range .Interfaces}}{{ $entity := . }}
 type {{.ProxyName}} struct {
-	id gor.Identity
+	id gor.GrainId
 	rt gor.Invoker
 }
 
@@ -248,7 +248,7 @@ func new{{ $entity.Name }}Call(method string) (args any, reply any) {
 	}
 }
 
-func {{$entity.ConstructorName}}(rt gor.Invoker, id gor.Identity) {{$.SourcePackage}}.{{$entity.Name}} {
+func {{$entity.ConstructorName}}(rt gor.Invoker, id gor.GrainId) {{$.SourcePackage}}.{{$entity.Name}} {
 	return &{{.ProxyName}}{id: id, rt: rt}
 }
 

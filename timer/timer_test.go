@@ -36,10 +36,10 @@ func (t *fakeTable) Claim(_ context.Context, schedule store.Schedule, nextDueAt 
 
 type recordingInvoker struct {
 	recorder *stepRecorder
-	calls    []store.Identity
+	calls    []store.GrainId
 }
 
-func (i *recordingInvoker) Invoke(_ context.Context, id store.Identity, method string) error {
+func (i *recordingInvoker) Invoke(_ context.Context, id store.GrainId, method string) error {
 	i.recorder.mu.Lock()
 	i.recorder.steps = append(i.recorder.steps, "invoke")
 	i.calls = append(i.calls, id)
@@ -47,7 +47,7 @@ func (i *recordingInvoker) Invoke(_ context.Context, id store.Identity, method s
 	return nil
 }
 
-func (i *recordingInvoker) Owns(store.Identity) bool {
+func (i *recordingInvoker) Owns(store.GrainId) bool {
 	return true
 }
 
@@ -67,14 +67,14 @@ func (r *stepRecorder) record(step string) {
 	r.mu.Unlock()
 }
 
-func (i *blockingInvoker) Invoke(ctx context.Context, _ store.Identity, _ string) error {
+func (i *blockingInvoker) Invoke(ctx context.Context, _ store.GrainId, _ string) error {
 	close(i.started)
 	<-ctx.Done()
 	close(i.finished)
 	return ctx.Err()
 }
 
-func (i *blockingInvoker) Owns(store.Identity) bool {
+func (i *blockingInvoker) Owns(store.GrainId) bool {
 	return true
 }
 
@@ -83,11 +83,11 @@ type ownershipInvoker struct {
 	calls atomic.Int32
 }
 
-func (i *ownershipInvoker) Owns(store.Identity) bool {
+func (i *ownershipInvoker) Owns(store.GrainId) bool {
 	return i.owns
 }
 
-func (i *ownershipInvoker) Invoke(context.Context, store.Identity, string) error {
+func (i *ownershipInvoker) Invoke(context.Context, store.GrainId, string) error {
 	i.calls.Add(1)
 	return nil
 }
@@ -98,7 +98,7 @@ func TestPoller_ClaimsBeforeInvoking(t *testing.T) {
 		recorder := &stepRecorder{}
 		backend := &fakeTable{
 			rows: []store.Schedule{{
-				Identity: store.Identity{Type: "account", Key: "alice"},
+				GrainId:  store.GrainId{GrainType: "account", GrainKey: "alice"},
 				Name:     "wake",
 				Method:   "Wake",
 				DueAt:    start.Add(-time.Second),
@@ -128,7 +128,7 @@ func TestPoller_AdvancesToFirstFutureTime(t *testing.T) {
 		interval := time.Hour
 		backend := &fakeTable{
 			rows: []store.Schedule{{
-				Identity: store.Identity{Type: "account", Key: "alice"},
+				GrainId:  store.GrainId{GrainType: "account", GrainKey: "alice"},
 				Name:     "wake",
 				Method:   "Wake",
 				DueAt:    start.Add(-3 * interval),
@@ -161,10 +161,10 @@ func TestPoller_ClaimFailureDoesNotInvoke(t *testing.T) {
 		start := time.Unix(300, 0).UTC()
 		backend := &fakeTable{
 			rows: []store.Schedule{{
-				Identity: store.Identity{Type: "account", Key: "alice"},
-				Name:     "wake",
-				Method:   "Wake",
-				DueAt:    start.Add(-time.Second),
+				GrainId: store.GrainId{GrainType: "account", GrainKey: "alice"},
+				Name:    "wake",
+				Method:  "Wake",
+				DueAt:   start.Add(-time.Second),
 			}},
 			recorder: &stepRecorder{},
 		}
@@ -187,10 +187,10 @@ func TestPoller_SkipsSchedulesNotOwnedByInvoker(t *testing.T) {
 		start := time.Unix(350, 0).UTC()
 		backend := store.NewMemory()
 		schedule := store.Schedule{
-			Identity: store.Identity{Type: "account", Key: "alice"},
-			Name:     "wake",
-			Method:   "Wake",
-			DueAt:    start.Add(-time.Second),
+			GrainId: store.GrainId{GrainType: "account", GrainKey: "alice"},
+			Name:    "wake",
+			Method:  "Wake",
+			DueAt:   start.Add(-time.Second),
 		}
 		if err := backend.Put(context.Background(), schedule); err != nil {
 			t.Fatalf("Put: %v", err)
@@ -228,10 +228,10 @@ func TestPoller_CloseStopsTheGoroutine(t *testing.T) {
 		start := time.Unix(400, 0).UTC()
 		backend := &fakeTable{
 			rows: []store.Schedule{{
-				Identity: store.Identity{Type: "account", Key: "alice"},
-				Name:     "wake",
-				Method:   "Wake",
-				DueAt:    start.Add(-time.Second),
+				GrainId: store.GrainId{GrainType: "account", GrainKey: "alice"},
+				Name:    "wake",
+				Method:  "Wake",
+				DueAt:   start.Add(-time.Second),
 			}},
 			claimWon: true,
 			recorder: &stepRecorder{},

@@ -225,7 +225,7 @@ func (c *simulationCluster) heal() {
 	c.network.heal()
 }
 
-func (c *simulationCluster) checkInvariants(ids []store.Identity) error {
+func (c *simulationCluster) checkInvariants(ids []store.GrainId) error {
 	if err := c.backend.checkMemberStatuses(); err != nil {
 		return err
 	}
@@ -245,7 +245,7 @@ func (c *simulationCluster) checkInvariants(ids []store.Identity) error {
 			}
 		}
 		if owners != 1 {
-			return fmt.Errorf("identity %s/%s has %d live owners after settle", id.Type, id.Key, owners)
+			return fmt.Errorf("identity %s/%s has %d live owners after settle", id.GrainType, id.GrainKey, owners)
 		}
 	}
 	return nil
@@ -343,12 +343,12 @@ func chooseClusterAction(rng *rand.Rand, cluster *simulationCluster) clusterActi
 
 type decision struct {
 	rt    *gor.Runtime
-	id    gor.Identity
+	id    gor.GrainId
 	delta int64
 }
 
 type invocationResult struct {
-	id        gor.Identity
+	id        gor.GrainId
 	operation porcupine.Operation
 	err       error
 }

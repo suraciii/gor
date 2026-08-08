@@ -32,7 +32,7 @@ func TestSim_ForwardedReplyLandsAfterCallerDeadline(t *testing.T) {
 		counterType := gor.TypeName[counter]()
 		_, remote := findPartitionIdentities(t, cluster, counterType)
 		if !cluster.nodes[1].rt.Owns(remote) {
-			t.Fatalf("remote identity %s/%s is not owned by node 1", remote.Type, remote.Key)
+			t.Fatalf("remote identity %s/%s is not owned by node 1", remote.GrainType, remote.GrainKey)
 		}
 
 		const hold = 3 * simulationStepDuration
@@ -47,7 +47,7 @@ func TestSim_ForwardedReplyLandsAfterCallerDeadline(t *testing.T) {
 		done := make(chan testCallResult, 1)
 		go func() {
 			var reply counterAddReply
-			err := cluster.nodes[0].rt.Invoke(ctx, gor.Identity(remote), "Add", &counterAddRequest{A0: 1}, &reply)
+			err := cluster.nodes[0].rt.Invoke(ctx, gor.GrainId(remote), "Add", &counterAddRequest{A0: 1}, &reply)
 			done <- testCallResult{value: reply.R0, err: err}
 		}()
 		// The bubble clock fires the caller's deadline, then releases the held
@@ -60,7 +60,7 @@ func TestSim_ForwardedReplyLandsAfterCallerDeadline(t *testing.T) {
 		if !errors.Is(result.err, context.DeadlineExceeded) {
 			t.Fatalf("forwarded call with expired deadline = %v, want %v", result.err, context.DeadlineExceeded)
 		}
-		record := backend.snapshot([]store.Identity{remote})[remote]
+		record := backend.snapshot([]store.GrainId{remote})[remote]
 		value, err := counterValue(record)
 		if err != nil {
 			t.Fatal(err)
@@ -99,7 +99,7 @@ func TestSim_DroppedForwardedRequestNeverTakesEffect(t *testing.T) {
 		counterType := gor.TypeName[counter]()
 		_, remote := findPartitionIdentities(t, cluster, counterType)
 		if !cluster.nodes[1].rt.Owns(remote) {
-			t.Fatalf("remote identity %s/%s is not owned by node 1", remote.Type, remote.Key)
+			t.Fatalf("remote identity %s/%s is not owned by node 1", remote.GrainType, remote.GrainKey)
 		}
 
 		cluster.network.setDrops(networkDropSpec{
@@ -110,11 +110,11 @@ func TestSim_DroppedForwardedRequestNeverTakesEffect(t *testing.T) {
 		defer cluster.network.setDrops(networkDropSpec{})
 
 		sendsBefore, deliveredBefore, _, dropRequestsBefore, _, heldBefore, completedBefore := cluster.network.stats()
-		result := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.Identity(remote), 1))
+		result := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.GrainId(remote), 1))
 		if !errors.Is(result.err, gor.ErrTransportFailed) {
 			t.Fatalf("dropped forward error = %v, want %v", result.err, gor.ErrTransportFailed)
 		}
-		record := backend.snapshot([]store.Identity{remote})[remote]
+		record := backend.snapshot([]store.GrainId{remote})[remote]
 		value, err := counterValue(record)
 		if err != nil {
 			t.Fatal(err)
@@ -153,7 +153,7 @@ func TestSim_DroppedReplyStillTakesEffect(t *testing.T) {
 		counterType := gor.TypeName[counter]()
 		_, remote := findPartitionIdentities(t, cluster, counterType)
 		if !cluster.nodes[1].rt.Owns(remote) {
-			t.Fatalf("remote identity %s/%s is not owned by node 1", remote.Type, remote.Key)
+			t.Fatalf("remote identity %s/%s is not owned by node 1", remote.GrainType, remote.GrainKey)
 		}
 
 		cluster.network.setDrops(networkDropSpec{
@@ -164,11 +164,11 @@ func TestSim_DroppedReplyStillTakesEffect(t *testing.T) {
 		defer cluster.network.setDrops(networkDropSpec{})
 
 		sendsBefore, deliveredBefore, _, _, dropRepliesBefore, _, completedBefore := cluster.network.stats()
-		result := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.Identity(remote), 1))
+		result := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.GrainId(remote), 1))
 		if !errors.Is(result.err, gor.ErrTransportFailed) {
 			t.Fatalf("dropped-reply forward error = %v, want %v", result.err, gor.ErrTransportFailed)
 		}
-		record := backend.snapshot([]store.Identity{remote})[remote]
+		record := backend.snapshot([]store.GrainId{remote})[remote]
 		value, err := counterValue(record)
 		if err != nil {
 			t.Fatal(err)

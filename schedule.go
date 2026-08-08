@@ -67,7 +67,7 @@ func Handle[T any](m func(T, context.Context) error) MethodHandle[T] {
 // entity's interface T. Obtain one with NewSchedule[T]; the zero value has no
 // schedule store and its operations return ErrScheduleStoreUnavailable.
 type Schedule[T any] struct {
-	identity store.Identity
+	identity store.GrainId
 	store    store.ScheduleStore
 	clock    clock.Clock
 }
@@ -98,7 +98,7 @@ func (s Schedule[T]) Set(ctx context.Context, name string, when ScheduleTime, m 
 		return ErrScheduleStoreUnavailable
 	}
 	return s.store.Put(ctx, store.Schedule{
-		Identity: s.identity,
+		GrainId:  s.identity,
 		Name:     name,
 		Method:   m.method,
 		DueAt:    s.clock.Now().Add(when.delay),

@@ -14,7 +14,7 @@ import (
 // should use the supplied Binder rather than construct one.
 type Binder struct {
 	runtime  *Runtime
-	identity store.Identity
+	identity store.GrainId
 	etag     store.ETag
 	states   map[string]stateCell
 	discard  error
@@ -25,17 +25,17 @@ type stateCell interface {
 	decode([]byte) error
 }
 
-func newBinder(runtime *Runtime, id Identity) *Binder {
+func newBinder(runtime *Runtime, id GrainId) *Binder {
 	return &Binder{
 		runtime:  runtime,
-		identity: store.Identity{Type: id.Type, Key: id.Key},
+		identity: store.GrainId{GrainType: id.GrainType, GrainKey: id.GrainKey},
 		states:   make(map[string]stateCell),
 	}
 }
 
 // Self returns the identity of the entity bound to b.
-func Self(b *Binder) Identity {
-	return Identity{Type: b.identity.Type, Key: b.identity.Key}
+func Self(b *Binder) GrainId {
+	return GrainId{GrainType: b.identity.GrainType, GrainKey: b.identity.GrainKey}
 }
 
 // NewState registers a named persistent value for the entity bound to b and

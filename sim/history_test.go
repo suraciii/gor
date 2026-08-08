@@ -34,7 +34,7 @@ func TestSim_DroppedReplyEffectReadByLaterCall(t *testing.T) {
 		counterType := gor.TypeName[counter]()
 		_, remote := findPartitionIdentities(t, cluster, counterType)
 		if !cluster.nodes[1].rt.Owns(remote) {
-			t.Fatalf("remote identity %s/%s is not owned by node 1", remote.Type, remote.Key)
+			t.Fatalf("remote identity %s/%s is not owned by node 1", remote.GrainType, remote.GrainKey)
 		}
 
 		history := newCounterHistory()
@@ -46,7 +46,7 @@ func TestSim_DroppedReplyEffectReadByLaterCall(t *testing.T) {
 		// The literal timestamps order the two operations in real time: the
 		// second call is awaited after the first, so the history's intervals
 		// must not overlap.
-		first := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.Identity(remote), 1))
+		first := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.GrainId(remote), 1))
 		if !errors.Is(first.err, gor.ErrTransportFailed) {
 			t.Fatalf("dropped-reply forward error = %v, want %v", first.err, gor.ErrTransportFailed)
 		}
@@ -56,7 +56,7 @@ func TestSim_DroppedReplyEffectReadByLaterCall(t *testing.T) {
 			Return: 2,
 			Output: counterOperationOutputFor(first.value, first.err),
 		})
-		record := backend.snapshot([]store.Identity{remote})[remote]
+		record := backend.snapshot([]store.GrainId{remote})[remote]
 		value, err := counterValue(record)
 		if err != nil {
 			t.Fatal(err)
@@ -66,7 +66,7 @@ func TestSim_DroppedReplyEffectReadByLaterCall(t *testing.T) {
 		}
 
 		cluster.network.setDrops(networkDropSpec{})
-		second := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.Identity(remote), 1))
+		second := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.GrainId(remote), 1))
 		if second.err != nil || second.value != 2 {
 			t.Fatalf("call after dropped reply = (%d, %v), want (2, nil)", second.value, second.err)
 		}

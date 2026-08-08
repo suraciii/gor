@@ -46,7 +46,7 @@ func TestOpenSQLite_DefaultDurabilityIsFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite: %v", err)
 	}
-	if _, err := s.Write(context.Background(), Identity{Type: "account", Key: "alice"}, []byte("x"), 0); err != nil {
+	if _, err := s.Write(context.Background(), GrainId{GrainType: "account", GrainKey: "alice"}, []byte("x"), 0); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	openStateProbe(t, stateFilePath(path))
@@ -64,7 +64,7 @@ func TestOpenSQLite_DefaultDurabilityIsFull(t *testing.T) {
 func TestOpenSQLiteRelaxed_WritesPersistAcrossCloseAndFlush(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gor.db")
-	id := Identity{Type: "account", Key: "alice"}
+	id := GrainId{GrainType: "account", GrainKey: "alice"}
 
 	s, err := OpenSQLite(path, WithDurability(DurabilityRelaxed))
 	if err != nil {
@@ -88,10 +88,10 @@ func TestOpenSQLiteRelaxed_WritesPersistAcrossCloseAndFlush(t *testing.T) {
 		t.Fatalf("stale Write error = %v, want ErrConflict", err)
 	}
 	if err := s.Put(context.Background(), Schedule{
-		Identity: Identity{Type: "account", Key: "alice"},
-		Name:     "tick",
-		Method:   "Tick",
-		DueAt:    time.Unix(0, 1).UTC(),
+		GrainId: GrainId{GrainType: "account", GrainKey: "alice"},
+		Name:    "tick",
+		Method:  "Tick",
+		DueAt:   time.Unix(0, 1).UTC(),
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestOpenSQLiteWithClock_AcceptsDurabilityOption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLiteWithClock: %v", err)
 	}
-	if _, err := s.Write(context.Background(), Identity{Type: "account", Key: "alice"}, []byte("x"), 0); err != nil {
+	if _, err := s.Write(context.Background(), GrainId{GrainType: "account", GrainKey: "alice"}, []byte("x"), 0); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	openStateProbe(t, stateFilePath(path))

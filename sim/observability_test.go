@@ -74,15 +74,15 @@ func TestSim_ForwardedCallProducesOneObservationAtOrigin(t *testing.T) {
 			synctest.Wait()
 		}
 
-		var remote gor.Identity
+		var remote gor.GrainId
 		for index := 0; index < 4096; index++ {
-			candidate := gor.Identity{Type: gor.TypeName[counter](), Key: fmt.Sprintf("observed-%04d", index)}
-			if !first.Owns(store.Identity(candidate)) && second.Owns(store.Identity(candidate)) {
+			candidate := gor.GrainId{GrainType: gor.TypeName[counter](), GrainKey: fmt.Sprintf("observed-%04d", index)}
+			if !first.Owns(store.GrainId(candidate)) && second.Owns(store.GrainId(candidate)) {
 				remote = candidate
 				break
 			}
 		}
-		if remote == (gor.Identity{}) {
+		if remote == (gor.GrainId{}) {
 			t.Fatal("could not find an identity owned by node-1")
 		}
 
@@ -96,7 +96,7 @@ func TestSim_ForwardedCallProducesOneObservationAtOrigin(t *testing.T) {
 
 		select {
 		case observation := <-firstEvents:
-			if observation.EntityType != gor.TypeName[counter]() || observation.Method != "Add" || observation.Err != nil {
+			if observation.GrainType != gor.TypeName[counter]() || observation.Method != "Add" || observation.Err != nil {
 				t.Fatalf("origin observation = %#v, want Add with nil error", observation)
 			}
 		default:
