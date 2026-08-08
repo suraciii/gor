@@ -253,7 +253,13 @@ change to receive one `BackgroundError`. Reminder deliveries read
 
 The error sink is implemented in the current code. `OnError` receives a
 `BackgroundError` with the Grain, original error, and source. The source set
-is sealed. The public naming migration remains part of the 0.1.0 API work.
+is sealed. Reminder delivery failures and deactivation hook failures use the
+sources described above; scan failures, claim failures, and shutdown
+cancellations remain outside the sink by design.
+
+Cluster ownership checks and forwarding are implemented for the current
+optional cluster preview. Rolling upgrades and other operational cluster work
+remain deferred and are outside this design.
 
 ## Don't claim rows that are not yours
 
@@ -316,10 +322,13 @@ The minimum failure, restart, and claim tests must cover these cases:
 
 ## Gap
 
-The typed Reminder method handle is implemented in the current code. The
-public naming migration to `Reminder`, `ReminderTime`, `NewReminder`, and
-`ReminderStore` remains part of the 0.1.0 API work. The `first_tick_time` row
-field and the generated typed `newReminderCall` factory are also part of that
-work. This design batch does not rename the Go implementation. The method
-name is read from the expression once. The table, poller, and restart recovery
-use the method-name string as an internal identifier.
+The typed Reminder method handle, the public Reminder names, the
+`first_tick_time` row field, and the generated typed Reminder-call factory are
+implemented. The structured error sink is also implemented. The method name
+is read from the expression once. The table, poller, and restart recovery use
+the method-name string as an internal identifier.
+
+The remaining work is outside this single-node Reminder contract. The
+optional cluster implementation is shipped as a preview; rolling upgrades
+and operational cleanup remain deferred. The announced 0.1.0 release still
+requires its conformance and failure-evidence work.
