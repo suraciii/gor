@@ -69,7 +69,7 @@ A doc comment is not a second user manual. The table below gives each kind of in
 
 | Content | Home |
 | --- | --- |
-| The full mental model of entities, identities, calls, state, and scheduled tasks; the complete path of cross-entity calls | `docs/programming-model.md` |
+| The full mental model of Grains, GrainIds, calls, state, and Reminders; the complete path of cross-Grain calls | `docs/programming-model.md` |
 | What may be relied on, version upgrades, and breaking changes | `docs/compatibility.md` and release notes |
 | Activation cache, mailbox, CAS tables, polling, membership table, frame format, algorithm trade-offs | The relevant `design/` document |
 | Multi-node limitations, protocol details, the full matrix of configuration combinations | `docs/` or the relevant `design/` document |
@@ -82,7 +82,7 @@ A comment may state one local restriction; it must not restate a whole model jus
 
 gor adds no Go `Example` functions and sets none as a release gate.
 
-A realistic root-package call must at least define an entity interface, generate proxies, build a runtime, install the artifacts, register factories, and then obtain a reference and call. It is not a lightweight example demonstrating one declaration. Inside an `Example`, it would compile and run on every `make test`; any v0 change to artifact shape, startup order, or public signatures would mean maintaining a third call path, plus text results when `Output` is present. `docs/example.md` and `examples/shadow/` already carry the full path; duplicating it would not improve v0.1's contract clarity.
+A realistic root-package call must at least define a Grain interface, generate proxies, build a runtime, install the artifacts, register factories, and then obtain a reference and call. It is not a lightweight example demonstrating one declaration. Inside an `Example`, it would compile and run on every `make test`; any v0 change to artifact shape, startup order, or public signatures would mean maintaining a third call path, plus text results when `Output` is present. `docs/example.md` and `examples/shadow/` already carry the full path; duplicating it would not improve v0.1's contract clarity.
 
 Later, an `Example` is added only for a stable scenario that a local comment cannot explain and that genuinely deserves to run directly on pkg.go.dev. Before adding, all of the following must hold: no dependence on real time, network, or processes; no hidden generation step; runs within the default test constraints; its output expresses a stable observable contract. Otherwise keep it as a documentation snippet or an example application; do not create a test entry that rots.
 
@@ -99,4 +99,4 @@ From then on, the same change that adds or alters a supported declaration must u
 
 ## Gap
 
-The candidate API documentation batch is in place: the supported packages (`gor`, `clock`, `store`, `transport`, and `cmd/gorgen`) carry package docs and per-symbol contracts on their independently usable entry points, and the implementation packages (`runtime`, `mail`, `timer`, `cluster`) carry package docs stating the no-direct-dependency boundary. The manual review this section's acceptance step 2 prescribes has been performed: the root `Activation` alias keeps no independent comment because `Activations()` documents the aggregate as a sorted snapshot of the runtime's active entities, the `Identity` field is a documented type, and `Queued` is a plain count of calls awaiting dispatch with no separate default, failure, concurrency, or lifecycle rule — the aggregate exception applies. No Go `Example` functions exist, as prescribed.
+The candidate API documentation batch is in place: the supported packages (`gor`, `clock`, `store`, `transport`, and `cmd/gorgen`) carry package docs and per-symbol contracts on their independently usable entry points, and the implementation packages (`runtime`, `mail`, `timer`, `cluster`) carry package docs stating the no-direct-dependency boundary. The manual review this section's acceptance step 2 prescribes has been performed: the root `Activation` alias keeps no independent comment because `Activations()` documents the aggregate as a sorted snapshot of the runtime's active Grains, the `GrainId` field is a documented type, and `Queued` is a plain count of calls awaiting dispatch with no separate default, failure, concurrency, or lifecycle rule — the aggregate exception applies. No Go `Example` functions exist, as prescribed.

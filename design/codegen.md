@@ -11,7 +11,7 @@ acct := gor.Ref[Account](rt, "alice")   // returns Account
 cannot be done with generics alone. The common solution in similar Go projects is to drop the types:
 
 ```go
-resp, err := system.AskGrain(ctx, identity, msg, timeout)   // any in, any out
+resp, err := system.AskGrain(ctx, grainID, msg, timeout)   // any in, any out
 ```
 
 goakt does exactly this (measured: `AskGrain(ctx, *GrainIdentity, message any, timeout) (any, error)`, `GrainContext.Message() any` / `Response(any)`). The cost is that all type errors are deferred to runtime.
@@ -20,7 +20,7 @@ goakt does exactly this (measured: `AskGrain(ctx, *GrainIdentity, message any, t
 
 ## The input contract
 
-The generator reads user-written Go interfaces. A valid entity interface method must:
+The generator reads user-written Go interfaces. A valid Grain interface method must:
 
 - take `context.Context` as its first parameter
 - return `error` last
@@ -43,7 +43,7 @@ This contract comes from `alecthomas/go-rpcgen`'s approach (interface + named re
 Only marked ones are generated:
 
 ```go
-//gor:entity
+//gor:grain
 type Account interface { ... }
 ```
 
@@ -57,7 +57,7 @@ Each interface gets one generated proxy:
 
 ```go
 type accountProxy struct {
-    id gor.Identity
+    id gor.GrainId
     rt gor.Invoker
 }
 
@@ -89,7 +89,7 @@ The generated file imports packages by their declared package name. When a metho
 
 An alias is the concatenation of the package path's trailing segments, sanitized into an identifier, extended one segment deeper until it is unique among the run's names: `a/domain` → `adomain`, `billing/domain/v2` → `v2`, `a/x/domain` and `b/x/domain` → `axdomain` and `bxdomain`. A numeric suffix (`domain2`) is the last resort. Assignment is deterministic — the same input always produces the same aliases — so regenerating does not churn the file.
 
-The source package's own import line participates in the same allocation. When its name is one of the reserved names (`context`, `fmt`, `gor`), it collides with the generated file's fixed imports and is aliased like any other colliding import — an entity package `context` at `billing/context` imports as `billingcontext "billing/context"` — and every reference to the entity package in the generated file uses that alias. The source package keeps its name when it collides with nothing; a signature import that shares the source package's name is aliased away instead, never the other way around.
+The source package's own import line participates in the same allocation. When its name is one of the reserved names (`context`, `fmt`, `gor`), it collides with the generated file's fixed imports and is aliased like any other colliding import — a Grain package `context` at `billing/context` imports as `billingcontext "billing/context"` — and every reference to the Grain package in the generated file uses that alias. The source package keeps its name when it collides with nothing; a signature import that shares the source package's name is aliased away instead, never the other way around.
 
 ## How generated artifacts plug into the runtime
 
@@ -124,7 +124,7 @@ func newAccountCall(method string) (args any, reply any)
 
 It builds a pair of empty shells by method name: `"Deposit"` yields `&accountDepositRequest{}` and `&accountDepositReply{}`. An unrecognized method name yields nil for both — something that really happens between nodes on mismatched versions.
 
-**The name carries the type, like `dispatchAccount` and `newAccountProxy`.** A package can hold several entity interfaces; a `newCall` without the type name would not compile once there is a second one. Everything in the artifacts that is generated per type carries the type in its name; no exceptions.
+**The name carries the type, like `dispatchAccount` and `newAccountProxy`.** A package can hold several Grain interfaces; a `newCall` without the type name would not compile once there is a second one. Everything in the artifacts that is generated per type carries the type in its name; no exceptions.
 
 From here on it is all existing machinery: `json.Unmarshal` fills the args, they go through **the same `Invoke`**, and the result comes back as `json.Marshal(reply)`. From this point, forwarded calls and calls initiated by local proxies share one path; serialization, activation, and dispatch are not duplicated.
 
@@ -138,7 +138,7 @@ Generated artifacts depend on one narrow interface:
 
 ```go
 type Invoker interface {
-    Invoke(ctx context.Context, id Identity, method string, args any, reply any) error
+    Invoke(ctx context.Context, id GrainId, method string, args any, reply any) error
 }
 ```
 
@@ -152,7 +152,7 @@ Load packages with `golang.org/x/tools/go/packages`, get type information from `
 
 **A known pitfall**: `go/types` requires the loaded package to pass type checking. If the artifacts lived in the same package as the user interface, then "the artifacts do not exist yet" → "user code references them → the package fails type checking" → "the generator cannot load the package" — a deadlock.
 
-The solution: **the artifacts land in their own package**. The entity package does not import them; `gor.Register` / `gor.Ref` connect them at runtime through the registry. That package must also be importable from the startup code that calls `Install`, so it is not `internal` — by default it sits at `<entity-pkg>/gorgen` (see [Invocation](#invocation)).
+The solution: **the artifacts land in their own package**. The Grain package does not import them; `gor.Register` / `gor.Ref` connect them at runtime through the registry. That package must also be importable from the startup code that calls `Install`, so it is not `internal` — by default it sits at `<Grain-pkg>/gorgen` (see [Invocation](#invocation)).
 
 ## How the generator is tested
 
@@ -182,7 +182,7 @@ Generate after creating or changing a marked interface:
 go tool gorgen -pkg ./domain
 ```
 
-The output is a non-`internal` subpackage of the entity package — `<entity-pkg>/gorgen` — so the startup code can import it and call `Install`. `-out` picks another directory; the package name is always `gorgen`. `//go:generate` works too.
+The output is a non-`internal` subpackage of the Grain package — `<Grain-pkg>/gorgen` — so the startup code can import it and call `Install`. `-out` picks another directory; the package name is always `gorgen`. `//go:generate` works too.
 
 Why a separate `tool` line rather than plain `go run`: the generator depends on `golang.org/x/tools`, which the library never imports, so `go get` of the library alone leaves it out of `go.sum`. Splitting `cmd/gorgen` into its own module would fix the same thing, but it would force `internal/codegen` to leave `internal/`; the `tool` directive keeps the generator in-tree.
 
@@ -194,7 +194,11 @@ No generation runs on `go build`: Go has no such hook, and forcing one would mak
 
 **Import aliases are assigned by the generator.** Two packages with the same name at different paths (`a/domain` and `b/domain`) in one method signature no longer produce code that does not compile; the generator aliases the colliding imports itself. The rule lives in "Import names" above.
 
-**Scheduled-method handles are not generated.** A typed handle for `Schedule.Set` is a Go method expression on the entity interface, built by a hand-written `gor.Handle` in the root package; the generator emits nothing for it. Schedules are set from inside entity methods, and the entity package cannot import the package generated from its own interfaces (it would be a cycle: the generated package already imports the entity package for the interface types in its proxies and dispatch). A generated handle symbol could not be named from the code that sets a schedule, so the handle uses Go's method expressions instead. See [timers.md](timers.md).
+**Reminder-method handles are not generated.** A typed handle for
+`Reminder.Set` is a Go method expression on the Grain interface, built by
+`gor.Handle`; the generator emits nothing for it. Reminders are set inside
+Grain methods. The Grain package cannot import its generated package because
+that would create an import cycle. See [timers.md](timers.md).
 
 ## Rejected approaches
 

@@ -4,8 +4,8 @@
 
 The `store` package does two different things; don't mix them:
 
-1. **Entity state** — read and write one state per Identity, with optimistic concurrency.
-2. **Cluster coordination tables** — the shared tables membership and scheduled tasks need, with CAS required.
+1. **Grain state** — read and write one state per GrainId, with optimistic concurrency.
+2. **Cluster coordination tables** — the shared tables membership and Reminders need, with CAS required.
 
 Item 2 is the foundation of `cluster` correctness (see [cluster.md](cluster.md)); item 1 only serves business logic.
 
@@ -13,8 +13,8 @@ Item 2 is the foundation of `cluster` correctness (see [cluster.md](cluster.md))
 
 ```go
 type Store interface {
-    Read(ctx context.Context, id Identity) (Record, error)
-    Write(ctx context.Context, id Identity, data []byte, expect ETag) (ETag, error)
+    Read(ctx context.Context, id GrainId) (Record, error)
+    Write(ctx context.Context, id GrainId, data []byte, expect ETag) (ETag, error)
 }
 
 type Record struct {
@@ -27,7 +27,10 @@ type Record struct {
 
 An empty record (first access) is represented by the zero ETag; passing the zero ETag to `Write` means "require that this record currently does not exist".
 
-**A missing record is not an error.** `Read` on a record that does not exist returns the zero `Record` and a nil error. "Does not exist" and "exists but is empty" are the same thing here — an entity's state is the zero value at first activation anyway, so call sites need not distinguish the two.
+**A missing record is not an error.** `Read` on a record that does not exist
+returns the zero `Record` and a nil error. The State layer still distinguishes
+three cases for each named State value: the value is absent, the value is
+present with the type's zero value, or the value is present with other data.
 
 ## ETag is not optional
 
@@ -66,7 +69,7 @@ The current code provides only the in-memory and SQLite backends. bbolt, pebble,
 
 ## How State connects to the runtime
 
-`gor.State[T]` needs to know which Identity it belongs to, which store to write, and what the current ETag is. In the user's struct it is just a field, and the factory `func() Account { return &account{} }` has nowhere to hand these to it.
+`gor.State[T]` needs to know which GrainId it belongs to, which store to write, and what the current ETag is. In the user's struct it is just a field, and the factory `func() Account { return &account{} }` has nowhere to hand these to it.
 
 The solution is for the factory to take one more parameter:
 
@@ -76,19 +79,39 @@ gor.Register[Account](rt, func(b *gor.Binder) Account {
 })
 ```
 
-`NewState` registers the cell on the binder; when the runtime activates an entity, it reads the store once according to the registrations and distributes the values to the cells.
+`NewState` registers the State value on the Binder. When the Runtime
+activates a Grain, it reads the store once and distributes named values to the
+State cells.
 
-Identity comes from here too:
+Each State value has four operations:
 
 ```go
-func Self(b *Binder) Identity
+Get() T
+Exists() bool
+Set(ctx context.Context, value T) error
+Clear(ctx context.Context) error
 ```
 
-The binder already holds the Identity — `State` needs it to locate the storage row, and `Schedule` needs it to write the table. `Self` just hands it to the user; it adds nothing.
+`Exists` checks whether the named value is present. It does not compare the
+value with the type's zero value. `Clear` removes the named value from the
+record and writes the remaining values with the current ETag. A successful
+clear leaves the Activation usable and makes `Exists` return false. A clear
+conflict or unknown write result follows the same deactivation rule as
+`Set`.
 
-**It must be a value on the Binder, not entity state.** Storing its own key in state rolls back together with write conflicts, and in a double-activation window an activation would read a stale value — the entity would mistake its own identity.
+GrainId comes from here too:
 
-**Reflection-based struct field scanning and backfilling is rejected.** It would keep the factory as `func() Account` and save users one line, but at the cost of `unsafe` to write unexported fields — and users could not see how the field came alive. The saved line is not worth that price.
+```go
+func Self(b *Binder) GrainId
+```
+
+The binder already holds the GrainId — `State` needs it to locate the storage row, and `Reminder` needs it to write the table. `Self` just hands it to the user; it adds nothing.
+
+**It must be a value on the Binder, not Grain state.** Storing its own key in state rolls back together with write conflicts, and in a double-activation window an activation would read a stale value — the Grain would mistake its own GrainId.
+
+**Reflection-based struct field scanning and backfilling is rejected.** It
+would keep the factory as `func() Account` and save one line. It would also
+need `unsafe` for unexported fields and would hide how State becomes live.
 
 ### Two more things on the Binder
 
@@ -98,7 +121,7 @@ Time:
 func Now(b *Binder) time.Time
 ```
 
-The binder already holds the injected `Clock` — `Schedule` needs it to compute due times. `Now` just hands it out. If it were not handed out, users would write `time.Now()` in their entities — and that is the very first thing this project forbids.
+The binder already holds the injected `Clock` — `Reminder` needs it to compute due times. `Now` just hands it out. If it were not handed out, users would write `time.Now()` in their Grains — and that is the very first thing this project forbids.
 
 Calling others:
 
@@ -108,58 +131,68 @@ type Scope interface{ /* sealed: only *Runtime and *Binder implement it */ }
 func Ref[T any](scope Scope, key string) T
 ```
 
-`Ref` originally took only a `*Runtime`, so an entity wanting to call another entity would need the factory closure to capture the runtime object as well, changing the factory signature from `func(b *Binder) T` to `func(rt *Runtime, b *Binder) T`. Cross-entity calls are the most common thing virtual entities do; it should not be the heaviest parameter on the signature.
+`Ref` originally took only a `*Runtime`, so a Grain wanting to call another Grain would need the factory closure to capture the runtime object as well, changing the factory signature from `func(b *Binder) T` to `func(rt *Runtime, b *Binder) T`. Cross-Grain calls are the most common thing virtual Grains do; it should not be the heaviest parameter on the signature.
 
-So the binder holds the runtime, `Ref` takes a sealed interface, and both sides share the name. Sealing — an unexported method in the interface — stops users from implementing it: it is not an extension point, just two shapes of "a place that can resolve entities".
+So the binder holds the runtime, `Ref` takes a sealed interface, and both sides share the name. Sealing — an unexported method in the interface — stops users from implementing it: it is not an extension point, just two shapes of "a place that can resolve Grains".
 
-**No third thing on the Binder.** It is the seam between entity and runtime; anything stuffed into the seam must first answer "what happens if it is not stuffed".
+**No third thing on the Binder.** It is the seam between Grain and runtime; anything stuffed into the seam must first answer "what happens if it is not stuffed".
 
 ## runtime does not import store
 
-`runtime` and `store` are siblings in the architecture diagram; neither imports the other. But the `Binder` must reach both sides: only `runtime` knows the Identity at activation time, and `Store` is injected when `gor` assembles the configuration.
+`runtime` and `store` are siblings in the architecture diagram; neither imports the other. But the `Binder` must reach both sides: only `runtime` knows the GrainId at activation time, and `Store` is injected when `gor` assembles the configuration.
 
 The solution: the factory is called by `runtime` and provided by `gor`:
 
 ```go
 type Registration struct {
-    Factory  func(context.Context, Identity) (any, error)
+    Factory  func(context.Context, GrainId) (any, error)
     Dispatch Dispatch
 }
 ```
 
-`runtime` hands out the Identity and gets back an opaque instance. It does not know the instance carries a Binder, nor that construction read storage once. `gor` is the only package that sees both `runtime` and `store`; the conversion between the two Identity types happens in exactly this one place.
+`runtime` hands out the GrainId and gets back an opaque instance. It does not know the instance carries a Binder, nor that construction read storage once. `gor` is the only package that sees both `runtime` and `store`; the conversion between the two GrainId types happens in exactly this one place.
 
 The factory can now return an error — reading storage during activation can fail. This merges with factory panic into the same path: the activation is not established, and the error returns to the caller.
 
 ## How conflicts get back to the runtime
 
-When `Set()` hits `ErrConflict`, the activation must be deactivated — but `runtime` does not know `ErrConflict` and should not.
+When `Set()` or `Clear()` hits `ErrConflict`, the Activation must be
+deactivated. `runtime` does not know `ErrConflict` and should not.
 
 The error cannot be relied on to propagate up. User methods can perfectly well swallow it and return nil, by which time the cached ETag is stale. Deactivation must be independent of how user code handles the error.
 
-So `Set()` immediately sets a flag on the Binder; `gor`'s dispatch wrapper checks it after every call and wraps the result into a shape `runtime` recognizes:
+So `Set()` and `Clear()` immediately set a flag on the Binder. `gor`'s
+dispatch wrapper checks it after every Call and wraps the result into a shape
+`runtime` recognizes:
 
 ```go
 type Discard struct{ Err error }
 ```
 
-When `runtime` sees `Discard`, it deactivates the activation and returns `Err` unchanged to the caller. It only knows "the entity says it can no longer be used", not why. This shares the path with post-panic deactivation.
+When `runtime` sees `Discard`, it deactivates the Activation and returns
+`Err` unchanged to the caller. It only knows that the Grain is no longer safe
+to use. This shares the path with post-panic deactivation.
 
-## One record per entity
+## One record per Grain
 
-`Store.Read` returns one record per Identity, so all of an entity's `State` cells together encode into one record: a JSON object whose keys are the names given at `NewState`.
+`Store.Read` returns one record per GrainId, so all of a Grain's `State` cells together encode into one record: a JSON object whose keys are the names given at `NewState`.
 
 This is why the names exist — with one cell the name is indeed redundant, but with a second cell something must distinguish them; a name-free special case for "only one cell" would only make the two shapes look different in storage.
 
-Any cell's `Set()` rewrites the whole record. So the ETag is entity-level, not field-level — exactly the granularity double-activation protection needs: even if two activations modify different fields, one must hit a conflict.
+Any State `Set()` or `Clear()` rewrites the whole record. The ETag is
+Grain-level, not field-level. Even if two Activations modify different State
+values, one must hit a conflict.
 
-## Encoding entity state
+## Encoding Grain state
 
 How user state becomes `[]byte`: JSON, not replaceable.
 
 The reason is not that JSON is fast; it is readable — when something goes wrong, you can look directly at what is in storage.
 
-User-injected `Codec` is rejected. An entity's state is one record assembled from multiple cells; the outer container and the values inside the cells must use the same encoding. Making it pluggable has only two outcomes: either the outer layer is always JSON and only the cells go through the codec — a fake codec, since non-JSON bytes cannot fit into a JSON container — or the outer layer is `map[string][]byte`, and then JSON base64-encodes every value, killing readability, which was the entire reason for choosing JSON. Not worth paying that price for a knob nobody asked for.
+User-injected `Codec` is rejected. A Grain's State is one record assembled
+from multiple values. The outer container and the values must use one
+encoding. A second codec would add a second storage model without a current
+product need.
 
 Encoding for transport between nodes is a separate matter; see [architecture.md](architecture.md).
 
@@ -167,7 +200,7 @@ No version-tolerant encoding (automatic compatibility when fields are added or r
 
 ## After a failed write
 
-When `Set()`'s write returns any error, two things happen:
+When a `Set()` or `Clear()` write returns an error, two things happen:
 
 1. **The in-memory value stays unchanged.** Without confirmation of the write, a cell must not pretend the write succeeded — otherwise memory and storage diverge from then on, and the user reads a value that may not exist in storage at all.
 2. **Deactivate the activation.** The next call reads from the store again, gets a fresh ETag, and continues.
@@ -214,9 +247,9 @@ The product rests on "state survives a crash" being true without the user readin
 
 ### Where the tier is chosen
 
-At store-open time, once, for the life of the store. One option; no per-write knob, no per-entity setting, no runtime switching.
+At store-open time, once, for the life of the store. One option; no per-write knob, no per-Grain setting, no runtime switching.
 
-This is the smallest model that fits the need. The choice does not change during a run — a service picks the trade at start and lives with it — so it is a property of the store, not of each write. A per-call or per-entity tier would push a durability decision into entity code that has no business making it, and would add a branch to the write hot path for a flexibility nobody asked for.
+This is the smallest model that fits the need. The choice does not change during a run — a service picks the trade at start and lives with it — so it is a property of the store, not of each write. A per-call or per-Grain tier would push a durability decision into Grain code that has no business making it, and would add a branch to the write hot path for a flexibility nobody asked for.
 
 The tier is an option on the SQLite constructor; omitted means Full, the current behavior:
 
@@ -226,13 +259,13 @@ db, err := store.OpenSQLite("data/gor.db",
 )
 ```
 
-`Durability` and its two values (`DurabilityFull`, `DurabilityRelaxed`) live in the `store` package: every backend that implements `Store` shares one type, and the dependency direction (`gor` imports `store`, never the reverse) is what forces it there. Both SQLite constructors take the option — `OpenSQLite` and `OpenSQLiteWithClock` — so a cluster node, which opens with a clock for membership snapshots, sets the state tier the same way a single-node program does. The option does not add a second path to the API: the user names one database, and the store derives the location of any additional database file from it (see "What this means for the SQLite backend"). The in-memory store has no durability tier — it holds nothing across a crash by design, so the option does not apply to it; the tiers are a property of the on-disk backends only. The runtime, the entity, and the write path are unaware of the tier. `Store.Write`'s contract — write the bytes, return the new ETag — is identical at both tiers; only how hard the backend pushes the bytes to storage differs.
+`Durability` and its two values (`DurabilityFull`, `DurabilityRelaxed`) live in the `store` package: every backend that implements `Store` shares one type, and the dependency direction (`gor` imports `store`, never the reverse) is what forces it there. Both SQLite constructors take the option — `OpenSQLite` and `OpenSQLiteWithClock` — so a cluster node, which opens with a clock for membership snapshots, sets the state tier the same way a single-node program does. The option does not add a second path to the API: the user names one database, and the store derives the location of any additional database file from it (see "What this means for the SQLite backend"). The in-memory store has no durability tier — it holds nothing across a crash by design, so the option does not apply to it; the tiers are a property of the on-disk backends only. The runtime, the Grain, and the write path are unaware of the tier. `Store.Write`'s contract — write the bytes, return the new ETag — is identical at both tiers; only how hard the backend pushes the bytes to storage differs.
 
 ### Scope: the state table only
 
-The tier applies to the table that holds entity state. It does not apply to the coordination tables the runtime keeps alongside it in the same database:
+The tier applies to the table that holds Grain state. It does not apply to the coordination tables the runtime keeps alongside it in the same database:
 
-- **The scheduled-task table stays at Full.** Delivery promises at most one firing per due time ([timers.md](timers.md)), and that promise rests on the claim step — the row advance that marks a due time as taken — being on storage before delivery proceeds. If that claim could be lost to a hard crash, the due time would look untaken on restart and fire again: a duplicate, which is exactly what at-most-once forbids. The schedule table is not subject to the durability trade.
+- **The Reminder table stays at Full.** Delivery promises at most one firing per due time ([timers.md](timers.md)), and that promise rests on the claim step — the row advance that marks a due time as taken — being on storage before delivery proceeds. If that claim could be lost to a hard crash, the due time would look untaken on restart and fire again: a duplicate, which is exactly what at-most-once forbids. The reminder table is not subject to the durability trade.
 - **The membership table stays at Full.** It exists only in cluster mode, and the cluster already treats the shared table as eventually consistent: a lost recent heartbeat, vote, or death declaration only slows reconvergence and breaks no correctness invariant ([cluster.md](cluster.md)). But the cluster is an optional, parked extension, and there is no measured reason to widen its failure envelope. Keeping it at Full leaves the cluster's story untouched.
 
 This is the product framing made precise: durability is a property the user trades for *their own* state, not for the bookkeeping that holds the runtime's guarantees together.
@@ -243,15 +276,15 @@ The built-in store runs SQLite in WAL mode. The tier maps to SQLite's per-databa
 
 The mapping is safe to offer because of WAL mode specifically: in WAL mode, the relaxed sync level does not corrupt the database on power loss — only recent, un-checkpointed commits can be lost. That is exactly the Relaxed tier's stated semantics; the store is never left unreadable. This is also why the corruption-allowing tier was rejected above: offering it would require stepping outside WAL's safety, and the trade would stop being "lose recent writes."
 
-Because SQLite's sync level is set per database file, not per table, running the state rows at a relaxed tier while keeping the coordination tables at Full means the implementation keeps them in separate database files (or otherwise isolates their sync settings). One shared database under one pragma cannot express "state rows relaxed, schedule rows full." The contract above — the state tier follows the user, the coordination tables are always Full — is what the implementation must satisfy; the file layout is the implementer's choice.
+Because SQLite's sync level is set per database file, not per table, running the state rows at a relaxed tier while keeping the coordination tables at Full means the implementation keeps them in separate database files (or otherwise isolates their sync settings). One shared database under one pragma cannot express "state rows relaxed, reminder rows full." The contract above — the state tier follows the user, the coordination tables are always Full — is what the implementation must satisfy; the file layout is the implementer's choice.
 
-Putting the tables in separate files does not break atomicity that existed before. State writes, schedule writes, and membership writes never shared a transaction: the schedule and membership tables have their own interfaces, and a state `Set` and a schedule `Set` are deliberately not atomic ([timers.md](timers.md)). The split changes where each table lives, not whether any two of them commit together.
+Putting the tables in separate files does not break atomicity that existed before. State writes, reminder writes, and membership writes never shared a transaction: the reminder and membership tables have their own interfaces, and a state `Set` and a reminder `Set` are deliberately not atomic ([timers.md](timers.md)). The split changes where each table lives, not whether any two of them commit together.
 
 On disk the store may hold more than one database file, each carrying its own `-wal`/`-shm` sidecars. Backups and direct `sqlite3` inspection must cover every file the store creates, not just the path the user named — copying only the main file leaves the write-ahead log behind, and the recovered state is stale or torn.
 
 ### Old databases
 
-An earlier 0.0.x database keeps the state, schedule, and membership tables in one database file. When the state tier calls for it, the state rows move to their own database, and such a database is read into the new layout on first open. The constraint is fixed, not optional: every confirmed state row must come through the move — nothing lost, and the store stays readable. This is not a new promise; it is the 0.0.x promise that a later 0.0.x reads state an earlier 0.0.x wrote, applied to the layout change ([compatibility.md](../docs/compatibility.md)).
+An earlier 0.0.x database keeps the state, reminder, and membership tables in one database file. When the state tier calls for it, the state rows move to their own database, and such a database is read into the new layout on first open. The constraint is fixed, not optional: every confirmed state row must come through the move — nothing lost, and the store stays readable. This is not a new promise; it is the 0.0.x promise that a later 0.0.x reads state an earlier 0.0.x wrote, applied to the layout change ([compatibility.md](../docs/compatibility.md)).
 
 The migration is the store's job, done once on first open of an old database, not the user's; the user does not hand-move rows or convert formats. An interrupted migration must be redoable or resumable on the next open: the old database is not destroyed until the new one is complete, so a crash mid-move leaves the store recoverable. Whether the implementation keeps the single-file layout when the tier is Full and splits only at Relaxed, or splits uniformly regardless of tier, is the implementer's choice — but whichever it is, the constraint above holds: confirmed state survives the upgrade, and the user passes one path either way.
 
@@ -273,10 +306,10 @@ What the simulation must and does cover is the storage seam's correctness-releva
 
 The state-write baseline is recorded at each tier, because a single number would hide the only thing the tier exists for. Both numbers are measured on real disk: on tmpfs the sync that separates the tiers is a no-op, so both tiers measure the same fake-fast number and the comparison is void ([benchmarks.md](benchmarks.md)). The relaxed number is expected to be materially below the full-durability baseline; the measurement records by how much.
 
-## The scheduled task table
+## The Reminder table
 
 ```
-schedule(entity_type, entity_key, name, method, due_at, interval, etag)
+reminder(grain_type, grain_key, name, method, due_at, interval, etag)
 ```
 
-This table does not go through the `Store` interface — scanning due rows, CAS claiming, and row deletion do not fit into "read and write one state per Identity". It has its own interface; details in [timers.md](timers.md).
+This table does not go through the `Store` interface — scanning due rows, CAS claiming, and row deletion do not fit into "read and write one state per GrainId". It has its own interface; details in [timers.md](timers.md).

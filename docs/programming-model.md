@@ -6,18 +6,23 @@
 
 Only three.
 
-**Entity** — an object with an identity and state. You write a Go struct plus a set of methods. The runtime guarantees calls on the same identity execute serially.
+**Grain** — a stateful object with a GrainId. You write a Go struct plus a
+set of methods. The Runtime guarantees Calls for the same Grain run
+serially.
 
-**Identity** — type + key. `Account("alice")` and `Account("bob")` are two different entities; `Account("alice")` always refers to the same one. No creation, no destruction: it exists from the first call, disappears from memory after enough idleness, state stays in the store, and the next call brings it back.
+**GrainId** — a GrainType plus a GrainKey. `Account("alice")` and
+`Account("bob")` are two different Grains. `Account("alice")` always names
+the same Grain. No create or delete call is needed. The Grain starts at its
+first Call, may leave memory after idle time, and keeps State in the store.
 
 **Call** — calling a method through an interface. The caller does not know and does not care whether the target is in this process or on another node.
 
-## Declaring an entity
+## Declaring a Grain
 
 Write the interface first:
 
 ```go
-//gor:entity
+//gor:grain
 type Account interface {
     Deposit(ctx context.Context, amount int64) (int64, error)
     Balance(ctx context.Context) (int64, error)
@@ -28,9 +33,12 @@ The first parameter of an interface method must be `context.Context`; the last r
 
 ### Generation prerequisite
 
-The `//gor:entity` marker says this interface gets typed calls generated for it. You add the generator to your module once, then run it whenever a marked interface is created or changed, before building. The exact commands and where the generated files land: [../design/codegen.md](../design/codegen.md).
+The `//gor:grain` marker says this interface gets typed Calls generated for
+it. Add the generator to your module once. Run it when a marked interface
+changes, before you build. See [../design/codegen.md](../design/codegen.md).
 
-Every runtime must install the generated output at startup before entities can be registered or references obtained. The startup example below shows where installation happens.
+Every Runtime must install the generated output at startup before Grains can
+be registered or Grain References can be obtained.
 
 Then write the implementation:
 
@@ -55,7 +63,9 @@ func (a *account) Balance(ctx context.Context) (int64, error) {
 }
 ```
 
-The interface, the implementation, and the registration below live together in the entity's package — the factory refers to the unexported `account` type, so the registration cannot be written anywhere else. The startup code calls the registration with the runtime it built:
+The interface, implementation, and registration live in the Grain package.
+The factory uses the unexported `account` type, so the registration stays in
+that package.
 
 ```go
 func Register(rt *gor.Runtime) error {
@@ -69,13 +79,13 @@ func Register(rt *gor.Runtime) error {
 
 No locks in method bodies, because none are needed — a second call on the same key is never running at the same time.
 
-## The entity knows who it is
+## The Grain knows its GrainId
 
-Extending the registration from the previous section — the struct also keeps its identity:
+The struct can also keep its GrainId:
 
 ```go
 type account struct {
-    id      gor.Identity
+    id      gor.GrainId
     balance gor.State[int64]
 }
 
@@ -89,11 +99,14 @@ func Register(rt *gor.Runtime) error {
 }
 ```
 
-This is needed for logging, for using the key as business data (the `alice` in `Account("alice")` is a username), and for calling another entity and telling it who you are.
+The GrainId is useful for logs, business data, and Calls to another Grain.
+The `alice` key can be a user name.
 
-An identity is not state. It never enters the store, does not change when the entity is evicted and reactivated, and does not roll back on write conflicts. When the same identity is active on two nodes at once, both activations' `id` is the same value.
+The GrainId is not State. It is not stored as Grain State. It does not change
+when the Grain leaves memory and starts again. Two Activations for one
+GrainId have the same GrainId.
 
-## The entity reads time
+## The Grain reads time
 
 The `Binder` is given to the factory once, at activation. If method bodies need it, keep it in the factory — registration shaped as in the previous sections:
 
@@ -116,9 +129,10 @@ func (d *device) Report(ctx context.Context, value float64) error {
 }
 ```
 
-Do not use `time.Now()`. Time read by an entity must come from the runtime — tests need to control it, and in simulation each node's clock can carry a different offset. This is the same rule the library itself follows.
+Do not use `time.Now()`. Time read by a Grain must come from the Runtime.
+Tests must control time, and a future Silo may have a different clock.
 
-## One entity calls another
+## One Grain calls another
 
 The same function as calling from outside, with a different first argument:
 
@@ -126,18 +140,22 @@ The same function as calling from outside, with a different first argument:
 gor.Ref[Workshop](d.b, workshopID).DeviceOnline(ctx, deviceID)
 ```
 
-Outside, you hold the runtime; inside, the `Binder`. An entity does not capture a runtime object to call others — the factory signature is `func(b *gor.Binder) T`, and that one parameter is enough.
+Outside, the caller holds the Runtime. Inside, the Grain holds the `Binder`.
+The factory needs only `func(b *gor.Binder) T`.
 
-Cross-entity calls are the most common thing virtual entities do. They must be as easy as local method calls, or users will pile logic into one giant entity to avoid them.
+Cross-Grain Calls are part of the virtual Grain model. They use the same
+typed reference as a local Call.
 
-## Calling an entity
+## Calling a Grain
 
 ```go
 acct := gor.Ref[Account](rt, "alice")
 balance, err := acct.Deposit(ctx, 100)
 ```
 
-`acct` has type `Account`. A wrong argument type or a nonexistent method is a compile error. This is the key difference from `any`-based APIs; the price is running code generation once, see [../design/codegen.md](../design/codegen.md).
+`acct` has type `Account`. A wrong argument type or a missing method is a
+compile error. This is the key difference from `any`-based APIs. See
+[../design/codegen.md](../design/codegen.md).
 
 ### Cluster calls and deployment limits
 
@@ -153,33 +171,59 @@ Arguments and return values go through JSON across nodes, so they must be JSON-e
 
 ## Call outcomes and ordering
 
-One entity processes calls in a queue. When the queue is full, new calls are rejected for overload outright: the method never starts, and state does not change.
+One Grain processes Calls in a queue. When the queue is full, new Calls are
+rejected for overload. The method does not start, and State does not change.
 
-Timeout or cancellation only means the caller stopped waiting. The method may have started, may even have changed state; a cross-node call hitting a post-send network error is the same. Callers cannot tell from this error whether the method ran. Do not retry these two outcomes as if they were overload rejections.
+Timeout or cancellation means that the caller stopped waiting. The method
+may have started and may have changed State. A delivery error after a Call
+was sent has the same unknown result. The caller cannot know if the Business
+Action ran.
 
-A method panic makes the call return an error and discards the current instance. Calls already queued but not started also end in error; they are not rerun on a fresh instance. The next call rebuilds the instance from persistent state.
+A method panic returns an error and discards the current Activation. Queued
+Calls that did not start also return errors. The Runtime does not replay
+them. The next Call builds a new Activation from confirmed State.
 
-While an entity handles one call, it does not start a second. A call that would close a cycle — A calling B and B calling A back — is detected along the call chain and fails with an error that names the entities in the cycle, instead of hanging until the caller gives up; its stable code tells it apart from an ordinary timeout. The runtime does not retry automatically: whether retrying is safe and how to avoid duplicate business actions is the caller's judgment.
+While a Grain handles one Call, it does not start a second Call. A Call cycle
+is detected and fails instead of waiting forever. The Runtime does not retry
+the Call. The Application decides whether a Safe Repeat is valid.
 
-Calls from one caller to one entity, sent locally in sequence, execute in issue order. Cross-node, that order is not guaranteed; operations with ordering dependencies must express the dependency in business data, not rely on network arrival order.
+Calls from one caller to one Grain, sent locally in sequence, execute in issue
+order. A future cluster does not promise network arrival order.
 
 ## State
 
-`gor.State[T]` carries state. `Get()` reads the current in-memory value; `Set()` writes and persists it.
+`gor.State[T]` carries State. `Get()` reads the current value. `Set()` writes
+and persists it.
 
-An entity can have several cells, distinguished by name. They are stored as one record, so any cell write updates the whole entity's version.
+`Exists()` tells whether confirmed State is present. It is different from
+reading a present value that contains the type's zero value. `Clear()`
+removes confirmed State. After `Clear()` succeeds, the next Activation sees
+the State as absent.
 
-**When a cell holds a map or slice, `Get()` returns that very instance, not a copy.** Mutating it only counts after `Set()` — mutate without writing, and the value changes in memory but not in the store; after eviction and return, the entity reverts to the old value. Copy-before-mutate is a style choice; persistence depends only on `Set()`.
+A Grain can have several named State values. They are stored as one Grain
+record, so any State write updates the Grain version.
 
-Every `Set()` tries to persist immediately. Only success makes the value the current persisted value; on failure the last confirmed value is kept and the current instance is discarded. After an error, do not assume the instance is still usable; the next call reads state back.
+**When State holds a map or slice, `Get()` returns that instance, not a copy.**
+The change is persisted only after `Set()`. After the Grain leaves memory, an
+unsaved change is lost.
 
-Multiple `Set()` calls in one method are not a transaction. An earlier write may have succeeded while a later one fails; when the business result must be atomic, the business must organize the related data into one state update.
+Every `Set()` tries to persist immediately. Only success confirms the new
+value. On failure, the Runtime keeps the last confirmed value and discards
+the current Activation. The next Call reads State again.
 
-State must be JSON-encodable. The runtime does not carry applications through state-structure evolution; field additions, removals, or format changes are the application's job — read old formats, write new ones.
+Multiple `Set()` calls in one method are separate State writes. An earlier
+write may succeed before a later write fails. Keep one business change in one
+State update when that result is required.
 
-Concurrency semantics, stated plainly: in cluster mode, the runtime does not guarantee that only one `Account("alice")` runs in the whole world at any moment. A double-activation window opens whenever the cluster's membership is changing — nodes joining, leaving, failing, or being partitioned — and closes once every node's view of the membership agrees. While it is open, two nodes may each have the same entity active and both accept a write to it; `Set()` carries an optimistic-concurrency check, so the write that lands second fails instead of silently overwriting the first. That failure is returned to the caller, who must retry; the runtime does not retry it. A call that always succeeds on a single node can therefore return an error on a cluster during this window — not because the work was wrong, but because a second activation raced it.
+State must be JSON-encodable. The Application owns State format changes.
 
-This is not implementation laziness — Orleans' default directory has the same semantics, and its official docs say so (see [../research/orleans-internals.md](../research/orleans-internals.md) (in Chinese)). In single-node mode this window does not exist, so this failure does not occur there.
+In a future cluster, the Runtime may have two Activations for one Grain while
+ownership changes. Both may accept a Call. The State version check rejects
+the old write instead of silently replacing newer State. The caller receives
+a conflict and decides whether to retry.
+
+This behavior follows the Orleans model. A single Silo has no ownership
+change, so this cluster conflict does not occur there.
 
 ## How durable a state write is
 
@@ -192,76 +236,104 @@ Two levels:
 
 The trade is throughput. Forcing every write to disk costs time; most services can tolerate losing the most recent changes after a hard crash, and Relaxed lets those services change state faster.
 
-Relaxed touches state and nothing else. Scheduled tasks still fire at most once after a crash; if you run more than one node, the bookkeeping the nodes use to agree on who owns what is unaffected.
+Relaxed touches Grain State and nothing else. Reminders still fire at most
+once after a crash. Future cluster ownership data is unaffected.
 
 If you do not choose, you get Full. The mechanism behind the trade and its exact limits are in the [persistence design](../design/persistence.md).
 
-## Scheduled wake-up
+## Reminder
 
-State connects to the store via `gor.State[T]`; scheduled tasks take a cell from `b` the same way:
+State connects to the store via `gor.State[T]`; a Reminder uses the Binder in
+the same way:
 
 ```go
 type account struct {
     balance  gor.State[int64]
-    schedule gor.Schedule[Account]
+    reminder gor.Reminder[Account]
 }
 
 func (a *account) Open(ctx context.Context) error {
-    return a.schedule.Set(ctx, "monthly-interest", gor.Every(30*24*time.Hour), gor.Handle(Account.ApplyInterest))
+    return a.reminder.Set(ctx, "monthly-interest", gor.Every(30*24*time.Hour), gor.Handle(Account.ApplyInterest))
 }
 
-func (a *account) ApplyInterest(ctx context.Context) error { ... }
+func (a *account) ApplyInterest(ctx context.Context, tick gor.TickStatus) error { ... }
 ```
 
-Scheduled tasks are persistent: after a process crash, a task that has come due still fires. If the object is not in memory when the task comes due, it is woken up.
+A Reminder is persistent. After a process crash, a due Reminder can still
+run. If the Grain is not in memory, the Runtime starts its Activation.
 
-The schedule is typed to the entity's interface, and the wake-up method is named by a method expression — a typo or a rename is a compile error, not a failure hours later at delivery. What comes due is still a method name, not a function value — after a crash nobody can restore a closure; only the name can be stored. The invoked method takes only `ctx` and returns only `error`.
+The Reminder is typed to the Grain interface. The Reminder method uses a
+method expression, so a typo or rename is a compile error. The Runtime stores
+the method name, not a function value. The method takes `ctx` and
+`gor.TickStatus`, and returns `error`.
 
-It is not `time.AfterFunc`: do not expect millisecond precision, and do not expect missed firings during downtime to be made up (it fires once on return, then moves on).
+It is not `time.AfterFunc`. It does not promise millisecond precision. It
+does not replay every tick missed during downtime.
 
-One object has at most one task per name; setting the same name again reschedules it.
+One Grain has at most one Reminder with a given name. Setting the same name
+again changes that Reminder.
 
-Tasks can be one-shot or periodic; after cancellation they are not kept. A one-shot task is delivered at most once when due, then disappears.
+A Reminder can be one-shot or periodic. Cancellation removes it. A one-shot
+Reminder is delivered at most once when due.
 
-Scheduled wake-up promises at-most-once delivery, not exactly-once method execution. The system confirms that the due time was claimed, then delivers the method; a crash between the two can miss this firing. Failed methods are not retried automatically either; the error still goes to the error sink below.
+A Reminder promises at-most-once delivery. It does not promise exactly-once
+method execution. The Runtime claims the due time before delivery. A crash
+between these actions can miss the Call. A failed method is not retried; its
+error goes to the background error sink.
 
-A state change and setting, rescheduling, or canceling a scheduled task are not one atomic business operation. Either side can succeed alone; business semantics that need both must handle this window in the application.
+A State change and a Reminder change are separate Runtime actions. The
+Application must handle a partial result when both actions are needed.
 
-## How an entity starts and leaves
+## How a Grain starts and leaves
 
-An entity can initialize after it starts serving; when initialization fails, that call fails and the next call rebuilds the entity.
+A Grain can initialize when its Activation starts. If initialization fails,
+that Call fails and the next Call builds a new Activation.
 
-An entity can do final teardown before leaving. It learns whether this leave is due to idleness, the current node no longer owning it, a graceful stop, or the instance no longer being trusted. The application can then tell apart "reclaim local resources", "hand back node ownership", "teardown before process exit", and "handle as a fault".
+A Grain can run a deactivation hook before it leaves. The hook receives the
+reason: idle, ownership lost, normal shutdown, or an untrusted Activation.
 
-Teardown cannot prevent the entity from leaving. A graceful stop waits for teardown that has already started to return; teardown should finish promptly. The hook gets a fresh work context with no deadline that is never canceled. Under an abrupt stop or when the node is declared dead, teardown that has not started does not run; teardown that has started is not force-aborted.
+The hook cannot prevent deactivation. A graceful stop waits for a hook that
+has started. An abrupt stop does not start new hooks. A hook that has started
+is not force-aborted.
 
 ## Failures nobody is waiting for
 
-Two application actions can fail with no caller waiting for the result: a claimed scheduled delivery fails, or teardown before the entity leaves fails. The runtime can be configured with a background error sink.
+Two Application actions can fail with no caller waiting: a claimed Reminder
+Call can fail, or a deactivation hook can fail. The Runtime can send both to
+a background error sink.
 
-Each event gives the entity identity, the original error, and a clear source. A scheduled delivery gives the delivered action's name; a teardown failure gives the reason the entity left. Sources are not application-conventioned text, so an action name that happens to equal the teardown name cannot be confused with it.
+Each event gives the GrainId, the original error, and a source. A Reminder
+event gives the method name. A deactivation event gives the leave reason.
 
 Errors still follow the [Errors and cancellation](errors.md) section. Across nodes, only declared stable codes are usable for business branching; error text is for display and logging.
 
-The sink does not retry, back off, or alert for the application. Scheduled delivery is at-most-once by design; an application that retries must design idempotency and state itself. Poller scan and claim failures are not reported here either.
+The sink does not retry, back off, or alert. Reminder delivery is at-most-once
+by design. The Application owns any Safe Repeat behavior.
 
-When migrating an existing application, change the handler that used to receive identity, action name, and error to receive an event, then read the action name or the leave reason from the source. Stop guessing the source from the action name.
+The handler must read the Reminder method or deactivation reason from the
+event source. It must not infer the source from a method name.
 
 ### Gap
 
-The background error sink is implemented: each event gives the entity, the original error, and a closed set of sources; scheduled delivery carries the delivered action's name, teardown failure carries the entity's leave reason, sources branch by type instead of text comparison, and the source set cannot grow outside the runtime. Deactivation reasons are implemented: when an entity leaves, it receives one of four reasons — idle, current node lost ownership, graceful stop, or instance untrusted; the reason is fixed when the leave begins and later events never rewrite it; the work context given at leave has no deadline and is never canceled. A graceful stop waits for teardown that has started; abrupt stops and declared-dead nodes skip teardown that has not started and do not wait for teardown that has. Poller scan and claim failures are not reported from this sink; the delivery canceled mid-shutdown is not reported either. Everything else in this section is implemented.
+The background error sink and deactivation reasons are implemented. The
+remaining release work is listed in [../ROADMAP.md](../ROADMAP.md).
 
 ## Runtime observability
 
-The runtime hands the application two kinds of facts. First, a snapshot of this node's current activations: which entities are serving, and how many queued, not-yet-started calls each has. It observes only this node; it does not aggregate for the cluster.
+The Runtime provides two kinds of facts. First, it provides a snapshot of
+this Silo's active Activations and their queued Calls. It does not aggregate
+data for a future cluster.
 
-Second, an event per completed call. The event gives the result the caller saw, the duration, and the target's type and method. When the caller cancels, the event records the cancellation as the result; even if the method later runs to completion, there is no second event. A cross-node call is recorded once, at the initiating node; the receiving node does not record it again.
+Second, it provides one event for each completed Call. The event gives the
+caller result, duration, GrainType, and method. A canceled Call has one
+canceled result even if the method later completes.
 
-Completion-event callbacks run synchronously with the caller. A callback must not block or do I/O — the delay would land on the caller's own result. The runtime does no aggregation, export, or alerting of monitoring data; applications wire it into existing systems.
+Completion callbacks run with the caller. A callback must not block or do
+I/O. The Runtime does not aggregate, export, or alert these events.
 
 ## Runtime startup
 
-Single node, state in a local file:
+Single Silo, State in a local file:
 
 ```go
 if err := os.MkdirAll("data", 0o755); err != nil { return err }
@@ -276,7 +348,8 @@ defer rt.Close()
 if err := gorgen.Install(rt); err != nil { return err }
 ```
 
-`Install` hands the generated proxies and dispatch functions to the runtime. Without this line, `Register` and `Ref` fail at startup — not at the first call.
+`Install` hands generated proxies and dispatch functions to the Runtime.
+Without this line, Grain registration and Grain References fail at startup.
 
 A cluster must explicitly hand the runtime the state store, the shared membership table, this node's address, this startup's generation, and the transport:
 
@@ -298,11 +371,12 @@ if err != nil {
 defer rt.Close()
 ```
 
-All nodes share `memberStore`; `generation` must be a fresh value on every rejoin at the same address. `Runtime.Close` closes the configured transport. The difference between single-node and cluster is configuration, not business code.
+All nodes share `memberStore`; `generation` must be a fresh value on every rejoin at the same address. `Runtime.Close` closes the configured transport. The difference between a single Silo and a future cluster is configuration, not business code.
 
 ## The runtime can stop itself
 
-In a cluster, a node can be declared dead by others. After that it serves no entity — serving with an identity the whole world believes dead only writes data nobody will ever see.
+In a future cluster, a Silo can be declared dead by other Silos. After that it
+must serve no Grain.
 
 So the runtime provides a signal:
 
@@ -310,15 +384,22 @@ So the runtime provides a signal:
 <-rt.Done()   // closed, or declared dead
 ```
 
-When it closes, the runtime also stops admitting new entity calls. Calls issued after that — from this process or another node — get a reliably identifiable stop error. Graceful stops and abrupt stops use the same stop error. When the cluster declares the node dead, the error says the node stopped serving. Codes and how to check them: [errors.md](errors.md).
+When it closes, the Runtime stops admitting new Grain Calls. Calls issued
+after that get a stable stop error. Codes and checks are in [errors.md](errors.md).
 
-The stop signal does not rewrite results admitted earlier. A graceful stop lets started methods finish, rejects queued calls that have not started, and waits for methods and deactivations to end. An abrupt stop and a death declaration cancel started methods and reject the queue, but cannot force-abort user code that ignores cancellation. An admitted call may still finish after the signal closes; a call issued after the signal closes cannot succeed.
+The stop signal does not rewrite results for Calls already admitted. A
+graceful stop lets started methods finish and rejects queued Calls. An abrupt
+stop cancels started methods but cannot force-abort user code that ignores
+cancellation.
 
 Your process should exit, or build a new runtime and rejoin. Ignoring the signal does not silently break anything, but the service should not keep advertising itself as available.
 
 ### Gap
 
-This section's admission boundary is implemented: the stop transition is the linearization point of admission; after it, calls from this process or another node get the corresponding stable stop error (`gor.runtime_closed` or `gor.node_dead`). "The stop signal does not rewrite previously admitted results" holds only for graceful stops; `Kill` and death declarations cancel admitted calls, and their results become cancellation errors.
+The Runtime admission boundary is implemented. Calls after stop receive the
+stable stop error. Calls admitted before stop keep the result defined by the
+stop mode. The code surface still needs the public Grain terminology and the
+State and Reminder operations described in this target API.
 
 ## Mental model comparison
 
@@ -326,9 +407,10 @@ If you have used other systems:
 
 | Concept | Orleans | Temporal | Restate | gor |
 |---|---|---|---|---|
-| Stateful object with an identity | Grain | — | Virtual Object | Entity |
-| Identity | GrainId | WorkflowId | Object Key | Identity |
+| Stateful object with a GrainId | Grain | — | Virtual Object | Grain |
+| GrainId | GrainId | WorkflowId | Object Key | GrainId |
 | Persistent state | `[PersistentState]` | Workflow variables | built-in K/V | `State[T]` |
-| Scheduled wake-up | Reminder | Timer | — | Schedule |
+| Scheduled action | Reminder | Timer | — | Reminder |
 
-The table only builds intuition. Semantics are not fully equivalent; notably, Temporal workflows have a deterministic-replay constraint that `gor` does not — `gor` recovers from persisted state, not by replaying an event log.
+The table only builds intuition. Semantics are not fully equivalent. The
+Orleans Grain model is the reference for `gor`.

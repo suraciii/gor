@@ -44,18 +44,18 @@ This version's framework code set is sealed as follows:
 | --- | --- |
 | `gor.no_owner` | The current view has no routable owner. |
 | `gor.node_dead` | The target node has stopped serving. |
-| `gor.runtime_closed` | The runtime or the entity's mailbox is closed. |
+| `gor.runtime_closed` | The runtime or the Grain's mailbox is closed. |
 | `gor.overloaded` | The call was rejected for a full queue before the method started. |
-| `gor.type_not_installed` | The target node does not have this entity type. |
+| `gor.type_not_installed` | The target node does not have this Grain type. |
 | `gor.unknown_method` | The target type has no such method. |
 | `gor.invalid_request` | The request's shape or arguments cannot be decoded under the current contract. |
 | `gor.persistence_conflict` | The state write hit a version conflict. |
 | `gor.persistence_failed` | The state write failed, and it was not a version conflict. |
-| `gor.panic` | The factory or the entity method panicked. |
+| `gor.panic` | The factory or the Grain method panicked. |
 | `gor.request_encode_failed` | The source could not encode the arguments into a call request. |
 | `gor.reply_encode_failed` | The return values of a successful call could not be encoded. |
 | `gor.transport_failed` | The request, response, or connection failed to transfer; the execution outcome is unknown. |
-| `gor.call_cycle` | A call targeted an entity already occupied by the same call chain, so it could never start. |
+| `gor.call_cycle` | A Call targeted a Grain already occupied by the same Call chain, so it could never start. |
 
 The framework must not invent `gor.*` codes outside this set for the same outcome. Applications must not use `gor.*`. This version registers no extra mappings for arbitrary error types and derives no codes from error text.
 
@@ -92,9 +92,15 @@ Request-encoding failures, `Send` failures, and response-decoding failures also 
 
 Local calls do not go through the envelope. They keep the original error object. As long as the error chain declares a `Code`, local `errors.Is` matches it by Go's standard rules.
 
-Remote calls project the error on the server and rebuild it on the source. Projection uses `CodeOf`; rebuilding uses an error that matches only by code. The determinate code is therefore the one error identity both locations share. Text may add context but must not affect any branch.
+Remote Calls project the error on the server and rebuild it on the source.
+Projection uses `CodeOf`; rebuilding uses an error that matches only by code.
+The stable code is the one error identifier both locations share. Text may add
+context but must not affect any branch.
 
-The framework constructs the table's codes on every public call path, including local ones. Then `errors.Is` does not depend on call location for framework codes either. Internal packages' old sentinels may remain as internal implementation details, but must not be the sole identity of a `gor` public call result.
+The framework constructs the table's codes on every public Call path,
+including local ones. Then `errors.Is` does not depend on Call location for
+framework codes. Internal sentinels may remain implementation details, but
+must not be the sole identifier of a `gor` public Call result.
 
 ## Cancellation
 
@@ -112,7 +118,10 @@ The caller has no observable "delivered" boundary. It cannot conclude from cance
 
 ## What is not done
 
-No arbitrary type registration, no field serialization, no fidelity of error chains or joined structures, no error-code codegen annotations, no cancellation frames, no remote deadline propagation. All of them widen the wire contract without changing the stable code, the one cross-node error identity. Code reachability takes the unique code through a join, but that is not fidelity: the joined members, their count, and their individual texts are not preserved across nodes.
+No arbitrary type registration, field serialization, error-chain fidelity,
+error-code codegen annotations, cancellation frames, or remote deadline
+propagation. These features would widen the wire contract without changing
+the stable error code.
 
 ## Gap
 

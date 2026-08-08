@@ -66,8 +66,8 @@ Dropping ticks imposes a hard requirement: **clock subscription must happen in t
 **Invariant assertions** — checked after every step. The core ones:
 
 - State is never silently overwritten (a double activation hitting the ETag must report a conflict).
-- The call history of the same entity is linearizable (handed to porcupine).
-- Scheduled tasks are not delivered twice.
+- The call history of the same Grain is linearizable (handed to porcupine).
+- Reminders are not delivered twice.
 - Membership views eventually converge.
 
 **Seed reproduction** — on failure, print the seed; re-running with the same seed must produce a byte-identical event sequence. This rule itself needs a test.

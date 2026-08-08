@@ -1,6 +1,7 @@
 # Errors and cancellation
 
-An entity call may complete on this node or on another. Callers can rely on the same set of outcome rules. Location transparency guarantees exactly that — nothing more.
+A Grain Call may complete on this Silo or on another Silo. Callers can rely
+on the same outcome rules. Location transparency guarantees exactly that.
 
 Location transparency does not preserve in-process error objects. An error's concrete type, fields, wrapping, and implementation details do not become a contract because the call crosses nodes. Calls do not promise exactly-once execution either.
 

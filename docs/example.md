@@ -14,21 +14,29 @@ The example app answers a different question: when would you be glad you used th
 
 Chosen because it stresses four things at once — exactly the four reasons `gor` exists:
 
-**Large count, mostly idle.** A hundred thousand devices, but only a few hundred speaking at any moment. The traditional approach keeps all hundred thousand objects in memory, or reads the database on every report. `gor`'s answer: the device itself is an entity — in memory while speaking, gone when silent, with state left in the store.
+**Large count, mostly idle.** A hundred thousand devices, but only a few
+hundred speaking at any moment. `gor` keeps each Device Grain active while it
+speaks and keeps its State in the store when it is idle.
 
 **Concurrent writes to one device must be serialized.** The device reports state while operations pushes configuration. When the two collide, without serialization you write a pile of optimistic-lock retries. In `gor` this is the default; users do nothing.
 
-**Offline detection is naturally a scheduled task.** "No report for thirty seconds means offline" — this needs an alarm that follows the device and survives process restarts. That is exactly what the scheduled-task step provides. Polling the whole table for the same job gets linearly more expensive with device count.
+**Offline detection is naturally a Reminder.** "No report for thirty seconds
+means offline" needs an alarm that follows the Device Grain and survives a
+process restart. Polling the whole table gets more expensive as the device
+count grows.
 
-**Aggregation needs cross-entity calls.** "How many devices in this workshop are online" requires devices to reach the workshop. This demonstrates entity-to-entity calls, and why the reverse cannot work — the workshop cannot hold references to a hundred thousand devices and ask them one by one.
+**Aggregation needs cross-Grain Calls.** Devices notify the Workshop Grain
+when their state changes. The Workshop Grain keeps the online GrainIds. It
+does not call every Device Grain one by one.
 
 ## What the reader should learn
 
 In this order, someone new to `gor` should be able to:
 
-1. Recognize what should be an entity — what an identity is, where the boundaries go.
+1. Recognize what should be a Grain — what its GrainId is and where its
+   boundaries go.
 2. Know how state is stored, when it is persisted, and what a write conflict does.
-3. Attach a scheduled task and know it survives a process restart.
+3. Attach a Reminder and know it survives a process restart.
 4. Know what state the world is in after a call fails — the point examples most easily gloss over.
 
 Point 4 must be written seriously. **No ignored errors in the example.** Every failure is either handled, or a comment explains why it can be ignored here. Examples are copied; copying a `_ = err` copies a bug.

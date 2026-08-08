@@ -10,13 +10,13 @@ Two purposes; neither is about pretty numbers.
 
 ## Three measurements
 
-**Invocation round trip** — in-memory store, single process, serial calls to a method that does nothing on one entity. It measures the runtime's own overhead: mailbox in and out, activation lookup, reflection dispatch. Mix in storage and it cannot be measured.
+**Invocation round trip** — in-memory store, single process, serial calls to a method that does nothing on one Grain. It measures the runtime's own overhead: mailbox in and out, activation lookup, reflection dispatch. Mix in storage and it cannot be measured.
 
-**State write** — real disk; how long one `Set()` takes to land. This is the number users care about most, because it decides how many state changes per second one entity can do. This number is recorded at each durability tier the store offers ([persistence.md](persistence.md)); the throughput gap between tiers is the only reason a tier exists, and a single number would hide it. Both are measured on real disk — on tmpfs the sync that separates the tiers is a no-op, so both tiers measure the same fake-fast number and the comparison is void.
+**State write** — real disk; how long one `Set()` takes to land. This is the number users care about most, because it decides how many state changes per second one Grain can do. This number is recorded at each durability tier the store offers ([persistence.md](persistence.md)); the throughput gap between tiers is the only reason a tier exists, and a single number would hide it. Both are measured on real disk — on tmpfs the sync that separates the tiers is a no-op, so both tiers measure the same fake-fast number and the comparison is void.
 
-**Cold activation** — after an entity is evicted, how long the first call takes. The core promise of virtual entities is "you do not manage the lifecycle"; this number states the price of that sentence.
+**Cold activation** — after a Grain is evicted, how long the first call takes. The core promise of virtual Grains is "you do not manage the lifecycle"; this number states the price of that sentence.
 
-This one needs a real-disk store, and the entity must carry state that was written before. Being evicted means the state went back to disk, and reading it back is the bulk of this cost. An in-memory store would measure the runtime's lookup-and-construct overhead, not the time the user waits.
+This one needs a real-disk store, and the Grain must carry state that was written before. Being evicted means the state went back to disk, and reading it back is the bulk of this cost. An in-memory store would measure the runtime's lookup-and-construct overhead, not the time the user waits.
 
 Each of the three gets its own benchmark; no composite score. A composite score hides exactly the only useful information: which layer is slow.
 
