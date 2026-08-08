@@ -72,8 +72,8 @@ func TestSim_FaultsAndMailbox(t *testing.T) {
 		}
 
 		counterType := gor.TypeName[counter]()
-		id := gor.Identity{Type: counterType, Key: "mailbox"}
-		storeID := store.Identity{Type: id.Type, Key: id.Key}
+		id := gor.GrainId{GrainType: counterType, GrainKey: "mailbox"}
+		storeID := store.GrainId{GrainType: id.GrainType, GrainKey: id.GrainKey}
 		backend.setFaultPlans(nil)
 
 		first := invokeAsync(rt, id, 1)
@@ -103,18 +103,18 @@ func TestSim_FaultsAndMailbox(t *testing.T) {
 		}
 
 		observed := newObservations()
-		if err := observed.check(backend, []store.Identity{storeID}); err != nil {
+		if err := observed.check(backend, []store.GrainId{storeID}); err != nil {
 			t.Fatal(err)
 		}
 
-		backend.setFaultPlans(map[store.Identity]faultPlan{
+		backend.setFaultPlans(map[store.GrainId]faultPlan{
 			storeID: {write: faultSpec{kind: faultWriteError}},
 		})
 		result := awaitCall(invokeAsync(rt, id, 1))
 		if !errors.Is(result.err, errWriteFailure) {
 			t.Fatalf("write failure = %v, want %v", result.err, errWriteFailure)
 		}
-		if err := observed.check(backend, []store.Identity{storeID}); err != nil {
+		if err := observed.check(backend, []store.GrainId{storeID}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -123,13 +123,13 @@ func TestSim_FaultsAndMailbox(t *testing.T) {
 		if result.err != nil || result.value != 3 {
 			t.Fatalf("reactivated call = (%d, %v), want (3, nil)", result.value, result.err)
 		}
-		if err := observed.check(backend, []store.Identity{storeID}); err != nil {
+		if err := observed.check(backend, []store.GrainId{storeID}); err != nil {
 			t.Fatal(err)
 		}
 
-		readID := gor.Identity{Type: counterType, Key: "read-failure"}
-		readStoreID := store.Identity{Type: readID.Type, Key: readID.Key}
-		backend.setFaultPlans(map[store.Identity]faultPlan{
+		readID := gor.GrainId{GrainType: counterType, GrainKey: "read-failure"}
+		readStoreID := store.GrainId{GrainType: readID.GrainType, GrainKey: readID.GrainKey}
+		backend.setFaultPlans(map[store.GrainId]faultPlan{
 			readStoreID: {read: faultSpec{kind: faultReadError}},
 		})
 		result = awaitCall(invokeAsync(rt, readID, 4))
@@ -141,13 +141,13 @@ func TestSim_FaultsAndMailbox(t *testing.T) {
 		if result.err != nil || result.value != 4 {
 			t.Fatalf("read recovery call = (%d, %v), want (4, nil)", result.value, result.err)
 		}
-		if err := observed.check(backend, []store.Identity{storeID, readStoreID}); err != nil {
+		if err := observed.check(backend, []store.GrainId{storeID, readStoreID}); err != nil {
 			t.Fatal(err)
 		}
 
-		appliedID := gor.Identity{Type: counterType, Key: "applied-error"}
-		appliedStoreID := store.Identity{Type: appliedID.Type, Key: appliedID.Key}
-		backend.setFaultPlans(map[store.Identity]faultPlan{
+		appliedID := gor.GrainId{GrainType: counterType, GrainKey: "applied-error"}
+		appliedStoreID := store.GrainId{GrainType: appliedID.GrainType, GrainKey: appliedID.GrainKey}
+		backend.setFaultPlans(map[store.GrainId]faultPlan{
 			appliedStoreID: {write: faultSpec{kind: faultWriteAppliedError}},
 		})
 		result = awaitCall(invokeAsync(rt, appliedID, 2))
@@ -159,13 +159,13 @@ func TestSim_FaultsAndMailbox(t *testing.T) {
 		if result.err != nil || result.value != 3 {
 			t.Fatalf("applied write recovery call = (%d, %v), want (3, nil)", result.value, result.err)
 		}
-		if err := observed.check(backend, []store.Identity{storeID, readStoreID, appliedStoreID}); err != nil {
+		if err := observed.check(backend, []store.GrainId{storeID, readStoreID, appliedStoreID}); err != nil {
 			t.Fatal(err)
 		}
 
-		delayID := gor.Identity{Type: counterType, Key: "delay"}
-		delayStoreID := store.Identity{Type: delayID.Type, Key: delayID.Key}
-		backend.setFaultPlans(map[store.Identity]faultPlan{
+		delayID := gor.GrainId{GrainType: counterType, GrainKey: "delay"}
+		delayStoreID := store.GrainId{GrainType: delayID.GrainType, GrainKey: delayID.GrainKey}
+		backend.setFaultPlans(map[store.GrainId]faultPlan{
 			delayStoreID: {read: faultSpec{kind: faultDelay, delay: time.Millisecond}},
 		})
 		result = awaitCall(invokeAsync(rt, delayID, 1))
@@ -175,13 +175,13 @@ func TestSim_FaultsAndMailbox(t *testing.T) {
 		if backend.delayCount() == 0 {
 			t.Fatal("delay fault was not observed by the fake store")
 		}
-		if err := observed.check(backend, []store.Identity{storeID, readStoreID, appliedStoreID, delayStoreID}); err != nil {
+		if err := observed.check(backend, []store.GrainId{storeID, readStoreID, appliedStoreID, delayStoreID}); err != nil {
 			t.Fatal(err)
 		}
 	})
 }
 
-func invokeAsync(rt *gor.Runtime, id gor.Identity, delta int64) <-chan testCallResult {
+func invokeAsync(rt *gor.Runtime, id gor.GrainId, delta int64) <-chan testCallResult {
 	done := make(chan testCallResult, 1)
 	go func() {
 		var reply counterAddReply

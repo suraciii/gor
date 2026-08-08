@@ -21,7 +21,7 @@ func runScheduleStoreTests(t *testing.T, backend ScheduleStore) {
 		ctx := context.Background()
 		now := time.Unix(100, 0).UTC()
 		due := Schedule{
-			Identity: Identity{Type: "account", Key: "alice"},
+			GrainId:  GrainId{GrainType: "account", GrainKey: "alice"},
 			Name:     "wake",
 			Method:   "Wake",
 			DueAt:    now.Add(-time.Second),
@@ -44,7 +44,7 @@ func runScheduleStoreTests(t *testing.T, backend ScheduleStore) {
 		if len(got) != 1 {
 			t.Fatalf("ListDue returned %d rows, want 1", len(got))
 		}
-		if got[0].Identity != due.Identity || got[0].Name != due.Name || got[0].Method != due.Method || !got[0].DueAt.Equal(due.DueAt) || got[0].Interval != due.Interval || got[0].ETag != 1 {
+		if got[0].GrainId != due.GrainId || got[0].Name != due.Name || got[0].Method != due.Method || !got[0].DueAt.Equal(due.DueAt) || got[0].Interval != due.Interval || got[0].ETag != 1 {
 			t.Fatalf("due row = %#v, want %#v with ETag 1", got[0], due)
 		}
 
@@ -81,7 +81,7 @@ func runScheduleStoreTests(t *testing.T, backend ScheduleStore) {
 		ctx := context.Background()
 		now := time.Unix(200, 0).UTC()
 		task := Schedule{
-			Identity: Identity{Type: "account", Key: "bob"},
+			GrainId:  GrainId{GrainType: "account", GrainKey: "bob"},
 			Name:     "wake",
 			Method:   "Wake",
 			DueAt:    now.Add(-time.Second),
@@ -140,14 +140,14 @@ func runScheduleStoreTests(t *testing.T, backend ScheduleStore) {
 		var claimed Schedule
 		found := false
 		for _, candidate := range got {
-			if candidate.Identity == task.Identity && candidate.Name == task.Name {
+			if candidate.GrainId == task.GrainId && candidate.Name == task.Name {
 				claimed = candidate
 				found = true
 				break
 			}
 		}
 		if !found || claimed.ETag != task.ETag+1 || !claimed.DueAt.Equal(nextDueAt) {
-			t.Fatalf("claimed row = %#v, want %s/%s at next due time and ETag %d", got, task.Identity.Type, task.Name, task.ETag+1)
+			t.Fatalf("claimed row = %#v, want %s/%s at next due time and ETag %d", got, task.GrainId.GrainType, task.Name, task.ETag+1)
 		}
 	})
 
@@ -155,10 +155,10 @@ func runScheduleStoreTests(t *testing.T, backend ScheduleStore) {
 		ctx := context.Background()
 		now := time.Unix(300, 0).UTC()
 		task := Schedule{
-			Identity: Identity{Type: "account", Key: "carol"},
-			Name:     "once",
-			Method:   "Wake",
-			DueAt:    now.Add(-time.Second),
+			GrainId: GrainId{GrainType: "account", GrainKey: "carol"},
+			Name:    "once",
+			Method:  "Wake",
+			DueAt:   now.Add(-time.Second),
 		}
 		if err := backend.Put(ctx, task); err != nil {
 			t.Fatalf("Put: %v", err)
@@ -187,15 +187,15 @@ func runScheduleStoreTests(t *testing.T, backend ScheduleStore) {
 		ctx := context.Background()
 		now := time.Unix(400, 0).UTC()
 		task := Schedule{
-			Identity: Identity{Type: "account", Key: "dave"},
-			Name:     "cancel",
-			Method:   "Wake",
-			DueAt:    now.Add(time.Hour),
+			GrainId: GrainId{GrainType: "account", GrainKey: "dave"},
+			Name:    "cancel",
+			Method:  "Wake",
+			DueAt:   now.Add(time.Hour),
 		}
 		if err := backend.Put(ctx, task); err != nil {
 			t.Fatalf("Put: %v", err)
 		}
-		if err := backend.Delete(ctx, task.Identity, task.Name); err != nil {
+		if err := backend.Delete(ctx, task.GrainId, task.Name); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
 		remaining, err := backend.ListDue(ctx, now)

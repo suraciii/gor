@@ -1,6 +1,6 @@
 package invalid
 
-//gor:entity
+//gor:grain
 type Broken interface {
 	Call(value string) error
 }

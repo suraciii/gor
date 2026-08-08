@@ -48,10 +48,10 @@ func TestNewRuntimeReportsScheduledFailure(t *testing.T) {
 		}()
 
 		if err := backend.Put(context.Background(), store.Schedule{
-			Identity: store.Identity{Type: gor.TypeName[domain.Device](), Key: "device-1"},
-			Name:     "broken",
-			Method:   "NotAMethod",
-			DueAt:    start,
+			GrainId: store.GrainId{GrainType: gor.TypeName[domain.Device](), GrainKey: "device-1"},
+			Name:    "broken",
+			Method:  "NotAMethod",
+			DueAt:   start,
 		}); err != nil {
 			t.Fatal(err)
 		}

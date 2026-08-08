@@ -20,8 +20,8 @@ type Table interface {
 }
 
 type Invoker interface {
-	Owns(store.Identity) bool
-	Invoke(context.Context, store.Identity, string) error
+	Owns(store.GrainId) bool
+	Invoke(context.Context, store.GrainId, string) error
 }
 
 type Poller struct {
@@ -81,7 +81,7 @@ func (p *Poller) poll() {
 		if p.ctx.Err() != nil {
 			return
 		}
-		if !p.invoker.Owns(schedule.Identity) {
+		if !p.invoker.Owns(schedule.GrainId) {
 			continue
 		}
 		nextDueAt := nextDueAt(schedule, now)
@@ -89,7 +89,7 @@ func (p *Poller) poll() {
 		if err != nil || !claimed {
 			continue
 		}
-		_ = p.invoker.Invoke(p.ctx, schedule.Identity, schedule.Method)
+		_ = p.invoker.Invoke(p.ctx, schedule.GrainId, schedule.Method)
 	}
 }
 

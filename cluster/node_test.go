@@ -32,7 +32,7 @@ func TestNodeJoinWritesJoiningReadsThenActivates(t *testing.T) {
 		if node.State() != StateActive {
 			t.Fatalf("state after New = %v, want active", node.State())
 		}
-		owner, ok := Owner(initial, store.Identity{Type: "account", Key: "join"})
+		owner, ok := Owner(initial, store.GrainId{GrainType: "account", GrainKey: "join"})
 		if !ok || owner != "node-a" {
 			t.Fatalf("initial view owner = %q, %v; want node-a", owner, ok)
 		}
@@ -139,7 +139,7 @@ func TestNodeViewPollingNotifiesWhenMemberJoins(t *testing.T) {
 		updated := <-first.ViewChanges()
 		changed := 0
 		for index := 0; index < 4096; index++ {
-			identity := store.Identity{Type: "account", Key: strconv.Itoa(index)}
+			identity := store.GrainId{GrainType: "account", GrainKey: strconv.Itoa(index)}
 			beforeOwner, beforeOK := Owner(initial, identity)
 			afterOwner, afterOK := Owner(updated, identity)
 			if !beforeOK || beforeOwner != "node-a" || !afterOK || (afterOwner != "node-a" && afterOwner != "node-b") {

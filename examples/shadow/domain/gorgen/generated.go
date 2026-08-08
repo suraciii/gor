@@ -9,7 +9,7 @@ import (
 )
 
 type deviceProxy struct {
-	id gor.Identity
+	id gor.GrainId
 	rt gor.Invoker
 }
 
@@ -94,12 +94,12 @@ func newDeviceCall(method string) (args any, reply any) {
 	}
 }
 
-func newDeviceProxy(rt gor.Invoker, id gor.Identity) domain.Device {
+func newDeviceProxy(rt gor.Invoker, id gor.GrainId) domain.Device {
 	return &deviceProxy{id: id, rt: rt}
 }
 
 type workshopProxy struct {
-	id gor.Identity
+	id gor.GrainId
 	rt gor.Invoker
 }
 
@@ -169,13 +169,13 @@ func newWorkshopCall(method string) (args any, reply any) {
 	}
 }
 
-func newWorkshopProxy(rt gor.Invoker, id gor.Identity) domain.Workshop {
+func newWorkshopProxy(rt gor.Invoker, id gor.GrainId) domain.Workshop {
 	return &workshopProxy{id: id, rt: rt}
 }
 
-// Install installs the generated entity bindings in rt.
+// Install installs the generated Grain bindings in rt.
 // Call it once after creating rt and before registering or referencing any of
-// the generated entity types. After it returns nil, gor.Register and gor.Ref
+// the generated Grain types. After it returns nil, gor.Register and gor.Ref
 // can use those types with rt.
 func Install(rt *gor.Runtime) error {
 	if err := gor.InstallType[domain.Device](rt, dispatchDevice, newDeviceProxy, newDeviceCall); err != nil {

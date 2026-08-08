@@ -24,16 +24,16 @@ func (l *eventLog) addDecisionEvent(format string, args ...any) {
 	l.nextDecision++
 }
 
-func (l *eventLog) addCallDecision(nodes []int, id store.Identity, plan faultPlan, deltas []int64) {
-	l.addDecisionEvent("call nodes=[%s] entity=%s/%s deltas=[%s] fault=%s", formatIntList(nodes), id.Type, id.Key, formatInt64List(deltas), plan.eventName())
+func (l *eventLog) addCallDecision(nodes []int, id store.GrainId, plan faultPlan, deltas []int64) {
+	l.addDecisionEvent("call nodes=[%s] entity=%s/%s deltas=[%s] fault=%s", formatIntList(nodes), id.GrainType, id.GrainKey, formatInt64List(deltas), plan.eventName())
 }
 
-func (l *eventLog) addScheduleDecision(node int, id store.Identity, name string, delay, interval time.Duration, fault scheduleFaultSpec, member ...memberFaultSpec) {
-	l.addDecisionEvent("schedule node=%d entity=%s/%s name=%s after=%s every=%s fault=%s%s", node, id.Type, id.Key, name, delay, interval, fault.eventName(), memberFaultSuffix(member))
+func (l *eventLog) addScheduleDecision(node int, id store.GrainId, name string, delay, interval time.Duration, fault scheduleFaultSpec, member ...memberFaultSpec) {
+	l.addDecisionEvent("schedule node=%d entity=%s/%s name=%s after=%s every=%s fault=%s%s", node, id.GrainType, id.GrainKey, name, delay, interval, fault.eventName(), memberFaultSuffix(member))
 }
 
-func (l *eventLog) addDisarmDecision(node int, id store.Identity, name string, member ...memberFaultSpec) {
-	l.addDecisionEvent("disarm node=%d entity=%s/%s name=%s%s", node, id.Type, id.Key, name, memberFaultSuffix(member))
+func (l *eventLog) addDisarmDecision(node int, id store.GrainId, name string, member ...memberFaultSpec) {
+	l.addDecisionEvent("disarm node=%d entity=%s/%s name=%s%s", node, id.GrainType, id.GrainKey, name, memberFaultSuffix(member))
 }
 
 func (l *eventLog) addCrashDecision(node int, member ...memberFaultSpec) {
@@ -72,8 +72,8 @@ func (l *eventLog) addOutcomes(outcomes []string) {
 	l.add("     observe outcomes=[%s]", strings.Join(outcomes, ","))
 }
 
-func (l *eventLog) addState(id store.Identity, value int64) {
-	l.add("     observe state %s/%s=%d", id.Type, id.Key, value)
+func (l *eventLog) addState(id store.GrainId, value int64) {
+	l.add("     observe state %s/%s=%d", id.GrainType, id.GrainKey, value)
 }
 
 func (l *eventLog) addScheduleObservation(stats scheduleStats, deliveries int) {

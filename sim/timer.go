@@ -11,16 +11,16 @@ import (
 
 type timerTracker struct {
 	mu          sync.Mutex
-	outstanding map[store.Identity]int
+	outstanding map[store.GrainId]int
 	failure     error
 	deliveries  int
 }
 
 func newTimerTracker() *timerTracker {
-	return &timerTracker{outstanding: make(map[store.Identity]int)}
+	return &timerTracker{outstanding: make(map[store.GrainId]int)}
 }
 
-func (t *timerTracker) claim(id store.Identity, willDeliver bool) {
+func (t *timerTracker) claim(id store.GrainId, willDeliver bool) {
 	if !willDeliver {
 		return
 	}
@@ -29,11 +29,11 @@ func (t *timerTracker) claim(id store.Identity, willDeliver bool) {
 	t.outstanding[id]++
 }
 
-func (t *timerTracker) deliver(id store.Identity) {
+func (t *timerTracker) deliver(id store.GrainId) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.outstanding[id] == 0 {
-		t.failure = fmt.Errorf("delivery without an active claim for %s/%s", id.Type, id.Key)
+		t.failure = fmt.Errorf("delivery without an active claim for %s/%s", id.GrainType, id.GrainKey)
 		return
 	}
 	t.outstanding[id]--

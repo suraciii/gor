@@ -81,7 +81,7 @@ func TestSim_DoubleActivationRejectsETagConflict(t *testing.T) {
 		defer first.Close()
 		defer second.Close()
 
-		id := gor.Identity{Type: gor.TypeName[counter](), Key: "dual"}
+		id := gor.GrainId{GrainType: gor.TypeName[counter](), GrainKey: "dual"}
 		firstCall := invokeAsync(first, id, 3)
 		secondCall := invokeAsync(second, id, 5)
 		synctest.Wait()
@@ -108,8 +108,8 @@ func TestSim_DoubleActivationRejectsETagConflict(t *testing.T) {
 			t.Fatalf("dual activation results = (%v, %v), want one success and one conflict", firstResult.err, secondResult.err)
 		}
 
-		storeID := store.Identity{Type: id.Type, Key: id.Key}
-		record := backend.snapshot([]store.Identity{storeID})[storeID]
+		storeID := store.GrainId{GrainType: id.GrainType, GrainKey: id.GrainKey}
+		record := backend.snapshot([]store.GrainId{storeID})[storeID]
 		if record.ETag != 1 {
 			t.Fatalf("dual activation ETag = %d, want 1", record.ETag)
 		}
@@ -120,7 +120,7 @@ func TestSim_DoubleActivationRejectsETagConflict(t *testing.T) {
 		if value != 3 && value != 5 {
 			t.Fatalf("dual activation value = %d, want 3 or 5", value)
 		}
-		if err := newObservations().check(backend, []store.Identity{storeID}); err != nil {
+		if err := newObservations().check(backend, []store.GrainId{storeID}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -139,8 +139,8 @@ func TestSim_NetworkPartitionCreatesDualActivationAndRecovers(t *testing.T) {
 		cluster.advance(5 * simulationStepDuration)
 		counterType := gor.TypeName[counter]()
 		localID, remoteID := findPartitionIdentities(t, cluster, counterType)
-		local := gor.Identity(localID)
-		remote := gor.Identity(remoteID)
+		local := gor.GrainId(localID)
+		remote := gor.GrainId(remoteID)
 
 		seed := awaitCall(invokeAsync(cluster.nodes[0].rt, local, 2))
 		if seed.err != nil || seed.value != 2 {
@@ -201,7 +201,7 @@ func TestSim_NetworkPartitionCreatesDualActivationAndRecovers(t *testing.T) {
 
 		cluster.heal()
 		cluster.settle()
-		if err := cluster.checkInvariants([]store.Identity{localID, remoteID}); err != nil {
+		if err := cluster.checkInvariants([]store.GrainId{localID, remoteID}); err != nil {
 			t.Fatal(err)
 		}
 		if cluster.nodes[0].rt.Owns(localID) == cluster.nodes[1].rt.Owns(localID) {
@@ -210,7 +210,7 @@ func TestSim_NetworkPartitionCreatesDualActivationAndRecovers(t *testing.T) {
 
 		healedRemote := findIdentityOwnedBy(t, cluster, 1, counterType)
 		sendsBefore, deliveredBefore, droppedBefore, _, _, _, _ := cluster.network.stats()
-		recovered := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.Identity(healedRemote), 7))
+		recovered := awaitCall(invokeAsync(cluster.nodes[0].rt, gor.GrainId(healedRemote), 7))
 		if recovered.err != nil || recovered.value != 7 {
 			t.Fatalf("healed forwarded call = (%d, %v), want (7, nil)", recovered.value, recovered.err)
 		}
@@ -221,34 +221,34 @@ func TestSim_NetworkPartitionCreatesDualActivationAndRecovers(t *testing.T) {
 	})
 }
 
-func findPartitionIdentities(t *testing.T, cluster *simulationCluster, entityType string) (store.Identity, store.Identity) {
+func findPartitionIdentities(t *testing.T, cluster *simulationCluster, entityType string) (store.GrainId, store.GrainId) {
 	t.Helper()
-	var local, remote store.Identity
-	for index := 0; index < 4096 && (local == (store.Identity{}) || remote == (store.Identity{})); index++ {
-		id := store.Identity{Type: entityType, Key: fmt.Sprintf("partition-%04d", index)}
+	var local, remote store.GrainId
+	for index := 0; index < 4096 && (local == (store.GrainId{}) || remote == (store.GrainId{})); index++ {
+		id := store.GrainId{GrainType: entityType, GrainKey: fmt.Sprintf("partition-%04d", index)}
 		switch {
-		case cluster.nodes[0].rt.Owns(id) && local == (store.Identity{}):
+		case cluster.nodes[0].rt.Owns(id) && local == (store.GrainId{}):
 			local = id
-		case cluster.nodes[1].rt.Owns(id) && remote == (store.Identity{}):
+		case cluster.nodes[1].rt.Owns(id) && remote == (store.GrainId{}):
 			remote = id
 		}
 	}
-	if local == (store.Identity{}) || remote == (store.Identity{}) {
+	if local == (store.GrainId{}) || remote == (store.GrainId{}) {
 		t.Fatalf("could not find identities owned by separate nodes: local=%v remote=%v", local, remote)
 	}
 	return local, remote
 }
 
-func findIdentityOwnedBy(t *testing.T, cluster *simulationCluster, nodeID int, entityType string) store.Identity {
+func findIdentityOwnedBy(t *testing.T, cluster *simulationCluster, nodeID int, entityType string) store.GrainId {
 	t.Helper()
 	for index := 0; index < 4096; index++ {
-		id := store.Identity{Type: entityType, Key: fmt.Sprintf("partition-%04d", index)}
+		id := store.GrainId{GrainType: entityType, GrainKey: fmt.Sprintf("partition-%04d", index)}
 		if cluster.nodes[nodeID].rt.Owns(id) {
 			return id
 		}
 	}
 	t.Fatalf("could not find identity owned by node %d", nodeID)
-	return store.Identity{}
+	return store.GrainId{}
 }
 
 func TestSim_CrashRestartRestoresState(t *testing.T) {
@@ -259,7 +259,7 @@ func TestSim_CrashRestartRestoresState(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := gor.Identity{Type: gor.TypeName[counter](), Key: "restart"}
+		id := gor.GrainId{GrainType: gor.TypeName[counter](), GrainKey: "restart"}
 		result := awaitCall(invokeAsync(rt, id, 4))
 		if result.err != nil || result.value != 4 {
 			t.Fatalf("initial call = (%d, %v), want (4, nil)", result.value, result.err)
@@ -277,8 +277,8 @@ func TestSim_CrashRestartRestoresState(t *testing.T) {
 			t.Fatalf("restarted call = (%d, %v), want (10, nil)", result.value, result.err)
 		}
 
-		storeID := store.Identity{Type: id.Type, Key: id.Key}
-		record := backend.snapshot([]store.Identity{storeID})[storeID]
+		storeID := store.GrainId{GrainType: id.GrainType, GrainKey: id.GrainKey}
+		record := backend.snapshot([]store.GrainId{storeID})[storeID]
 		value, err := counterValue(record)
 		if err != nil {
 			t.Fatal(err)
@@ -286,7 +286,7 @@ func TestSim_CrashRestartRestoresState(t *testing.T) {
 		if value != 10 {
 			t.Fatalf("restarted state = %d, want 10", value)
 		}
-		if err := newObservations().check(backend, []store.Identity{storeID}); err != nil {
+		if err := newObservations().check(backend, []store.GrainId{storeID}); err != nil {
 			t.Fatal(err)
 		}
 	})

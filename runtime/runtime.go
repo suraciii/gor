@@ -23,14 +23,14 @@ var (
 	ErrPanic             = errors.New("runtime panic")
 )
 
-type Identity struct {
-	Type string
-	Key  string
+type GrainId struct {
+	GrainType string
+	GrainKey  string
 }
 
 type Activation struct {
-	Identity Identity
-	Queued   int
+	GrainId GrainId
+	Queued  int
 }
 
 type Dispatch func(context.Context, any, string, any, any) error
@@ -48,9 +48,9 @@ const (
 )
 
 type Registration struct {
-	Factory      func(context.Context, Identity) (any, error)
+	Factory      func(context.Context, GrainId) (any, error)
 	Dispatch     Dispatch
-	OnDeactivate func(context.Context, Identity, DeactivationReason, any)
+	OnDeactivate func(context.Context, GrainId, DeactivationReason, any)
 }
 
 type Discard struct {
@@ -94,8 +94,8 @@ type Runtime struct {
 	mu            sync.Mutex
 	state         engineState
 	registrations map[string]Registration
-	activations   map[Identity]*activation
-	pending       map[Identity]*entry
+	activations   map[GrainId]*activation
+	pending       map[GrainId]*entry
 
 	stop                 chan struct{}
 	ticker               clock.Ticker
@@ -122,9 +122,9 @@ const (
 )
 
 type activation struct {
-	id               Identity
+	id               GrainId
 	instance         any
-	onDeactivate     func(context.Context, Identity, DeactivationReason, any)
+	onDeactivate     func(context.Context, GrainId, DeactivationReason, any)
 	skipOnDeactivate bool
 	reason           DeactivationReason
 	mailbox          *mail.Box
@@ -147,8 +147,8 @@ func New(config Config) *Runtime {
 		mailboxCapacity: config.MailboxCapacity,
 		idleTimeout:     config.IdleTimeout,
 		registrations:   make(map[string]Registration),
-		activations:     make(map[Identity]*activation),
-		pending:         make(map[Identity]*entry),
+		activations:     make(map[GrainId]*activation),
+		pending:         make(map[GrainId]*entry),
 		stop:            make(chan struct{}),
 		evictionDone:    make(chan struct{}),
 		killing:         make(chan struct{}),
@@ -175,7 +175,7 @@ func (r *Runtime) Register(name string, registration Registration) error {
 	return nil
 }
 
-func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args any, reply any) error {
+func (r *Runtime) Invoke(ctx context.Context, id GrainId, method string, args any, reply any) error {
 	if err := checkCycle(ctx, id); err != nil {
 		return err
 	}
@@ -188,7 +188,7 @@ func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args a
 	// id again is rejected as a cycle.
 	callCtx = withOccupied(callCtx, id)
 
-	registration, err := r.registration(id.Type)
+	registration, err := r.registration(id.GrainType)
 	if err != nil {
 		return err
 	}
@@ -214,7 +214,7 @@ func (r *Runtime) Invoke(ctx context.Context, id Identity, method string, args a
 // Deactivate stops the activation for id because this node no longer owns it
 // (or the view has no active owner). The deactivation hook runs with
 // OwnershipLost.
-func (r *Runtime) Deactivate(id Identity) {
+func (r *Runtime) Deactivate(id GrainId) {
 	r.mu.Lock()
 	act, ok := r.activations[id]
 	if !ok {
@@ -228,10 +228,10 @@ func (r *Runtime) Deactivate(id Identity) {
 	}
 }
 
-func (r *Runtime) Identities() []Identity {
+func (r *Runtime) GrainIds() []GrainId {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	identities := make([]Identity, 0, len(r.activations))
+	identities := make([]GrainId, 0, len(r.activations))
 	for id := range r.activations {
 		identities = append(identities, id)
 	}
@@ -246,17 +246,17 @@ func (r *Runtime) Activations() []Activation {
 			continue
 		}
 		activations = append(activations, Activation{
-			Identity: act.id,
-			Queued:   act.mailbox.Len(),
+			GrainId: act.id,
+			Queued:  act.mailbox.Len(),
 		})
 	}
 	r.mu.Unlock()
 
 	sort.Slice(activations, func(i, j int) bool {
-		if activations[i].Identity.Type != activations[j].Identity.Type {
-			return activations[i].Identity.Type < activations[j].Identity.Type
+		if activations[i].GrainId.GrainType != activations[j].GrainId.GrainType {
+			return activations[i].GrainId.GrainType < activations[j].GrainId.GrainType
 		}
-		return activations[i].Identity.Key < activations[j].Identity.Key
+		return activations[i].GrainId.GrainKey < activations[j].GrainId.GrainKey
 	})
 	return activations
 }
@@ -388,7 +388,7 @@ func (r *Runtime) registration(name string) (Registration, error) {
 	return registration, nil
 }
 
-func (r *Runtime) activationFor(ctx context.Context, id Identity, registration Registration) (*activation, error) {
+func (r *Runtime) activationFor(ctx context.Context, id GrainId, registration Registration) (*activation, error) {
 	for {
 		r.mu.Lock()
 		if r.state != engineRunning {
@@ -434,7 +434,7 @@ func (r *Runtime) activationFor(ctx context.Context, id Identity, registration R
 	}
 }
 
-func (r *Runtime) createActivation(ctx context.Context, id Identity, registration Registration, pending *entry) (act *activation, err error) {
+func (r *Runtime) createActivation(ctx context.Context, id GrainId, registration Registration, pending *entry) (act *activation, err error) {
 	defer func() {
 		if value := recover(); value != nil {
 			act = nil
@@ -461,7 +461,7 @@ func (r *Runtime) createActivation(ctx context.Context, id Identity, registratio
 	return act, err
 }
 
-func (r *Runtime) activate(ctx context.Context, id Identity, registration Registration) (*activation, error) {
+func (r *Runtime) activate(ctx context.Context, id GrainId, registration Registration) (*activation, error) {
 	act := &activation{
 		id:           id,
 		onDeactivate: registration.OnDeactivate,
@@ -570,7 +570,7 @@ func (r *Runtime) waitForDeactivation(act *activation) {
 	<-act.mailbox.Done()
 	r.mu.Lock()
 	var (
-		onDeactivate func(context.Context, Identity, DeactivationReason, any)
+		onDeactivate func(context.Context, GrainId, DeactivationReason, any)
 		reason       DeactivationReason
 	)
 	if !act.skipOnDeactivate {

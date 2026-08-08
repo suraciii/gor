@@ -10,7 +10,7 @@ import (
 
 func TestSQLiteStore_WriteWithMatchingETagReturnsNewETag(t *testing.T) {
 	store := newSQLiteTestStore(t)
-	id := Identity{Type: "account", Key: "alice"}
+	id := GrainId{GrainType: "account", GrainKey: "alice"}
 
 	etag, err := store.Write(context.Background(), id, []byte("first"), 0)
 	if err != nil {
@@ -39,7 +39,7 @@ func TestSQLiteStore_WriteWithMatchingETagReturnsNewETag(t *testing.T) {
 
 func TestSQLiteStore_ConflictLeavesRecordUnchanged(t *testing.T) {
 	store := newSQLiteTestStore(t)
-	id := Identity{Type: "account", Key: "alice"}
+	id := GrainId{GrainType: "account", GrainKey: "alice"}
 
 	etag, err := store.Write(context.Background(), id, []byte("original"), 0)
 	if err != nil {
@@ -65,7 +65,7 @@ func TestSQLiteStore_ConflictLeavesRecordUnchanged(t *testing.T) {
 
 func TestSQLiteStore_ZeroETagConflictsWithExistingRecord(t *testing.T) {
 	store := newSQLiteTestStore(t)
-	id := Identity{Type: "account", Key: "alice"}
+	id := GrainId{GrainType: "account", GrainKey: "alice"}
 
 	if _, err := store.Write(context.Background(), id, []byte("existing"), 0); err != nil {
 		t.Fatalf("seed Write: %v", err)
@@ -78,7 +78,7 @@ func TestSQLiteStore_ZeroETagConflictsWithExistingRecord(t *testing.T) {
 
 func TestSQLiteStore_NonzeroETagConflictsWithMissingRecord(t *testing.T) {
 	store := newSQLiteTestStore(t)
-	id := Identity{Type: "account", Key: "missing"}
+	id := GrainId{GrainType: "account", GrainKey: "missing"}
 
 	if _, err := store.Write(context.Background(), id, []byte("unexpected"), 5); !errors.Is(err, ErrConflict) {
 		t.Fatalf("Write error = %v, want ErrConflict", err)
@@ -88,7 +88,7 @@ func TestSQLiteStore_NonzeroETagConflictsWithMissingRecord(t *testing.T) {
 func TestSQLiteStore_ReadMissingReturnsZeroRecord(t *testing.T) {
 	store := newSQLiteTestStore(t)
 
-	record, err := store.Read(context.Background(), Identity{Type: "account", Key: "missing"})
+	record, err := store.Read(context.Background(), GrainId{GrainType: "account", GrainKey: "missing"})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -99,8 +99,8 @@ func TestSQLiteStore_ReadMissingReturnsZeroRecord(t *testing.T) {
 
 func TestSQLiteStore_DifferentIdentitiesAreIndependent(t *testing.T) {
 	store := newSQLiteTestStore(t)
-	alice := Identity{Type: "account", Key: "alice"}
-	bob := Identity{Type: "account", Key: "bob"}
+	alice := GrainId{GrainType: "account", GrainKey: "alice"}
+	bob := GrainId{GrainType: "account", GrainKey: "bob"}
 
 	if _, err := store.Write(context.Background(), alice, []byte("alice"), 0); err != nil {
 		t.Fatalf("alice Write: %v", err)
@@ -127,7 +127,7 @@ func TestSQLiteStore_DifferentIdentitiesAreIndependent(t *testing.T) {
 
 func TestSQLiteStore_ReadAndWriteCopyData(t *testing.T) {
 	store := newSQLiteTestStore(t)
-	id := Identity{Type: "account", Key: "alice"}
+	id := GrainId{GrainType: "account", GrainKey: "alice"}
 	data := []byte("original")
 
 	if _, err := store.Write(context.Background(), id, data, 0); err != nil {
@@ -152,7 +152,7 @@ func TestSQLiteStore_ReadAndWriteCopyData(t *testing.T) {
 
 func TestSQLiteStore_PersistsAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.db")
-	id := Identity{Type: "account", Key: "alice"}
+	id := GrainId{GrainType: "account", GrainKey: "alice"}
 
 	first, err := OpenSQLite(path)
 	if err != nil {

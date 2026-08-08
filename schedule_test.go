@@ -43,7 +43,7 @@ type scheduledAccountEntity struct {
 
 type scheduledAccountProxy struct {
 	invoker Invoker
-	id      Identity
+	id      GrainId
 }
 
 func (a *scheduledAccountEntity) Arm(ctx context.Context) error {
@@ -128,7 +128,7 @@ func installScheduledAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int
 	if len(configs) > 0 {
 		config = configs[0]
 	}
-	if err := InstallType[scheduledAccount](rt, dispatchScheduledAccount, func(invoker Invoker, id Identity) scheduledAccount {
+	if err := InstallType[scheduledAccount](rt, dispatchScheduledAccount, func(invoker Invoker, id GrainId) scheduledAccount {
 		return &scheduledAccountProxy{invoker: invoker, id: id}
 	}, newScheduledAccountCall); err != nil {
 		t.Fatal(err)
@@ -176,8 +176,8 @@ func TestSchedule_OnErrorReceivesInvocationFailure(t *testing.T) {
 		select {
 		case got := <-errorsSeen:
 			source, ok := got.Source.(ScheduledInvocation)
-			wantID := Identity{Type: TypeName[scheduledAccount](), Key: "alice"}
-			if !ok || got.Identity != wantID || source.Method != "Wake" || !errors.Is(got.Err, wakeErr) {
+			wantID := GrainId{GrainType: TypeName[scheduledAccount](), GrainKey: "alice"}
+			if !ok || got.GrainId != wantID || source.Method != "Wake" || !errors.Is(got.Err, wakeErr) {
 				t.Fatalf("OnError event = %#v, want identity %v, ScheduledInvocation{Method: Wake}, error %v", got, wantID, wakeErr)
 			}
 		default:
@@ -266,7 +266,7 @@ func TestSchedule_SetOverwritesAndCancelDeletes(t *testing.T) {
 	start := time.Unix(0, 0).UTC()
 	fakeClock := clock.NewFake(start)
 	backend := store.NewMemory()
-	schedule := NewSchedule[scheduledAccount](newTestBinder(Identity{Type: "account", Key: "alice"}, backend, backend, fakeClock))
+	schedule := NewSchedule[scheduledAccount](newTestBinder(GrainId{GrainType: "account", GrainKey: "alice"}, backend, backend, fakeClock))
 
 	if err := schedule.Set(context.Background(), "wake", After(time.Second), Handle(scheduledAccount.Wake)); err != nil {
 		t.Fatal(err)
@@ -295,7 +295,7 @@ func TestSchedule_SetOverwritesAndCancelDeletes(t *testing.T) {
 }
 
 func TestSchedule_ReturnsUnavailableWithoutScheduleStore(t *testing.T) {
-	schedule := NewSchedule[scheduledAccount](newTestBinder(Identity{Type: "account", Key: "alice"}, failingWriteStore{}, nil, clock.Real{}))
+	schedule := NewSchedule[scheduledAccount](newTestBinder(GrainId{GrainType: "account", GrainKey: "alice"}, failingWriteStore{}, nil, clock.Real{}))
 	if err := schedule.Set(context.Background(), "wake", After(time.Second), Handle(scheduledAccount.Wake)); !errors.Is(err, ErrScheduleStoreUnavailable) {
 		t.Fatalf("Set error = %v, want ErrScheduleStoreUnavailable", err)
 	}

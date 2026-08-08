@@ -59,7 +59,7 @@ type counterTickReply struct{}
 
 type counterEntity struct {
 	value    gor.State[int64]
-	id       gor.Identity
+	id       gor.GrainId
 	schedule gor.Schedule[counter]
 	tracker  *timerTracker
 }
@@ -91,7 +91,7 @@ func (c *counterEntity) Tick(context.Context) error {
 
 type counterProxy struct {
 	invoker gor.Invoker
-	id      gor.Identity
+	id      gor.GrainId
 }
 
 func (p *counterProxy) Add(ctx context.Context, delta int64) (int64, error) {
@@ -152,7 +152,7 @@ func newCounterCall(method string) (args any, reply any) {
 }
 
 func installCounterType(rt *gor.Runtime) error {
-	return gor.InstallType[counter](rt, dispatchCounter, func(invoker gor.Invoker, id gor.Identity) counter {
+	return gor.InstallType[counter](rt, dispatchCounter, func(invoker gor.Invoker, id gor.GrainId) counter {
 		return &counterProxy{invoker: invoker, id: id}
 	}, newCounterCall)
 }
@@ -201,16 +201,16 @@ func newCounterRuntimeWithOptions(backend *fakeStore, tracker *timerTracker, opt
 	return rt, nil
 }
 
-func storeIdentity(id gor.Identity) store.Identity {
-	return store.Identity{Type: id.Type, Key: id.Key}
+func storeIdentity(id gor.GrainId) store.GrainId {
+	return store.GrainId{GrainType: id.GrainType, GrainKey: id.GrainKey}
 }
 
 const probeCount = 64
 
-func probeIdentities(entityType string) []store.Identity {
-	probes := make([]store.Identity, probeCount)
+func probeIdentities(entityType string) []store.GrainId {
+	probes := make([]store.GrainId, probeCount)
 	for index := range probes {
-		probes[index] = store.Identity{Type: entityType, Key: fmt.Sprintf("probe-%03d", index)}
+		probes[index] = store.GrainId{GrainType: entityType, GrainKey: fmt.Sprintf("probe-%03d", index)}
 	}
 	return probes
 }
@@ -399,19 +399,19 @@ func simErrorIs(err, target error) bool {
 	return errors.Is(err, target)
 }
 
-func logEntityStates(log *eventLog, backend *fakeStore, ids []store.Identity) error {
+func logEntityStates(log *eventLog, backend *fakeStore, ids []store.GrainId) error {
 	records := backend.snapshot(ids)
-	ordered := append([]store.Identity(nil), ids...)
+	ordered := append([]store.GrainId(nil), ids...)
 	sort.Slice(ordered, func(i, j int) bool {
-		if ordered[i].Type != ordered[j].Type {
-			return ordered[i].Type < ordered[j].Type
+		if ordered[i].GrainType != ordered[j].GrainType {
+			return ordered[i].GrainType < ordered[j].GrainType
 		}
-		return ordered[i].Key < ordered[j].Key
+		return ordered[i].GrainKey < ordered[j].GrainKey
 	})
 	for _, id := range ordered {
 		value, err := counterValue(records[id])
 		if err != nil {
-			return fmt.Errorf("decode state for %s/%s: %w", id.Type, id.Key, err)
+			return fmt.Errorf("decode state for %s/%s: %w", id.GrainType, id.GrainKey, err)
 		}
 		log.addState(id, value)
 	}
@@ -433,18 +433,18 @@ func counterValue(record store.Record) (int64, error) {
 
 type observations struct {
 	commitOffset int
-	lastETag     map[store.Identity]store.ETag
-	knownData    map[store.Identity]map[string]struct{}
+	lastETag     map[store.GrainId]store.ETag
+	knownData    map[store.GrainId]map[string]struct{}
 }
 
 func newObservations() *observations {
 	return &observations{
-		lastETag:  make(map[store.Identity]store.ETag),
-		knownData: make(map[store.Identity]map[string]struct{}),
+		lastETag:  make(map[store.GrainId]store.ETag),
+		knownData: make(map[store.GrainId]map[string]struct{}),
 	}
 }
 
-func (o *observations) check(backend *fakeStore, ids []store.Identity) error {
+func (o *observations) check(backend *fakeStore, ids []store.GrainId) error {
 	writes, offset := backend.committedWritesSince(o.commitOffset)
 	for _, write := range writes {
 		if o.knownData[write.id] == nil {
@@ -458,12 +458,12 @@ func (o *observations) check(backend *fakeStore, ids []store.Identity) error {
 	for _, id := range ids {
 		record := records[id]
 		if record.ETag < o.lastETag[id] {
-			return fmt.Errorf("etag regressed for %s/%s: got %d after %d", id.Type, id.Key, record.ETag, o.lastETag[id])
+			return fmt.Errorf("etag regressed for %s/%s: got %d after %d", id.GrainType, id.GrainKey, record.ETag, o.lastETag[id])
 		}
 		o.lastETag[id] = record.ETag
 		if record.ETag > 0 {
 			if _, ok := o.knownData[id][string(record.Data)]; !ok {
-				return fmt.Errorf("content was not observed in a committed write for %s/%s: %q", id.Type, id.Key, record.Data)
+				return fmt.Errorf("content was not observed in a committed write for %s/%s: %q", id.GrainType, id.GrainKey, record.Data)
 			}
 		}
 	}
@@ -483,12 +483,12 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 	defer cluster.close()
 
 	counterType := gor.TypeName[counter]()
-	entities := []store.Identity{
-		{Type: counterType, Key: "a"},
-		{Type: counterType, Key: "b"},
+	entities := []store.GrainId{
+		{GrainType: counterType, GrainKey: "a"},
+		{GrainType: counterType, GrainKey: "b"},
 	}
 	probes := probeIdentities(counterType)
-	checkedIdentities := append(append([]store.Identity(nil), entities...), probes...)
+	checkedIdentities := append(append([]store.GrainId(nil), entities...), probes...)
 	rng := rand.New(rand.NewPCG(seed, seed^0x517cc1b727220a95))
 	observations := newObservations()
 	history := newCounterHistory()
@@ -515,11 +515,11 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 		switch action {
 		case clusterCall:
 			entity := entities[rng.IntN(len(entities))]
-			id := gor.Identity{Type: entity.Type, Key: entity.Key}
+			id := gor.GrainId{GrainType: entity.GrainType, GrainKey: entity.GrainKey}
 			plan := chooseFaultPlan(rng)
 			plan.member = memberFault
 			storeID := storeIdentity(id)
-			cluster.backend.setFaultPlans(map[store.Identity]faultPlan{storeID: plan})
+			cluster.backend.setFaultPlans(map[store.GrainId]faultPlan{storeID: plan})
 			cluster.backend.setMemberFault(plan.member)
 
 			liveIDs := cluster.liveNodeIDs()
@@ -578,9 +578,9 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 			liveIDs := cluster.liveNodeIDs()
 			nodeID := liveIDs[rng.IntN(len(liveIDs))]
 			entity := entities[rng.IntN(len(entities))]
-			id := gor.Identity{Type: entity.Type, Key: entity.Key}
+			id := gor.GrainId{GrainType: entity.GrainType, GrainKey: entity.GrainKey}
 			backend.setFaultPlans(nil)
-			name := "wake-" + entity.Key
+			name := "wake-" + entity.GrainKey
 			delay := time.Duration(rng.IntN(3)+1) * simulationStepDuration
 			interval := time.Duration(0)
 			if rng.IntN(2) == 1 {
@@ -602,8 +602,8 @@ func runSimulation(seed uint64, nodeCount int) (string, error) {
 			liveIDs := cluster.liveNodeIDs()
 			nodeID := liveIDs[rng.IntN(len(liveIDs))]
 			entity := entities[rng.IntN(len(entities))]
-			id := gor.Identity{Type: entity.Type, Key: entity.Key}
-			name := "wake-" + entity.Key
+			id := gor.GrainId{GrainType: entity.GrainType, GrainKey: entity.GrainKey}
+			name := "wake-" + entity.GrainKey
 			backend.setFaultPlans(nil)
 			log.addDisarmDecision(nodeID, entity, name, memberFault)
 			err := cluster.nodes[nodeID].rt.Invoke(context.Background(), id, "Disarm", &counterDisarmRequest{A0: name}, &counterDisarmReply{})

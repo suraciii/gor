@@ -44,7 +44,7 @@ CREATE TABLE member (
 )`
 
 type oldScheduleSeed struct {
-	identity Identity
+	identity GrainId
 	name     string
 	method   string
 	dueAt    time.Time
@@ -89,12 +89,12 @@ func buildOldLayoutDB(t *testing.T, path string, records int) {
 		}
 	}
 	for i, schedule := range []oldScheduleSeed{
-		{identity: Identity{Type: "account", Key: "alice"}, name: "tick", method: "Tick", dueAt: time.Unix(0, 1000).UTC(), etag: 1},
-		{identity: Identity{Type: "account", Key: "bob"}, name: "renew", method: "Renew", dueAt: time.Unix(0, 500).UTC(), etag: 3},
+		{identity: GrainId{GrainType: "account", GrainKey: "alice"}, name: "tick", method: "Tick", dueAt: time.Unix(0, 1000).UTC(), etag: 1},
+		{identity: GrainId{GrainType: "account", GrainKey: "bob"}, name: "renew", method: "Renew", dueAt: time.Unix(0, 500).UTC(), etag: 3},
 	} {
 		if _, err := tx.Exec(`INSERT INTO schedule VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			schedule.identity.Type,
-			schedule.identity.Key,
+			schedule.identity.GrainType,
+			schedule.identity.GrainKey,
 			schedule.name,
 			schedule.method,
 			timeValue(schedule.dueAt),
@@ -161,7 +161,7 @@ func TestMigrate_OldDatabaseReadsBackEveryConfirmedState(t *testing.T) {
 			defer s.Close()
 
 			for i := 0; i < records; i++ {
-				id := Identity{Type: fmt.Sprintf("type-%d", i%4), Key: fmt.Sprintf("key-%d", i)}
+				id := GrainId{GrainType: fmt.Sprintf("type-%d", i%4), GrainKey: fmt.Sprintf("key-%d", i)}
 				record, err := s.Read(context.Background(), id)
 				if err != nil {
 					t.Fatalf("Read %#v: %v", id, err)
@@ -181,10 +181,10 @@ func TestMigrate_OldDatabaseReadsBackEveryConfirmedState(t *testing.T) {
 			if len(schedules) != 2 {
 				t.Fatalf("ListDue returned %d schedules, want 2", len(schedules))
 			}
-			if schedules[0].Identity != (Identity{Type: "account", Key: "bob"}) || schedules[0].Name != "renew" || schedules[0].Method != "Renew" || schedules[0].ETag != 3 {
+			if schedules[0].GrainId != (GrainId{GrainType: "account", GrainKey: "bob"}) || schedules[0].Name != "renew" || schedules[0].Method != "Renew" || schedules[0].ETag != 3 {
 				t.Fatalf("schedule[0] = %#v, want bob/renew/3", schedules[0])
 			}
-			if schedules[1].Identity != (Identity{Type: "account", Key: "alice"}) || schedules[1].Name != "tick" || schedules[1].Method != "Tick" || schedules[1].ETag != 1 {
+			if schedules[1].GrainId != (GrainId{GrainType: "account", GrainKey: "alice"}) || schedules[1].Name != "tick" || schedules[1].Method != "Tick" || schedules[1].ETag != 1 {
 				t.Fatalf("schedule[1] = %#v, want alice/tick/1", schedules[1])
 			}
 
@@ -216,7 +216,7 @@ func TestMigrate_OldDatabaseReadsBackEveryConfirmedState(t *testing.T) {
 				t.Fatalf("reopen: %v", err)
 			}
 			defer reopened.Close()
-			record, err := reopened.Read(context.Background(), Identity{Type: "type-0", Key: "key-0"})
+			record, err := reopened.Read(context.Background(), GrainId{GrainType: "type-0", GrainKey: "key-0"})
 			if err != nil {
 				t.Fatalf("Read after reopen: %v", err)
 			}
@@ -265,7 +265,7 @@ func TestMigrate_InterruptedMigrationCompletesOnReopen(t *testing.T) {
 	defer s.Close()
 
 	for i := 0; i < records; i++ {
-		id := Identity{Type: fmt.Sprintf("type-%d", i%4), Key: fmt.Sprintf("key-%d", i)}
+		id := GrainId{GrainType: fmt.Sprintf("type-%d", i%4), GrainKey: fmt.Sprintf("key-%d", i)}
 		record, err := s.Read(context.Background(), id)
 		if err != nil {
 			t.Fatalf("Read %#v: %v", id, err)
@@ -367,7 +367,7 @@ func TestMigrate_NewLayoutDatabaseIsNotMigrated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite: %v", err)
 	}
-	if _, err := s.Write(context.Background(), Identity{Type: "account", Key: "alice"}, []byte("x"), 0); err != nil {
+	if _, err := s.Write(context.Background(), GrainId{GrainType: "account", GrainKey: "alice"}, []byte("x"), 0); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if err := s.Close(); err != nil {

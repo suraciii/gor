@@ -1,7 +1,7 @@
-// Command gorgen generates Go support code for gor entity interfaces.
+// Command gorgen generates Go support code for gor Grain interfaces.
 //
 // It loads the package named by -pkg, reads interfaces marked with
-// //gor:entity, and writes generated proxies, dispatch functions, and an
+// //gor:grain, and writes generated proxies, dispatch functions, and an
 // Install function to generated.go. Run it with, for example:
 //
 //	go tool gorgen -pkg ./domain
@@ -10,11 +10,11 @@
 // `go get -tool github.com/suraciii/gor/cmd/gorgen`; inside the gor
 // repository itself, `go run ./cmd/gorgen` works the same.)
 //
-// Without -out, gorgen writes to the entity package's gorgen subpackage,
+// Without -out, gorgen writes to the Grain package's gorgen subpackage,
 // <package>/gorgen. Use -out to select another output directory. Import the
 // generated package, call its Install function after creating a gor.Runtime
-// and before using the generated entity references, then register and invoke
-// those entities through the root gor package.
+// and before using the generated Grain References, then register and invoke
+// those Grains through the root gor package.
 package main
 
 import (
@@ -38,7 +38,7 @@ func main() {
 func run(args []string, stderr io.Writer) error {
 	flags := flag.NewFlagSet("gorgen", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	packagePattern := flags.String("pkg", "", "package containing gor:entity interfaces")
+	packagePattern := flags.String("pkg", "", "package containing gor:grain interfaces")
 	output := flags.String("out", "", "output directory (default: <package>/gorgen)")
 	if err := flags.Parse(args); err != nil {
 		return err

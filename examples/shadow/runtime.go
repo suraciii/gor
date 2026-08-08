@@ -11,9 +11,9 @@ import (
 func LogBackgroundError(event gor.BackgroundError) {
 	switch source := event.Source.(type) {
 	case gor.ScheduledInvocation:
-		log.Printf("%s/%s.%s failed: %v", event.Identity.Type, event.Identity.Key, source.Method, event.Err)
+		log.Printf("%s/%s.%s failed: %v", event.GrainId.GrainType, event.GrainId.GrainKey, source.Method, event.Err)
 	case gor.Deactivation:
-		log.Printf("%s/%s deactivation (%v) failed: %v", event.Identity.Type, event.Identity.Key, source.Reason, event.Err)
+		log.Printf("%s/%s deactivation (%v) failed: %v", event.GrainId.GrainType, event.GrainId.GrainKey, source.Reason, event.Err)
 	}
 }
 

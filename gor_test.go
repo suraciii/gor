@@ -88,7 +88,7 @@ type lifecycleAccountEntity struct {
 
 type lifecycleAccountProxy struct {
 	invoker Invoker
-	id      Identity
+	id      GrainId
 }
 
 func (e *lifecycleAccountEntity) OnActivate(context.Context) error {
@@ -180,7 +180,7 @@ func newLifecycleAccountCall(method string) (args any, reply any) {
 
 func installLifecycleAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int32, configure func(*lifecycleAccountEntity)) {
 	t.Helper()
-	if err := InstallType[lifecycleAccount](rt, dispatchLifecycleAccount, func(invoker Invoker, id Identity) lifecycleAccount {
+	if err := InstallType[lifecycleAccount](rt, dispatchLifecycleAccount, func(invoker Invoker, id GrainId) lifecycleAccount {
 		return &lifecycleAccountProxy{invoker: invoker, id: id}
 	}, newLifecycleAccountCall); err != nil {
 		t.Fatal(err)
@@ -229,7 +229,7 @@ func (a *scopeAccountEntity) ForwardDeposit(ctx context.Context, amount int64) (
 
 type scopeAccountProxy struct {
 	invoker Invoker
-	id      Identity
+	id      GrainId
 }
 
 func (p *scopeAccountProxy) CreatedAt(ctx context.Context) (time.Time, error) {
@@ -278,7 +278,7 @@ func (a *account) Balance(context.Context) (int64, error) {
 
 func TestLifecycle_OnActivateRunsAfterLoadBeforeFirstCall(t *testing.T) {
 	backend := store.NewMemory()
-	id := store.Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+	id := store.GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: "alice"}
 	if _, err := backend.Write(context.Background(), id, []byte(`{"value":7}`), 0); err != nil {
 		t.Fatalf("seed Write: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestLifecycle_OnActivateFailureDoesNotEstablishActivation(t *testing.T) {
 			entity.activateErr = activateErr
 		})
 
-		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); !errors.Is(err, activateErr) {
 			t.Fatalf("first activation error = %v, want %v", err, activateErr)
 		}
@@ -346,7 +346,7 @@ func TestLifecycle_OnDeactivateFailureReportsAndRemovesActivation(t *testing.T) 
 			entity.deactivateCalls = deactivateCalls
 		})
 
-		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial Value: %v", err)
 		}
@@ -364,7 +364,7 @@ func TestLifecycle_OnDeactivateFailureReportsAndRemovesActivation(t *testing.T) 
 			if !ok {
 				t.Fatalf("reported source = %#v, want Deactivation", got.Source)
 			}
-			if got.Identity != id || source.Reason != Idle || !errors.Is(got.Err, deactivateErr) {
+			if got.GrainId != id || source.Reason != Idle || !errors.Is(got.Err, deactivateErr) {
 				t.Fatalf("reported error = %#v, want identity %v, Deactivation{Reason: Idle}, error %v", got, id, deactivateErr)
 			}
 		default:
@@ -390,7 +390,7 @@ func TestLifecycle_KillSkipsOnDeactivate(t *testing.T) {
 			entity.deactivateErr = errors.New("deactivate failed")
 		})
 
-		id := Identity{Type: TypeName[lifecycleAccount](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[lifecycleAccount](), GrainKey: "alice"}
 		if err := rt.Invoke(context.Background(), id, "Value", &lifecycleAccountValueRequest{}, &lifecycleAccountValueReply{}); err != nil {
 			t.Fatalf("initial Value: %v", err)
 		}
@@ -441,7 +441,7 @@ func TestRegister_InvokesInstalledDispatch(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 		var first accountDepositReply
 		if err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 2}, &first); err != nil {
 			t.Fatalf("first invoke error = %v", err)
@@ -530,7 +530,7 @@ func TestBinderScope_ProvidesClockAndTypedReferences(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallType[scopeAccount](rt, dispatchScopeAccount, func(invoker Invoker, id Identity) scopeAccount {
+		if err := InstallType[scopeAccount](rt, dispatchScopeAccount, func(invoker Invoker, id GrainId) scopeAccount {
 			return &scopeAccountProxy{invoker: invoker, id: id}
 		}, newScopeAccountCall); err != nil {
 			t.Fatal(err)
@@ -585,7 +585,7 @@ func TestRef_PanicsForUninstalledType(t *testing.T) {
 func TestRegister_LoadsAndPersistsState(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		backend := store.NewMemory()
-		id := store.Identity{Type: TypeName[Account](), Key: "alice"}
+		id := store.GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 		if _, err := backend.Write(context.Background(), id, []byte(`{"value":7}`), 0); err != nil {
 			t.Fatalf("seed Write: %v", err)
 		}
@@ -600,7 +600,7 @@ func TestRegister_LoadsAndPersistsState(t *testing.T) {
 		}
 
 		var balance accountBalanceReply
-		if err := rt.Invoke(context.Background(), Identity(id), "Balance", &accountBalanceRequest{}, &balance); err != nil {
+		if err := rt.Invoke(context.Background(), GrainId(id), "Balance", &accountBalanceRequest{}, &balance); err != nil {
 			t.Fatalf("Balance invoke error = %v", err)
 		}
 		if balance.R0 != 7 {
@@ -608,7 +608,7 @@ func TestRegister_LoadsAndPersistsState(t *testing.T) {
 		}
 
 		var deposited accountDepositReply
-		if err := rt.Invoke(context.Background(), Identity(id), "Deposit", &accountDepositRequest{A0: 2}, &deposited); err != nil {
+		if err := rt.Invoke(context.Background(), GrainId(id), "Deposit", &accountDepositRequest{A0: 2}, &deposited); err != nil {
 			t.Fatalf("Deposit invoke error = %v", err)
 		}
 		if deposited.R0 != 9 {
@@ -628,7 +628,7 @@ func TestRegister_LoadsAndPersistsState(t *testing.T) {
 func TestRuntime_RestartRestoresStateFromMemoryStore(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		backend := store.NewMemory()
-		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 
 		first := mustNew(t, WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
 		registerAccount(t, first)
@@ -660,7 +660,7 @@ func TestRuntime_RestartRestoresStateFromSQLite(t *testing.T) {
 	first := mustNew(t, WithStore(firstStore), WithIdleTimeout(0), WithEvictionInterval(0))
 	registerAccount(t, first)
 	var written accountDepositReply
-	if err := first.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Deposit", &accountDepositRequest{A0: 42}, &written); err != nil {
+	if err := first.Invoke(context.Background(), GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}, "Deposit", &accountDepositRequest{A0: 42}, &written); err != nil {
 		first.Close()
 		firstStore.Close()
 		t.Fatalf("first Deposit invoke error = %v", err)
@@ -679,7 +679,7 @@ func TestRuntime_RestartRestoresStateFromSQLite(t *testing.T) {
 	defer second.Close()
 	defer secondStore.Close()
 	var restored accountBalanceReply
-	if err := second.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Balance", &accountBalanceRequest{}, &restored); err != nil {
+	if err := second.Invoke(context.Background(), GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}, "Balance", &accountBalanceRequest{}, &restored); err != nil {
 		t.Fatalf("restarted Balance invoke error = %v", err)
 	}
 	if restored.R0 != 42 {
@@ -698,7 +698,7 @@ func dispatchAccountWithWrappedError(ctx context.Context, instance Account, meth
 func TestRegister_ConflictDiscardsActivationBeforeReactivation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		backend := store.NewMemory()
-		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 		rt := mustNew(t, WithStore(backend), WithIdleTimeout(0), WithEvictionInterval(0))
 		defer rt.Close()
 
@@ -719,7 +719,7 @@ func TestRegister_ConflictDiscardsActivationBeforeReactivation(t *testing.T) {
 			t.Fatalf("first balance = %d, want 10", first.R0)
 		}
 
-		storeID := store.Identity(id)
+		storeID := store.GrainId(id)
 		if _, err := backend.Write(context.Background(), storeID, []byte(`{"value":100}`), 1); err != nil {
 			t.Fatalf("external Write: %v", err)
 		}
@@ -769,7 +769,7 @@ func TestRegister_StateWriteFailureReturnsErrorAndDiscardsActivation(t *testing.
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 		var result accountDepositReply
 		err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 1}, &result)
 		if err == nil {
@@ -803,7 +803,7 @@ func TestRegister_StateWriteFailureJoinsMethodError(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		id := Identity{Type: TypeName[Account](), Key: "alice"}
+		id := GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}
 		var result accountDepositReply
 		err := rt.Invoke(context.Background(), id, "Deposit", &accountDepositRequest{A0: 1}, &result)
 		if err == nil {
@@ -867,7 +867,7 @@ func registerAccount(t *testing.T, rt *Runtime) {
 
 type accountProxy struct {
 	invoker Invoker
-	id      Identity
+	id      GrainId
 }
 
 func (p *accountProxy) Deposit(ctx context.Context, amount int64) (int64, error) {
@@ -889,7 +889,7 @@ func installAccount(t *testing.T, rt *Runtime) {
 
 func installAccountWithDispatch(t *testing.T, rt *Runtime, dispatch func(context.Context, Account, string, any, any) error) {
 	t.Helper()
-	if err := InstallType[Account](rt, dispatch, func(invoker Invoker, id Identity) Account {
+	if err := InstallType[Account](rt, dispatch, func(invoker Invoker, id GrainId) Account {
 		return &accountProxy{invoker: invoker, id: id}
 	}, newAccountCall); err != nil {
 		t.Fatal(err)

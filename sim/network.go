@@ -432,6 +432,6 @@ func (s *nodeScheduleStore) Put(ctx context.Context, schedule store.Schedule) er
 	return s.backend.Put(ctx, schedule)
 }
 
-func (s *nodeScheduleStore) Delete(ctx context.Context, id store.Identity, name string) error {
+func (s *nodeScheduleStore) Delete(ctx context.Context, id store.GrainId, name string) error {
 	return s.backend.Delete(ctx, id, name)
 }

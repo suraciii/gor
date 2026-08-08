@@ -180,13 +180,13 @@ func openSQLite(path string, memberClock clock.Clock, opts ...Option) (*SQLite, 
 
 // Read returns a copy of the stored record for id, or a zero Record and nil
 // when id has not been written.
-func (s *SQLite) Read(ctx context.Context, id Identity) (Record, error) {
+func (s *SQLite) Read(ctx context.Context, id GrainId) (Record, error) {
 	var record Record
 	var etag int64
 	err := s.stateReadDB.QueryRowContext(ctx,
 		"SELECT data, etag FROM records WHERE identity_type = ? AND identity_key = ?",
-		id.Type,
-		id.Key,
+		id.GrainType,
+		id.GrainKey,
 	).Scan(&record.Data, &etag)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, nil
@@ -202,7 +202,7 @@ func (s *SQLite) Read(ctx context.Context, id Identity) (Record, error) {
 // Write atomically replaces id's data when expect matches its current ETag.
 // It returns the incremented ETag, or an error matching ErrConflict when the
 // comparison fails.
-func (s *SQLite) Write(ctx context.Context, id Identity, data []byte, expect ETag) (ETag, error) {
+func (s *SQLite) Write(ctx context.Context, id GrainId, data []byte, expect ETag) (ETag, error) {
 	var (
 		result sql.Result
 		err    error
@@ -210,16 +210,16 @@ func (s *SQLite) Write(ctx context.Context, id Identity, data []byte, expect ETa
 	if expect == 0 {
 		result, err = s.stateWriteDB.ExecContext(ctx,
 			"INSERT INTO records (identity_type, identity_key, data, etag) VALUES (?, ?, ?, 1) ON CONFLICT (identity_type, identity_key) DO NOTHING",
-			id.Type,
-			id.Key,
+			id.GrainType,
+			id.GrainKey,
 			data,
 		)
 	} else {
 		result, err = s.stateWriteDB.ExecContext(ctx,
 			"UPDATE records SET data = ?, etag = etag + 1 WHERE identity_type = ? AND identity_key = ? AND etag = ?",
 			data,
-			id.Type,
-			id.Key,
+			id.GrainType,
+			id.GrainKey,
 			int64(expect),
 		)
 	}

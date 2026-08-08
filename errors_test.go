@@ -105,7 +105,7 @@ func TestInvokePreservesApplicationCodeAndMapsFrameworkCode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := rt.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Deposit", &accountDepositRequest{}, &accountDepositReply{})
+	err := rt.Invoke(context.Background(), GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}, "Deposit", &accountDepositRequest{}, &accountDepositReply{})
 	if !errors.Is(err, testApplicationCode) {
 		t.Fatalf("application error = %v, want application code", err)
 	}
@@ -114,7 +114,7 @@ func TestInvokePreservesApplicationCodeAndMapsFrameworkCode(t *testing.T) {
 	}
 
 	rt.Close()
-	err = rt.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Balance", &accountBalanceRequest{}, &accountBalanceReply{})
+	err = rt.Invoke(context.Background(), GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}, "Balance", &accountBalanceRequest{}, &accountBalanceReply{})
 	if !errors.Is(err, ErrRuntimeClosed) {
 		t.Fatalf("closed runtime error = %v, want ErrRuntimeClosed", err)
 	}
@@ -135,7 +135,7 @@ func TestInvokeMapsMethodPanicToErrPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := rt.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Deposit", &accountDepositRequest{}, &accountDepositReply{})
+	err := rt.Invoke(context.Background(), GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}, "Deposit", &accountDepositRequest{}, &accountDepositReply{})
 	if !errors.Is(err, ErrPanic) {
 		t.Fatalf("panic error = %v, want ErrPanic", err)
 	}
@@ -169,7 +169,7 @@ func TestInvokePreservesContextDeadlineExceeded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := rt.Invoke(context.Background(), Identity{Type: TypeName[Account](), Key: "alice"}, "Deposit", &accountDepositRequest{}, &accountDepositReply{})
+	err := rt.Invoke(context.Background(), GrainId{GrainType: TypeName[Account](), GrainKey: "alice"}, "Deposit", &accountDepositRequest{}, &accountDepositReply{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("deadline error = %v, want context.DeadlineExceeded", err)
 	}

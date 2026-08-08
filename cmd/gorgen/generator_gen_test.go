@@ -149,7 +149,7 @@ func TestGenerateReportsContractLine(t *testing.T) {
 	command.Dir = root
 	output, err := command.CombinedOutput()
 	if err == nil {
-		t.Fatal("gorgen accepted an invalid entity method")
+		t.Fatal("gorgen accepted an invalid Grain method")
 	}
 	message := string(output)
 	if !strings.Contains(message, "domain.go:5:") {
@@ -172,10 +172,10 @@ func TestGenerateRejectsPackageWithoutEntity(t *testing.T) {
 	command.Dir = root
 	output, err := command.CombinedOutput()
 	if err == nil {
-		t.Fatal("gorgen accepted a package without an entity interface")
+		t.Fatal("gorgen accepted a package without a Grain interface")
 	}
-	if !strings.Contains(string(output), "contains no gor:entity interfaces") {
-		t.Fatalf("error = %s, want missing-entity error", output)
+	if !strings.Contains(string(output), "contains no gor:grain interfaces") {
+		t.Fatalf("error = %s, want missing-Grain error", output)
 	}
 }
 
