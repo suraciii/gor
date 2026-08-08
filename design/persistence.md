@@ -309,7 +309,33 @@ The state-write baseline is recorded at each tier, because a single number would
 ## The Reminder table
 
 ```
-reminder(grain_type, grain_key, name, method, due_at, interval, etag)
+reminder(grain_type, grain_key, name, method, first_tick_time, due_at, interval, etag)
 ```
 
-This table does not go through the `Store` interface — scanning due rows, CAS claiming, and row deletion do not fit into "read and write one state per GrainId". It has its own interface; details in [timers.md](timers.md).
+The table above is the logical Reminder schema. SQLite may retain the existing
+physical `schedule` table when that preserves a non-destructive migration. The
+contract is the `first_tick_time` field, the old-row fallback, and the tests.
+
+`first_tick_time` stores the first due time for the current Reminder setting.
+`due_at` stores the next due time. `interval` stores the period. A zero
+`interval` means one-shot.
+
+This table does not go through the `Store` interface — scanning due rows, CAS
+claiming, and row deletion do not fit into "read and write one state per
+GrainId". It has its own interface, named `ReminderStore` in the public API;
+details are in [timers.md](timers.md).
+
+### SQLite Reminder migration
+
+When SQLite opens an existing coordination database, it must add the
+`first_tick_time INTEGER` column to the existing coordination table during
+open. The migration must also handle old rows that have no value in this
+column. For each such row, it must use the row's current `due_at` as
+`first_tick_time`.
+
+This fallback keeps old rows readable, but it cannot recover the original first
+time. The original first time is not reconstructible from an old row. The
+migration must document and preserve that limit.
+
+The migration must be covered by a storage test that opens an old database,
+checks the fallback value, and checks that a new open keeps the value.

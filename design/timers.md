@@ -33,6 +33,13 @@ func (a *account) ApplyInterest(ctx context.Context, tick gor.TickStatus) error 
 ```go
 type Reminder[T any] struct { /* bound to one GrainId */ }
 
+func NewReminder[T any](b *Binder) Reminder[T]
+
+type ReminderTime struct { /* first delay and period */ }
+
+func After(delay time.Duration) ReminderTime
+func Every(period time.Duration) ReminderTime
+
 type TickStatus struct {
     FirstTickTime   time.Time
     Period          time.Duration
@@ -46,6 +53,11 @@ func Handle[T any](m func(T, context.Context, TickStatus) error) MethodHandle[T]
 func (s Reminder[T]) Set(ctx context.Context, name string, when ReminderTime, m MethodHandle[T]) error
 ```
 
+The public Reminder API is `Reminder[T]`, `ReminderTime`, `NewReminder`,
+`ReminderStore`, `ReminderInvocation`, and `TickStatus`. `Handle` accepts
+`func(T, context.Context, TickStatus) error`. `After` creates a one-shot
+Reminder. `Every` creates a periodic Reminder.
+
 `Account.ApplyInterest` is a Go method expression. The compiler checks that
 `ApplyInterest` is a method of `Account` and that its signature is
 `func(Account, context.Context, TickStatus) error`. A typo, rename, or
@@ -56,6 +68,13 @@ The name the table stores is read off the method expression once, when `Handle` 
 
 The called method must be in the Grain's interface. The generated dispatch
 table must accept the `TickStatus` value at delivery time.
+
+The generator must also expose a typed `newReminderCall(method, TickStatus)`
+factory for each Grain interface. The factory creates the normal typed request
+and reply values for the Reminder method. The timer passes those values to
+`Runtime.Invoke`, so local and forwarded Calls use the same path. The timer
+must not use reflection. The public API must not expose a string dispatch path;
+the stored method name is only an internal identifier used by generated code.
 
 **Why a method expression, not a generated handle value.** Reminders are set from inside Grain methods, which live in the Grain package. The Grain package cannot import the package generated from its own interfaces: that package imports the Grain package for the interface types used in its proxies and dispatch, so the import is a cycle — the same reason generated artifacts land in their own package that the Grain package does not import (see [codegen.md](codegen.md)). A per-method handle symbol emitted by the generator therefore cannot be named from the code that sets a reminder. The method expression is the only compile-time-checked way to name a method from that code using just the `gor` package and the interface declared in the Grain package, so the handle carries no generated symbol. The generator changes nothing for this.
 
@@ -96,33 +115,51 @@ gor.After(d)   // one-shot, fires once after d
 gor.Every(d)   // periodic, fires every d
 ```
 
-`Set` overwrites by name. One Grain has only one Reminder with a given name.
-Setting it again changes its time. `Cancel(ctx, name)` deletes it.
+`Set` replaces the row with the same name. One Grain has only one Reminder
+with a given name. The replacement resets `FirstTickTime` to the new first due
+time. It also resets `DueAt` to that same first due time. `Cancel(ctx, name)`
+deletes the Reminder.
 
-**Missed windows are not made up.** If the process is down for three periods, it fires once on return and then tracks to the next future time. Making up three firings is a trap — what users want is almost never "run everything that piled up", and how much piles up depends on the downtime, making the behavior unpredictable. If catch-up is truly wanted, users compute it in the method from the last execution time.
+A one-shot Reminder uses `Period = 0` in its `TickStatus`. A periodic
+Reminder keeps its `FirstTickTime` when the poller claims it. The claim reports
+the claimed old `DueAt` as `CurrentTickTime`. The poller computes the next
+`DueAt` strictly in the future. It does not catch up missed periods.
+
+**Missed windows are not made up.** If the process is down for three periods,
+it fires once on return and then tracks to the next future time. Making up
+three firings is a trap — what users want is almost never "run everything that
+piled up", and how much piles up depends on the downtime, making the behavior
+unpredictable. If catch-up is truly wanted, users compute it in the method
+from the last execution time.
 
 **Precision is the polling interval.** Persisted Reminders should never promise milliseconds.
 
 ## The table
 
 ```
-reminder(grain_type, grain_key, name, method, due_at, interval, etag)
+reminder(grain_type, grain_key, name, method, first_tick_time, due_at, interval, etag)
 ```
 
-A zero `interval` means one-shot.
+`first_tick_time` stores the first due time for the current setting. `due_at`
+stores the next due time. A zero `interval` means one-shot and maps to
+`Period = 0` in `TickStatus`.
 
 The primary key is (GrainType, GrainKey, name). `name` identifies the
-Reminder. `method` is the method to call when due. One method can back
+Reminder. `method` is the internal method identifier. One method can back
 several Reminders with different periods.
 
-## The table's interface
+## ReminderStore
 
-Four operations, aligned with what the poller and the user each need to do:
+`ReminderStore` has four operations, aligned with what the poller and the user
+need to do:
 
 - **List due** — rows with `due_at <= now`; `now` comes in as a parameter.
 - **Claim one row** — CAS with the row's etag, pushing `due_at` to the given next time; a zero time deletes the row. Exactly one claiming node wins.
 - **Write one row** — unconditional overwrite; the user's `Set` goes here.
 - **Delete one row** — unconditional; the user's `Cancel` goes here.
+
+`ReminderStore` persists `FirstTickTime` with each row and returns it to the
+poller when it lists a due row.
 
 **The etag exists only for claiming.** The user's `Set` / `Cancel` carries no etag: the user does not have one anyway, and an explicit reschedule or cancel is his to win. The claim that got overwritten simply delivered one fewer time; at-most-once still holds.
 
@@ -136,15 +173,24 @@ The poller scans rows with `due_at <= now` and, for each row:
 
 1. **Claim** — CAS to push `due_at` to the next period (delete the row for
    one-shot Reminders).
-2. Deliver the call only after winning the claim.
+2. Build the typed request with the generated `newReminderCall` factory.
+3. Deliver the ordinary Call through `Runtime.Invoke`, only after winning the
+   claim.
 
-**Push to the first time still in the future**, not `due_at + interval`. After three periods of downtime, adding one interval still lands in the past; the next scan hits the same row again, and "no catch-up" becomes catch-up.
+The periodic claim keeps `FirstTickTime` and reports the claimed old `DueAt` as
+`CurrentTickTime`. It pushes `due_at` to the first time strictly in the future,
+not to `due_at + interval`. After three periods of downtime, adding one
+interval still lands in the past; the next scan hits the same row again, and
+"no catch-up" becomes catch-up.
 
-The reverse order causes repeated firing on a crash. Crash after the claim but before delivery misses one firing — a deliberate trade-off:
+The reverse order causes repeated firing on a crash. A failure after the claim
+can miss one delivery. This is a deliberate trade-off:
 
 **gor promises at-most-once delivery, not exactly-once execution.**
 
-Delivery failures are not retried. Only the user knows whether retrying is safe; the runtime does not decide for him — the same stance as on `State.Set()` conflicts.
+Delivery failures are not retried. Only the user knows whether retrying is safe;
+the runtime does not decide for the user — the same stance as on `State.Set()`
+conflicts.
 
 **But no retry does not mean silence.** A Reminder delivery has no caller waiting; the error returned by the method is sent by the runtime to the configured error sink, and dropped only when no sink is configured. The runtime does not retry for the user; whether to alert remains the user's decision.
 
@@ -255,9 +301,25 @@ The step-4 skeleton must hold this one:
 
 Crashes, claim failures, two pollers scanning at the same time — none of these may break it.
 
+## Minimum tests
+
+The minimum failure, restart, and claim tests must cover these cases:
+
+- A due Reminder is found and delivered after a process restart.
+- Two pollers claim the same row at the same time; one claim wins.
+- A failed claim does not deliver the Reminder and leaves the row available.
+- A process failure after a successful claim and before delivery may miss one delivery.
+- A failed Reminder method reaches `OnError`; the runtime does not retry it.
+- `Set` replaces by name, resets `FirstTickTime`, and resets the first due time.
+- A periodic Reminder after downtime reports the old due time, keeps `FirstTickTime`, and does not replay missed periods.
+- A one-shot Reminder reports `Period = 0`.
+
 ## Gap
 
 The typed Reminder method handle is implemented in the current code. The
-public naming migration to `Reminder` and `NewReminder` remains part of the
-0.1.0 API work. The method name is read from the expression once. The table,
-poller, and restart recovery use the method-name string.
+public naming migration to `Reminder`, `ReminderTime`, `NewReminder`, and
+`ReminderStore` remains part of the 0.1.0 API work. The `first_tick_time` row
+field and the generated typed `newReminderCall` factory are also part of that
+work. This design batch does not rename the Go implementation. The method
+name is read from the expression once. The table, poller, and restart recovery
+use the method-name string as an internal identifier.
