@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -75,6 +76,37 @@ func TestSQLiteApplicationStore_PersistsPendingAndAppliedRecords(t *testing.T) {
 	record, ok, err := second.ReadApplied(context.Background(), "persisted")
 	if err != nil || !ok || record.ActionID != "persisted" {
 		t.Fatalf("ReadApplied after reopen = (%#v, %v, %v), want persisted receipt", record, ok, err)
+	}
+}
+
+func TestSQLiteApplicationStore_PathWithURICharactersUsesRequestedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "business?#.db")
+	first, err := OpenSQLiteApplicationStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.SavePending(context.Background(), PendingAction{ActionID: "uri", DeviceKey: "device-1", State: "value", TraceID: "trace"}); err != nil {
+		first.Close()
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("requested Application database %q: %v", path, err)
+	}
+
+	second, err := OpenSQLiteApplicationStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	pending, err := second.ListPending(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].ActionID != "uri" {
+		t.Fatalf("pending after reopen = %#v, want URI-path record", pending)
 	}
 }
 

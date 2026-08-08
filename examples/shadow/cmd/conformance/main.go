@@ -161,32 +161,34 @@ func waitForRecovery(ctx context.Context, calls <-chan gor.CallObservation, time
 }
 
 func validateDatabasePaths(runtimePath, businessPath string) error {
-	runtimeStatePath := derivedRuntimeStatePath(runtimePath)
-	runtimePaths := []struct {
+	paths := []struct {
 		label string
 		path  string
 	}{
 		{label: "runtime coordination", path: runtimePath},
-		{label: "runtime State", path: runtimeStatePath},
+		{label: "runtime State", path: derivedRuntimeStatePath(runtimePath)},
+		{label: "application", path: businessPath},
 	}
-	businessAbsolute, err := resolveDatabasePath(businessPath)
-	if err != nil {
-		return fmt.Errorf("resolve Application database path: %w", err)
+	absolutePaths := make([]string, len(paths))
+	for index, database := range paths {
+		absolute, err := cleanDatabasePath(database.path)
+		if err != nil {
+			return fmt.Errorf("resolve %s database path: %w", database.label, err)
+		}
+		absolutePaths[index] = absolute
 	}
-	for _, runtime := range runtimePaths {
-		runtimeAbsolute, err := resolveDatabasePath(runtime.path)
-		if err != nil {
-			return fmt.Errorf("resolve %s path: %w", runtime.label, err)
-		}
-		if runtimeAbsolute == businessAbsolute {
-			return fmt.Errorf("application database path aliases the %s path: both resolve to %q", runtime.label, runtimeAbsolute)
-		}
-		same, err := sameExistingFile(runtime.path, businessPath)
-		if err != nil {
-			return fmt.Errorf("compare %s and application database paths: %w", runtime.label, err)
-		}
-		if same {
-			return fmt.Errorf("application database path aliases the existing %s file", runtime.label)
+	for left := 0; left < len(paths); left++ {
+		for right := left + 1; right < len(paths); right++ {
+			if absolutePaths[left] == absolutePaths[right] {
+				return fmt.Errorf("database paths for %s and %s must be different: both resolve to %q", paths[left].label, paths[right].label, absolutePaths[left])
+			}
+			same, err := sameExistingFile(absolutePaths[left], absolutePaths[right])
+			if err != nil {
+				return fmt.Errorf("compare %s and %s database paths: %w", paths[left].label, paths[right].label, err)
+			}
+			if same {
+				return fmt.Errorf("database paths for %s and %s must not alias an existing file", paths[left].label, paths[right].label)
+			}
 		}
 	}
 	return nil
@@ -198,11 +200,26 @@ func derivedRuntimeStatePath(runtimePath string) string {
 	return filepath.Join(directory, strings.TrimSuffix(base, extension)+"-state"+extension)
 }
 
-func resolveDatabasePath(path string) (string, error) {
-	absolute, err := filepath.Abs(filepath.Clean(path))
+func cleanDatabasePath(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("database path is empty")
+	}
+	for _, component := range strings.Split(filepath.ToSlash(path), "/") {
+		if component == ".." {
+			return "", errors.New("database path must not contain '..'")
+		}
+	}
+	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
+	if err := rejectSymlinkComponents(absolute); err != nil {
+		return "", err
+	}
+	return filepath.Clean(absolute), nil
+}
+
+func rejectSymlinkComponents(absolute string) error {
 	volume := filepath.VolumeName(absolute)
 	rest := strings.TrimPrefix(absolute, volume)
 	current := volume
@@ -211,41 +228,23 @@ func resolveDatabasePath(path string) (string, error) {
 		current = volume + separator
 		rest = strings.TrimPrefix(rest, separator)
 	}
-	parts := strings.Split(rest, separator)
-	links := 0
-	for index := 0; index < len(parts); {
-		if parts[index] == "" || parts[index] == "." {
-			index++
+	for _, component := range strings.Split(rest, separator) {
+		if component == "" || component == "." {
 			continue
 		}
-		candidate := filepath.Join(current, parts[index])
-		info, err := os.Lstat(candidate)
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) {
-			return filepath.Clean(filepath.Join(candidate, filepath.Join(parts[index+1:]...))), nil
+			return nil
 		}
 		if err != nil {
-			return "", err
+			return err
 		}
-		index++
-		if info.Mode()&os.ModeSymlink == 0 {
-			current = filepath.Clean(candidate)
-			continue
-		}
-		links++
-		if links > 255 {
-			return "", errors.New("too many database path symlinks")
-		}
-		target, err := os.Readlink(candidate)
-		if err != nil {
-			return "", err
-		}
-		if filepath.IsAbs(target) {
-			current = filepath.Clean(target)
-		} else {
-			current = filepath.Clean(filepath.Join(filepath.Dir(candidate), target))
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("database path contains symlink component %q", current)
 		}
 	}
-	return filepath.Clean(current), nil
+	return nil
 }
 
 func sameExistingFile(leftPath, rightPath string) (bool, error) {

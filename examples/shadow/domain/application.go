@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"path/filepath"
 	"sort"
 	"sync"
 
@@ -150,7 +152,7 @@ var _ ApplicationStore = (*SQLiteApplicationStore)(nil)
 
 // OpenSQLiteApplicationStore opens or creates a business database at path.
 func OpenSQLiteApplicationStore(path string) (*SQLiteApplicationStore, error) {
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)", path))
+	db, err := sql.Open("sqlite", applicationSQLiteDSN(path))
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +179,12 @@ CREATE TABLE IF NOT EXISTS applied_records (
 		return nil, fmt.Errorf("create application schema: %w", err)
 	}
 	return &SQLiteApplicationStore{db: db}, nil
+}
+
+func applicationSQLiteDSN(path string) string {
+	absolute, _ := filepath.Abs(path)
+	fileURI := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}).String()
+	return fmt.Sprintf("%s?_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)", fileURI)
 }
 
 // SavePending inserts an action, or accepts an identical repeat.
