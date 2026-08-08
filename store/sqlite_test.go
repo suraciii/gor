@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -177,6 +178,42 @@ func TestSQLiteStore_PersistsAcrossReopen(t *testing.T) {
 	}
 	if string(record.Data) != "persisted" || record.ETag != 1 {
 		t.Fatalf("Record after reopen = %#v, want persisted data and ETag 1", record)
+	}
+}
+
+func TestOpenSQLite_PathWithURICharactersUsesRequestedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store?#.db")
+	id := GrainId{GrainType: "account", GrainKey: "uri"}
+
+	first, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite first: %v", err)
+	}
+	if _, err := first.Write(context.Background(), id, []byte("uri"), 0); err != nil {
+		first.Close()
+		t.Fatalf("Write: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close first: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("requested coordination database %q: %v", path, err)
+	}
+	if _, err := os.Stat(stateFilePath(path)); err != nil {
+		t.Fatalf("requested State database %q: %v", stateFilePath(path), err)
+	}
+
+	second, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite second: %v", err)
+	}
+	defer second.Close()
+	record, err := second.Read(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Read after reopen: %v", err)
+	}
+	if string(record.Data) != "uri" {
+		t.Fatalf("Record after reopen = %#v, want uri", record)
 	}
 }
 

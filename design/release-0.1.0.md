@@ -118,7 +118,8 @@ Add a small example and tests that use only public APIs. It must contain:
 
 The example is not a second framework. It proves that the public Runtime
 boundaries support a real durable application pattern with local application
-data and safe repeat handling.
+data and safe repeat handling. The required Single Silo flow and its failure
+evidence are specified in [conformance-example.md](conformance-example.md).
 
 ### 6. Run release checks
 
@@ -168,7 +169,9 @@ The first example is the main usability test. A user must be able to:
 8. close and reopen the Runtime.
 
 Each step must have one clear public path. The example must not need cache
-details, private store layout, or a second hidden retry loop.
+details, private store layout, cluster membership, or a second hidden retry
+loop. The clean consumer build and two-process run are additional evidence
+for the conformance example.
 
 ## Work order
 

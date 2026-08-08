@@ -149,6 +149,8 @@ The release is ready only when all items below are true:
 
 ## Gap
 
-The single-Silo Runtime, State, Reminders, typed Calls, lifecycle, and
-observations already exist in parts. The 0.1.0 work is not complete until
-these parts use the public Grain model together under restart and failure.
+The conformance Application in `examples/shadow` now composes the
+single-Silo Runtime, State, Reminders, typed Calls, Request Context, lifecycle,
+and observations under restart and failure. It keeps business records in a
+separate ApplicationStore and uses ActionID Safe Repeat. The remaining release
+status is tracked in ROADMAP.md and the release gates.

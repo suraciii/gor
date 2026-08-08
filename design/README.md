@@ -27,6 +27,7 @@ When a document diverges significantly from the code, it lists a "Gap" section i
 - [observability.md](observability.md) — minimal runtime observability facts and performance bounds.
 - [benchmarks.md](benchmarks.md) — what the performance baseline measures and does not, and the measurement conditions comparable numbers must carry.
 - [api-documentation.md](api-documentation.md) — English doc comments for the public API: contract boundaries, scope, example trade-offs, and the acceptance process.
+- [conformance-example.md](conformance-example.md) — the Single Silo public API conformance flow: application records, pending actions, Reminder recovery, and release evidence.
 - [release.md](release.md) — version numbers, release thresholds, the manual release checklist, and how release-note blocks are handled.
 - [release-0.1.0.md](release-0.1.0.md) — the implementation order, failure matrix, conformance example, and evidence gates for the first announced release.
 

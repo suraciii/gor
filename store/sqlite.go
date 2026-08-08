@@ -271,7 +271,7 @@ func sqliteDSN(path string, durability Durability) string {
 	if durability == DurabilityRelaxed {
 		sync = "NORMAL"
 	}
-	return fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(%s)&_pragma=busy_timeout(%d)", path, sync, sqliteBusyTimeout)
+	return fmt.Sprintf("%s?_pragma=journal_mode(WAL)&_pragma=synchronous(%s)&_pragma=busy_timeout(%d)", sqliteFileURI(path), sync, sqliteBusyTimeout)
 }
 
 func stateFilePath(path string) string {

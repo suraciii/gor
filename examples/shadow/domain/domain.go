@@ -2,6 +2,8 @@ package domain
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -34,9 +36,36 @@ type Shadow struct {
 //gor:grain
 type Device interface {
 	Report(ctx context.Context, workshopID string, state string) error
+	ReportAction(ctx context.Context, actionID string, state string) error
 	Configure(ctx context.Context, configuration string) error
 	Shadow(ctx context.Context) (Shadow, error)
+	ShadowExists(ctx context.Context) (bool, error)
+	ClearShadow(ctx context.Context) error
+	ApplyPending(ctx context.Context, actionID string) error
 	MarkOffline(ctx context.Context, tick gor.TickStatus) error
+}
+
+//gor:grain
+type RecoveryCoordinator interface {
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
+	Recover(ctx context.Context, tick gor.TickStatus) error
+}
+
+const (
+	RecoveryCoordinatorKey = "recovery"
+	RecoveryReminderName   = "recovery"
+	RecoveryInterval       = time.Second
+)
+
+type CoordinatorState struct {
+	Running bool
+}
+
+type RecoveryObservation struct {
+	Tick         gor.TickStatus
+	TraceID      any
+	TracePresent bool
 }
 
 //gor:grain
@@ -51,23 +80,33 @@ type device struct {
 	id              gor.GrainId
 	shadow          gor.State[Shadow]
 	schedule        gor.Reminder[Device]
+	application     ApplicationStore
 	lifecycleEvents chan<- LifecycleEvent
 }
 
 func NewDevice(b *gor.Binder) Device {
-	return newDevice(b, nil)
+	return newDevice(b, nil, nil)
 }
 
 func NewDeviceWithLifecycle(b *gor.Binder, events chan<- LifecycleEvent) Device {
-	return newDevice(b, events)
+	return newDevice(b, events, nil)
 }
 
-func newDevice(b *gor.Binder, events chan<- LifecycleEvent) Device {
+func NewDeviceWithApplication(b *gor.Binder, application ApplicationStore) Device {
+	return newDevice(b, nil, application)
+}
+
+func NewDeviceWithApplicationAndLifecycle(b *gor.Binder, application ApplicationStore, events chan<- LifecycleEvent) Device {
+	return newDevice(b, events, application)
+}
+
+func newDevice(b *gor.Binder, events chan<- LifecycleEvent, application ApplicationStore) Device {
 	return &device{
 		binder:          b,
 		id:              gor.Self(b),
 		shadow:          gor.NewState[Shadow](b, "shadow"),
 		schedule:        gor.NewReminder[Device](b),
+		application:     application,
 		lifecycleEvents: events,
 	}
 }
@@ -102,6 +141,32 @@ func (d *device) Report(ctx context.Context, workshopID string, state string) er
 	return nil
 }
 
+func (d *device) ReportAction(ctx context.Context, actionID string, state string) error {
+	if d.application == nil {
+		return errors.New("application store is not configured")
+	}
+	if actionID == "" {
+		return errors.New("application action ID is empty")
+	}
+	traceID, err := traceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	if err := d.application.SavePending(ctx, PendingAction{
+		ActionID:  actionID,
+		DeviceKey: d.id.GrainKey,
+		State:     state,
+		TraceID:   traceID,
+	}); err != nil {
+		return err
+	}
+	shadow := d.shadow.Get()
+	shadow.ReportedState = state
+	shadow.ReportedAt = gor.Now(d.binder)
+	shadow.Online = true
+	return d.shadow.Set(ctx, shadow)
+}
+
 func (d *device) Configure(ctx context.Context, configuration string) error {
 	shadow := d.shadow.Get()
 	shadow.Configuration = configuration
@@ -110,6 +175,21 @@ func (d *device) Configure(ctx context.Context, configuration string) error {
 
 func (d *device) Shadow(context.Context) (Shadow, error) {
 	return d.shadow.Get(), nil
+}
+
+func (d *device) ShadowExists(context.Context) (bool, error) {
+	return d.shadow.Exists(), nil
+}
+
+func (d *device) ClearShadow(ctx context.Context) error {
+	return d.shadow.Clear(ctx)
+}
+
+func (d *device) ApplyPending(ctx context.Context, actionID string) error {
+	if d.application == nil {
+		return errors.New("application store is not configured")
+	}
+	return d.application.ApplyPending(ctx, actionID)
 }
 
 func (d *device) OnActivate(context.Context) error {
@@ -128,6 +208,18 @@ func (d *device) emitLifecycle(kind string) {
 	if d.lifecycleEvents != nil {
 		d.lifecycleEvents <- LifecycleEvent{GrainId: d.id, Kind: kind}
 	}
+}
+
+func traceIDFromContext(ctx context.Context) (string, error) {
+	value, ok := gor.RequestContextValue(ctx, "trace_id")
+	if !ok {
+		return "", nil
+	}
+	traceID, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("trace_id has type %T, want string", value)
+	}
+	return traceID, nil
 }
 
 func (d *device) MarkOffline(ctx context.Context, _ gor.TickStatus) error {
