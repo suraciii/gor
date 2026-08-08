@@ -36,7 +36,7 @@ func (*gatedCounterEntity) Disarm(context.Context, string) error {
 	return nil
 }
 
-func (*gatedCounterEntity) Tick(context.Context) error {
+func (*gatedCounterEntity) Tick(context.Context, gor.TickStatus) error {
 	return nil
 }
 

@@ -102,9 +102,10 @@ type pendingInterface struct {
 }
 
 type pendingMethod struct {
-	name    string
-	params  []pendingParameter
-	results []types.Type
+	name     string
+	reminder bool
+	params   []pendingParameter
+	results  []types.Type
 }
 
 type pendingParameter struct {
@@ -138,7 +139,7 @@ func loadInterface(pkg *packages.Package, specification *ast.TypeSpec, imports m
 		if signature.Results().Len() == 0 || !isError(signature.Results().At(signature.Results().Len()-1).Type()) {
 			return pendingInterface{}, locatedError(pkg.Fset, method.Pos(), "%s.%s must have error as its last result", model.name, method.Name())
 		}
-		loaded := pendingMethod{name: method.Name()}
+		loaded := pendingMethod{name: method.Name(), reminder: isReminderMethod(signature)}
 		for parameter := 0; parameter < signature.Params().Len(); parameter++ {
 			variable := signature.Params().At(parameter)
 			name := variable.Name()
@@ -155,6 +156,21 @@ func loadInterface(pkg *packages.Package, specification *ast.TypeSpec, imports m
 		model.methods[i] = loaded
 	}
 	return model, nil
+}
+
+func isReminderMethod(signature *types.Signature) bool {
+	if signature.Params().Len() != 2 || signature.Results().Len() != 1 {
+		return false
+	}
+	return isTickStatus(signature.Params().At(1).Type()) && isError(signature.Results().At(0).Type())
+}
+
+func isTickStatus(value types.Type) bool {
+	named, ok := value.(*types.Named)
+	if !ok || named.Obj().Pkg() == nil {
+		return false
+	}
+	return named.Obj().Name() == "TickStatus" && named.Obj().Pkg().Path() == "github.com/suraciii/gor"
 }
 
 // recordImports adds every package referenced by value to imports, keyed by
@@ -184,7 +200,7 @@ func materialize(entity pendingInterface, aliases map[string]string) Interface {
 	}
 	model := Interface{Name: entity.name, Methods: make([]Method, len(entity.methods))}
 	for i, method := range entity.methods {
-		loaded := Method{Name: method.name}
+		loaded := Method{Name: method.name, Reminder: method.reminder}
 		for _, parameter := range method.params {
 			loaded.Params = append(loaded.Params, Parameter{Name: parameter.name, Type: types.TypeString(parameter.typ, qualifier)})
 		}

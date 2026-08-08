@@ -166,7 +166,7 @@ func networkStatPositive(log, name string) bool {
 
 func scheduleStatPositive(log, name string) bool {
 	for _, line := range strings.Split(log, "\n") {
-		if !strings.Contains(line, "observe schedules ") {
+		if !strings.Contains(line, "observe reminders ") {
 			continue
 		}
 		for _, field := range strings.Fields(line) {

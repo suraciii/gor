@@ -174,18 +174,18 @@ func TestMigrate_OldDatabaseReadsBackEveryConfirmedState(t *testing.T) {
 				}
 			}
 
-			schedules, err := s.ListDue(context.Background(), time.Unix(0, 100000).UTC())
+			reminders, err := s.ListDue(context.Background(), time.Unix(0, 100000).UTC())
 			if err != nil {
 				t.Fatalf("ListDue: %v", err)
 			}
-			if len(schedules) != 2 {
-				t.Fatalf("ListDue returned %d schedules, want 2", len(schedules))
+			if len(reminders) != 2 {
+				t.Fatalf("ListDue returned %d reminders, want 2", len(reminders))
 			}
-			if schedules[0].GrainId != (GrainId{GrainType: "account", GrainKey: "bob"}) || schedules[0].Name != "renew" || schedules[0].Method != "Renew" || schedules[0].ETag != 3 {
-				t.Fatalf("schedule[0] = %#v, want bob/renew/3", schedules[0])
+			if reminders[0].GrainId != (GrainId{GrainType: "account", GrainKey: "bob"}) || reminders[0].Name != "renew" || reminders[0].Method != "Renew" || reminders[0].ETag != 3 || !reminders[0].FirstTickTime.Equal(reminders[0].DueAt) {
+				t.Fatalf("reminder[0] = %#v, want bob/renew/3 with FirstTickTime equal to DueAt", reminders[0])
 			}
-			if schedules[1].GrainId != (GrainId{GrainType: "account", GrainKey: "alice"}) || schedules[1].Name != "tick" || schedules[1].Method != "Tick" || schedules[1].ETag != 1 {
-				t.Fatalf("schedule[1] = %#v, want alice/tick/1", schedules[1])
+			if reminders[1].GrainId != (GrainId{GrainType: "account", GrainKey: "alice"}) || reminders[1].Name != "tick" || reminders[1].Method != "Tick" || reminders[1].ETag != 1 || !reminders[1].FirstTickTime.Equal(reminders[1].DueAt) {
+				t.Fatalf("reminder[1] = %#v, want alice/tick/1 with FirstTickTime equal to DueAt", reminders[1])
 			}
 
 			members, err := s.ListMembers(context.Background())
@@ -222,6 +222,13 @@ func TestMigrate_OldDatabaseReadsBackEveryConfirmedState(t *testing.T) {
 			}
 			if string(record.Data) != "data-0" || record.ETag != 5 {
 				t.Fatalf("record after reopen = %#v, want data-0 etag 5", record)
+			}
+			reopenedReminders, err := reopened.ListDue(context.Background(), time.Unix(0, 100000).UTC())
+			if err != nil {
+				t.Fatalf("ListDue after reopen: %v", err)
+			}
+			if len(reopenedReminders) != 2 || !reopenedReminders[0].FirstTickTime.Equal(reopenedReminders[0].DueAt) || !reopenedReminders[1].FirstTickTime.Equal(reopenedReminders[1].DueAt) {
+				t.Fatalf("reminders after reopen = %#v, want fallback FirstTickTime values", reopenedReminders)
 			}
 		})
 	}
@@ -338,12 +345,12 @@ func TestMigrate_OldDatabaseWithoutStateRows(t *testing.T) {
 	}
 	defer s.Close()
 
-	schedules, err := s.ListDue(context.Background(), time.Unix(0, 100000).UTC())
+	reminders, err := s.ListDue(context.Background(), time.Unix(0, 100000).UTC())
 	if err != nil {
 		t.Fatalf("ListDue: %v", err)
 	}
-	if len(schedules) != 2 {
-		t.Fatalf("ListDue returned %d schedules, want 2", len(schedules))
+	if len(reminders) != 2 {
+		t.Fatalf("ListDue returned %d reminders, want 2", len(reminders))
 	}
 	members, err := s.ListMembers(context.Background())
 	if err != nil {

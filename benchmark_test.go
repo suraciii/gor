@@ -94,7 +94,7 @@ func installBenchmarkEntity(b *testing.B, rt *Runtime) {
 	b.Helper()
 	if err := InstallType[benchmarkEntity](rt, dispatchBenchmarkEntity, func(invoker Invoker, id GrainId) benchmarkEntity {
 		return &benchmarkEntityProxy{invoker: invoker, id: id}
-	}, newBenchmarkEntityCall); err != nil {
+	}, newBenchmarkEntityCall, nil); err != nil {
 		rt.Close()
 		b.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func newBenchmarkForwardingRuntimes(b *testing.B) (*Runtime, *Runtime, GrainId, 
 			WithViewInterval(time.Hour),
 			WithIdleTimeout(0),
 			WithEvictionInterval(0),
-			WithScheduleInterval(0),
+			WithReminderInterval(0),
 			WithTransport(nodeTransport),
 		)
 		if err != nil {

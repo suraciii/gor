@@ -12,107 +12,101 @@ import (
 	"github.com/suraciii/gor/store"
 )
 
-// ErrScheduleStoreUnavailable is returned by Schedule.Set and Schedule.Cancel
-// when no schedule store is configured. It is a sentinel suitable for
+// ErrReminderStoreUnavailable is returned by Reminder.Set and Reminder.Cancel
+// when no reminder store is configured. It is a sentinel suitable for
 // errors.Is.
-var ErrScheduleStoreUnavailable = errors.New("schedule store is not configured")
+var ErrReminderStoreUnavailable = errors.New("reminder store is not configured")
 
-// ScheduleTime describes when a schedule first runs and whether it repeats.
-// Its zero value is valid and is equivalent to After(0): a one-shot schedule
+// ReminderTime describes when a Reminder first runs and whether it repeats.
+// Its zero value is valid and is equivalent to After(0): a one-shot Reminder
 // due at the clock time used by Set.
-type ScheduleTime struct {
+type ReminderTime struct {
 	delay    time.Duration
 	interval time.Duration
 }
 
-// After returns a one-shot schedule due delay after Set uses its clock. A zero
+// After returns a one-shot Reminder due delay after Set uses its clock. A zero
 // delay is due immediately; a negative delay is due in the past and is
-// eligible on the next scheduler poll.
-func After(delay time.Duration) ScheduleTime {
-	return ScheduleTime{delay: delay}
+// eligible on the next poller poll.
+func After(delay time.Duration) ReminderTime {
+	return ReminderTime{delay: delay}
 }
 
-// Every returns a schedule whose first due time is interval after Set uses its
+// Every returns a Reminder whose first due time is interval after Set uses its
 // clock and whose subsequent due times use the same interval when interval is
-// positive. Every(0) is accepted and produces a one-shot schedule, just like
-// After(0). A negative interval is also accepted and stored; it places the
-// schedule in the past so it remains due instead of producing a future
-// recurring deadline.
-func Every(interval time.Duration) ScheduleTime {
-	return ScheduleTime{delay: interval, interval: interval}
+// positive. Every(0) is accepted and produces a one-shot Reminder, just like
+// After(0). A negative interval is accepted and stored.
+func Every(interval time.Duration) ReminderTime {
+	return ReminderTime{delay: interval, interval: interval}
 }
 
-// MethodHandle names one method of T for a schedule. Build one with Handle
+// TickStatus describes the time represented by one Reminder delivery.
+type TickStatus struct {
+	FirstTickTime   time.Time
+	Period          time.Duration
+	CurrentTickTime time.Time
+}
+
+// MethodHandle names one method of T for a Reminder. Build one with Handle
 // from a method expression on T's interface; the type parameter ties the
-// handle to the entity interface, so a handle built from another interface
-// does not assign and cannot reach this schedule.
+// handle to the Grain interface.
 type MethodHandle[T any] struct {
 	method string
 }
 
 // Handle builds a MethodHandle from a method expression on T's interface,
 // such as gor.Handle(Account.ApplyInterest). The method name is read off the
-// expression once, at this call: reflect and runtime.FuncForPC yield the
-// full function name, and its trailing segment is the method name. The
-// expression must be a method expression on the interface — a hand-written
-// closure of the same function type also compiles, but the name read off it
-// is not a method name and delivery fails with "unknown method".
-func Handle[T any](m func(T, context.Context) error) MethodHandle[T] {
+// expression once, at this call. A closure of the same function type compiles,
+// but its name is not a method name and delivery fails with "unknown method".
+func Handle[T any](m func(T, context.Context, TickStatus) error) MethodHandle[T] {
 	full := runtime.FuncForPC(reflect.ValueOf(m).Pointer()).Name()
 	name := full[strings.LastIndexByte(full, '.')+1:]
 	return MethodHandle[T]{method: name}
 }
 
-// Schedule manages schedules for the entity bound to a Binder, typed to the
-// entity's interface T. Obtain one with NewSchedule[T]; the zero value has no
-// schedule store and its operations return ErrScheduleStoreUnavailable.
-type Schedule[T any] struct {
+// Reminder manages Reminders for the Grain bound to a Binder, typed to the
+// Grain's interface T. Obtain one with NewReminder[T]; the zero value has no
+// reminder store and its operations return ErrReminderStoreUnavailable.
+type Reminder[T any] struct {
 	identity store.GrainId
-	store    store.ScheduleStore
+	store    store.ReminderStore
 	clock    clock.Clock
 }
 
-// NewSchedule returns a schedule manager bound to the entity represented by b
+// NewReminder returns a Reminder manager bound to the Grain represented by b
 // and typed to its interface T.
-func NewSchedule[T any](b *Binder) Schedule[T] {
-	return Schedule[T]{
+func NewReminder[T any](b *Binder) Reminder[T] {
+	return Reminder[T]{
 		identity: b.identity,
-		store:    b.runtime.scheduleStore,
+		store:    b.runtime.reminderStore,
 		clock:    b.runtime.clock,
 	}
 }
 
-// Set creates or replaces the named schedule for the bound entity. m must be
-// a Handle built from a method expression on the entity's interface; the
-// method name is read off the handle once, here, and stored. Set does not
-// validate that the name has a dispatch case, so a handle built from a
-// closure rather than a method expression is stored and fails with "unknown
-// method" when the scheduler invokes it. A successful Set persists the
-// schedule. Each due occurrence is delivered at most once, and an invocation
-// that returns an error is not automatically retried. Setting the same name
-// again replaces its method and timing.
-// Set returns ErrScheduleStoreUnavailable when no schedule store is
-// configured, or the error returned by the store.
-func (s Schedule[T]) Set(ctx context.Context, name string, when ScheduleTime, m MethodHandle[T]) error {
+// Set creates or replaces the named Reminder for the bound Grain. The new
+// first due time is used as FirstTickTime and DueAt. A successful Set persists
+// the Reminder. Each due occurrence is delivered at most once, and an
+// invocation that returns an error is not automatically retried.
+func (s Reminder[T]) Set(ctx context.Context, name string, when ReminderTime, m MethodHandle[T]) error {
 	if s.store == nil {
-		return ErrScheduleStoreUnavailable
+		return ErrReminderStoreUnavailable
 	}
-	return s.store.Put(ctx, store.Schedule{
-		GrainId:  s.identity,
-		Name:     name,
-		Method:   m.method,
-		DueAt:    s.clock.Now().Add(when.delay),
-		Interval: when.interval,
+	firstTickTime := s.clock.Now().Add(when.delay)
+	return s.store.Put(ctx, store.Reminder{
+		GrainId:       s.identity,
+		Name:          name,
+		Method:        m.method,
+		FirstTickTime: firstTickTime,
+		DueAt:         firstTickTime,
+		Interval:      when.interval,
 	})
 }
 
-// Cancel asks the schedule store to delete the named schedule for the bound
-// entity. Canceling a name that does not exist succeeds as a no-op. It returns
-// ErrScheduleStoreUnavailable when no schedule store is configured, or the
-// error returned by the store.
-func (s Schedule[T]) Cancel(ctx context.Context, name string) error {
+// Cancel asks the reminder store to delete the named Reminder for the bound
+// Grain. Canceling a name that does not exist succeeds as a no-op.
+func (s Reminder[T]) Cancel(ctx context.Context, name string) error {
 	if s.store == nil {
-		return ErrScheduleStoreUnavailable
+		return ErrReminderStoreUnavailable
 	}
 	return s.store.Delete(ctx, s.identity, name)
 }

@@ -14,19 +14,19 @@ import (
 )
 
 type fakeTable struct {
-	rows     []store.Schedule
+	rows     []store.Reminder
 	claimWon bool
 
 	recorder  *stepRecorder
 	nextDueAt []time.Time
 }
 
-func (t *fakeTable) ListDue(context.Context, time.Time) ([]store.Schedule, error) {
+func (t *fakeTable) ListDue(context.Context, time.Time) ([]store.Reminder, error) {
 	t.recorder.record("list")
-	return append([]store.Schedule(nil), t.rows...), nil
+	return append([]store.Reminder(nil), t.rows...), nil
 }
 
-func (t *fakeTable) Claim(_ context.Context, schedule store.Schedule, nextDueAt time.Time) (bool, error) {
+func (t *fakeTable) Claim(_ context.Context, schedule store.Reminder, nextDueAt time.Time) (bool, error) {
 	t.recorder.mu.Lock()
 	t.recorder.steps = append(t.recorder.steps, "claim")
 	t.nextDueAt = append(t.nextDueAt, nextDueAt)
@@ -39,7 +39,11 @@ type recordingInvoker struct {
 	calls    []store.GrainId
 }
 
-func (i *recordingInvoker) Invoke(_ context.Context, id store.GrainId, method string) error {
+func testReminderCall(store.GrainId, string, time.Time, time.Duration, time.Time) (any, any) {
+	return &struct{}{}, &struct{}{}
+}
+
+func (i *recordingInvoker) Invoke(_ context.Context, id store.GrainId, method string, _, _ any) error {
 	i.recorder.mu.Lock()
 	i.recorder.steps = append(i.recorder.steps, "invoke")
 	i.calls = append(i.calls, id)
@@ -67,7 +71,7 @@ func (r *stepRecorder) record(step string) {
 	r.mu.Unlock()
 }
 
-func (i *blockingInvoker) Invoke(ctx context.Context, _ store.GrainId, _ string) error {
+func (i *blockingInvoker) Invoke(ctx context.Context, _ store.GrainId, _ string, _, _ any) error {
 	close(i.started)
 	<-ctx.Done()
 	close(i.finished)
@@ -87,7 +91,7 @@ func (i *ownershipInvoker) Owns(store.GrainId) bool {
 	return i.owns
 }
 
-func (i *ownershipInvoker) Invoke(context.Context, store.GrainId, string) error {
+func (i *ownershipInvoker) Invoke(context.Context, store.GrainId, string, any, any) error {
 	i.calls.Add(1)
 	return nil
 }
@@ -97,7 +101,7 @@ func TestPoller_ClaimsBeforeInvoking(t *testing.T) {
 		start := time.Unix(100, 0).UTC()
 		recorder := &stepRecorder{}
 		backend := &fakeTable{
-			rows: []store.Schedule{{
+			rows: []store.Reminder{{
 				GrainId:  store.GrainId{GrainType: "account", GrainKey: "alice"},
 				Name:     "wake",
 				Method:   "Wake",
@@ -110,7 +114,7 @@ func TestPoller_ClaimsBeforeInvoking(t *testing.T) {
 		}
 		fakeClock := clock.NewFake(start)
 		invoker := &recordingInvoker{recorder: recorder}
-		poller := New(backend, fakeClock, time.Second, invoker)
+		poller := New(backend, fakeClock, time.Second, invoker, testReminderCall)
 		synctest.Wait()
 		fakeClock.Advance(time.Second)
 		synctest.Wait()
@@ -127,7 +131,7 @@ func TestPoller_AdvancesToFirstFutureTime(t *testing.T) {
 		start := time.Unix(200, 0).UTC()
 		interval := time.Hour
 		backend := &fakeTable{
-			rows: []store.Schedule{{
+			rows: []store.Reminder{{
 				GrainId:  store.GrainId{GrainType: "account", GrainKey: "alice"},
 				Name:     "wake",
 				Method:   "Wake",
@@ -140,7 +144,7 @@ func TestPoller_AdvancesToFirstFutureTime(t *testing.T) {
 		}
 		fakeClock := clock.NewFake(start)
 		invoker := &recordingInvoker{recorder: backend.recorder}
-		poller := New(backend, fakeClock, time.Second, invoker)
+		poller := New(backend, fakeClock, time.Second, invoker, testReminderCall)
 		synctest.Wait()
 		fakeClock.Advance(time.Second)
 		synctest.Wait()
@@ -156,11 +160,125 @@ func TestPoller_AdvancesToFirstFutureTime(t *testing.T) {
 	})
 }
 
+func TestNextDueAt_LargeDowntimeReturnsPromptly(t *testing.T) {
+	period := time.Nanosecond
+	dueAt := time.Unix(0, 0).UTC()
+	now := dueAt.Add(time.Hour)
+	reminder := store.Reminder{DueAt: dueAt, Interval: period}
+
+	got := nextDueAt(reminder, now)
+	want := now.Add(period)
+	if !got.After(now) || !got.Equal(want) {
+		t.Fatalf("next due time = %s, want %s strictly after now", got, want)
+	}
+
+	future := now.Add(time.Hour)
+	reminder.DueAt = future
+	if got := nextDueAt(reminder, now); !got.Equal(future) {
+		t.Fatalf("future due time = %s, want unchanged %s", got, future)
+	}
+
+	reminder.DueAt = now
+	reminder.Interval = 2 * time.Nanosecond
+	if got := nextDueAt(reminder, now); !got.Equal(now.Add(reminder.Interval)) {
+		t.Fatalf("due-now next time = %s, want %s", got, now.Add(reminder.Interval))
+	}
+
+	for _, interval := range []time.Duration{0, -time.Nanosecond} {
+		reminder.Interval = interval
+		if got := nextDueAt(reminder, now); !got.IsZero() {
+			t.Fatalf("interval %s next time = %s, want zero", interval, got)
+		}
+	}
+
+	const maxElapsed = time.Duration(1<<63 - 1)
+	overflowDueAt := time.Unix(0, 0).UTC()
+	overflowNow := overflowDueAt.Add(maxElapsed)
+	reminder.DueAt = overflowDueAt
+	reminder.Interval = 2 * time.Nanosecond
+	if got := nextDueAt(reminder, overflowNow); !got.After(overflowNow) {
+		t.Fatalf("overflow fallback = %s, want strictly after %s", got, overflowNow)
+	}
+}
+
+func TestPoller_PassesPeriodicTickStatus(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(250, 0).UTC()
+		period := time.Hour
+		first := start.Add(-3 * period)
+		due := start.Add(-period)
+		backend := &fakeTable{
+			rows: []store.Reminder{{
+				GrainId:       store.GrainId{GrainType: "account", GrainKey: "alice"},
+				Name:          "wake",
+				Method:        "Wake",
+				FirstTickTime: first,
+				DueAt:         due,
+				Interval:      period,
+				ETag:          1,
+			}},
+			claimWon: true,
+			recorder: &stepRecorder{},
+		}
+		fakeClock := clock.NewFake(start)
+		var gotFirst, gotCurrent time.Time
+		var gotPeriod time.Duration
+		factory := func(_ store.GrainId, _ string, firstTick time.Time, tickPeriod time.Duration, current time.Time) (any, any) {
+			gotFirst = firstTick
+			gotPeriod = tickPeriod
+			gotCurrent = current
+			return &struct{}{}, &struct{}{}
+		}
+		poller := New(backend, fakeClock, time.Second, &recordingInvoker{recorder: backend.recorder}, factory)
+		synctest.Wait()
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+		poller.Close()
+
+		if !gotFirst.Equal(first) || gotPeriod != period || !gotCurrent.Equal(due) {
+			t.Fatalf("TickStatus = first %s period %s current %s, want %s %s %s", gotFirst, gotPeriod, gotCurrent, first, period, due)
+		}
+	})
+}
+
+func TestPoller_PassesZeroPeriodForOneShot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Unix(275, 0).UTC()
+		backend := &fakeTable{
+			rows: []store.Reminder{{
+				GrainId:       store.GrainId{GrainType: "account", GrainKey: "alice"},
+				Name:          "wake",
+				Method:        "Wake",
+				FirstTickTime: start,
+				DueAt:         start,
+				ETag:          1,
+			}},
+			claimWon: true,
+			recorder: &stepRecorder{},
+		}
+		fakeClock := clock.NewFake(start)
+		var gotPeriod time.Duration
+		factory := func(_ store.GrainId, _ string, _ time.Time, period time.Duration, _ time.Time) (any, any) {
+			gotPeriod = period
+			return &struct{}{}, &struct{}{}
+		}
+		poller := New(backend, fakeClock, time.Second, &recordingInvoker{recorder: backend.recorder}, factory)
+		synctest.Wait()
+		fakeClock.Advance(time.Second)
+		synctest.Wait()
+		poller.Close()
+
+		if gotPeriod != 0 {
+			t.Fatalf("one-shot Period = %s, want 0", gotPeriod)
+		}
+	})
+}
+
 func TestPoller_ClaimFailureDoesNotInvoke(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(300, 0).UTC()
 		backend := &fakeTable{
-			rows: []store.Schedule{{
+			rows: []store.Reminder{{
 				GrainId: store.GrainId{GrainType: "account", GrainKey: "alice"},
 				Name:    "wake",
 				Method:  "Wake",
@@ -170,7 +288,7 @@ func TestPoller_ClaimFailureDoesNotInvoke(t *testing.T) {
 		}
 		fakeClock := clock.NewFake(start)
 		invoker := &recordingInvoker{recorder: backend.recorder}
-		poller := New(backend, fakeClock, time.Second, invoker)
+		poller := New(backend, fakeClock, time.Second, invoker, testReminderCall)
 		synctest.Wait()
 		fakeClock.Advance(time.Second)
 		synctest.Wait()
@@ -186,7 +304,7 @@ func TestPoller_SkipsSchedulesNotOwnedByInvoker(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(350, 0).UTC()
 		backend := store.NewMemory()
-		schedule := store.Schedule{
+		schedule := store.Reminder{
 			GrainId: store.GrainId{GrainType: "account", GrainKey: "alice"},
 			Name:    "wake",
 			Method:  "Wake",
@@ -200,8 +318,8 @@ func TestPoller_SkipsSchedulesNotOwnedByInvoker(t *testing.T) {
 		owner := &ownershipInvoker{owns: true}
 		nonOwnerClock := clock.NewFake(start)
 		ownerClock := clock.NewFake(start)
-		nonOwnerPoller := New(backend, nonOwnerClock, time.Second, nonOwner)
-		ownerPoller := New(backend, ownerClock, time.Second, owner)
+		nonOwnerPoller := New(backend, nonOwnerClock, time.Second, nonOwner, testReminderCall)
+		ownerPoller := New(backend, ownerClock, time.Second, owner, testReminderCall)
 		synctest.Wait()
 
 		nonOwnerClock.Advance(time.Second)
@@ -227,7 +345,7 @@ func TestPoller_CloseStopsTheGoroutine(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(400, 0).UTC()
 		backend := &fakeTable{
-			rows: []store.Schedule{{
+			rows: []store.Reminder{{
 				GrainId: store.GrainId{GrainType: "account", GrainKey: "alice"},
 				Name:    "wake",
 				Method:  "Wake",
@@ -238,7 +356,7 @@ func TestPoller_CloseStopsTheGoroutine(t *testing.T) {
 		}
 		fakeClock := clock.NewFake(start)
 		invoker := &blockingInvoker{started: make(chan struct{}), finished: make(chan struct{})}
-		poller := New(backend, fakeClock, time.Second, invoker)
+		poller := New(backend, fakeClock, time.Second, invoker, testReminderCall)
 		synctest.Wait()
 		fakeClock.Advance(time.Second)
 		synctest.Wait()

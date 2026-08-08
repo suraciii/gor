@@ -410,28 +410,28 @@ func (s *partitionedMemberStore) ListMembers(ctx context.Context) (store.MemberS
 	return store.MemberSnapshot{Members: members, TableNow: s.backend.memberTableNow()}, nil
 }
 
-// nodeScheduleStore attributes the poller's list calls to the owning node so
+// nodeReminderStore attributes the poller's list calls to the owning node so
 // the schedule list fault can bind a node target, the same way
 // partitionedMemberStore attributes member list calls.
-type nodeScheduleStore struct {
+type nodeReminderStore struct {
 	backend *fakeStore
 	addr    string
 }
 
-var _ store.ScheduleStore = (*nodeScheduleStore)(nil)
+var _ store.ReminderStore = (*nodeReminderStore)(nil)
 
-func (s *nodeScheduleStore) ListDue(ctx context.Context, now time.Time) ([]store.Schedule, error) {
+func (s *nodeReminderStore) ListDue(ctx context.Context, now time.Time) ([]store.Reminder, error) {
 	return s.backend.listDueFor(ctx, s.addr, now)
 }
 
-func (s *nodeScheduleStore) Claim(ctx context.Context, schedule store.Schedule, nextDueAt time.Time) (bool, error) {
+func (s *nodeReminderStore) Claim(ctx context.Context, schedule store.Reminder, nextDueAt time.Time) (bool, error) {
 	return s.backend.Claim(ctx, schedule, nextDueAt)
 }
 
-func (s *nodeScheduleStore) Put(ctx context.Context, schedule store.Schedule) error {
+func (s *nodeReminderStore) Put(ctx context.Context, schedule store.Reminder) error {
 	return s.backend.Put(ctx, schedule)
 }
 
-func (s *nodeScheduleStore) Delete(ctx context.Context, id store.GrainId, name string) error {
+func (s *nodeReminderStore) Delete(ctx context.Context, id store.GrainId, name string) error {
 	return s.backend.Delete(ctx, id, name)
 }

@@ -19,7 +19,7 @@ const sqliteBusyTimeout = 5000
 // crash (power loss, operating-system crash, hard reset). A clean restart
 // loses nothing at either tier.
 //
-// The tier applies to entity state only; the schedule and membership tables
+// The tier applies to Grain State only; the Reminder and membership tables
 // always run at DurabilityFull.
 type Durability int
 
@@ -50,7 +50,7 @@ func WithDurability(d Durability) Option {
 }
 
 // SQLite is a SQLite-backed implementation of Store, MemberStore, and
-// ScheduleStore.
+// ReminderStore.
 //
 // Entity state lives in a database file derived from the named path by
 // inserting "-state" before the file extension; the schedule and membership
@@ -107,6 +107,10 @@ func openSQLite(path string, memberClock clock.Clock, opts ...Option) (*SQLite, 
 		return nil, fmt.Errorf("open sqlite database %q: %w", path, err)
 	}
 	if err := createCoordinationSchema(writeDB); err != nil {
+		writeDB.Close()
+		return nil, err
+	}
+	if err := migrateReminderSchema(writeDB); err != nil {
 		writeDB.Close()
 		return nil, err
 	}
@@ -283,6 +287,7 @@ CREATE TABLE IF NOT EXISTS schedule (
 	entity_key TEXT NOT NULL,
 	name TEXT NOT NULL,
 	method TEXT NOT NULL,
+	first_tick_time INTEGER NOT NULL,
 	due_at INTEGER NOT NULL,
 	interval INTEGER NOT NULL,
 	etag INTEGER NOT NULL,
@@ -298,6 +303,42 @@ CREATE TABLE IF NOT EXISTS member (
 	etag INTEGER NOT NULL,
 	PRIMARY KEY (node_addr, generation)
 )`)
+	return err
+}
+
+func migrateReminderSchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(schedule)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal any
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &primaryKey); err != nil {
+			return err
+		}
+		if name == "first_tick_time" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !found {
+		if _, err := db.Exec(`ALTER TABLE schedule ADD COLUMN first_tick_time INTEGER`); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`UPDATE schedule SET first_tick_time = due_at WHERE first_tick_time IS NULL`)
 	return err
 }
 

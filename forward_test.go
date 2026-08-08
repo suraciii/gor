@@ -702,7 +702,7 @@ func installEnvelopeAccount(t *testing.T, rt *Runtime) {
 	t.Helper()
 	if err := InstallType[envelopeAccount](rt, dispatchEnvelopeAccount, func(invoker Invoker, id GrainId) envelopeAccount {
 		return &envelopeAccountProxy{invoker: invoker, id: id}
-	}, newEnvelopeAccountCall); err != nil {
+	}, newEnvelopeAccountCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register[envelopeAccount](rt, func(*Binder) envelopeAccount {
@@ -860,7 +860,7 @@ func installRoutedAccountWithFactory(t *testing.T, rt *Runtime, factory func(*Bi
 	t.Helper()
 	if err := InstallType[routedAccount](rt, dispatchRoutedAccount, func(invoker Invoker, id GrainId) routedAccount {
 		return &routedAccountProxy{invoker: invoker, id: id}
-	}, newRoutedAccountCall); err != nil {
+	}, newRoutedAccountCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register[routedAccount](rt, factory); err != nil {

@@ -21,7 +21,7 @@ func TestHTTPReportsConfiguresAndReadsShadow(t *testing.T) {
 		gor.WithClock(sourceClock),
 		gor.WithIdleTimeout(0),
 		gor.WithEvictionInterval(0),
-		gor.WithScheduleInterval(time.Second),
+		gor.WithReminderInterval(time.Second),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestHTTPReportsConfiguresAndReadsShadow(t *testing.T) {
 
 func TestHTTPRejectsMalformedJSON(t *testing.T) {
 	sourceClock := clock.NewFake(time.Unix(0, 0).UTC())
-	rt, err := gor.New(gor.WithStore(store.NewMemory()), gor.WithClock(sourceClock), gor.WithScheduleInterval(time.Second), gor.WithIdleTimeout(0), gor.WithEvictionInterval(0))
+	rt, err := gor.New(gor.WithStore(store.NewMemory()), gor.WithClock(sourceClock), gor.WithReminderInterval(time.Second), gor.WithIdleTimeout(0), gor.WithEvictionInterval(0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestHTTPReportWriteFailureIsNotBadRequest(t *testing.T) {
 	rt, err := gor.New(
 		gor.WithStore(backend),
 		gor.WithClock(sourceClock),
-		gor.WithScheduleInterval(time.Second),
+		gor.WithReminderInterval(time.Second),
 		gor.WithIdleTimeout(0),
 		gor.WithEvictionInterval(0),
 	)

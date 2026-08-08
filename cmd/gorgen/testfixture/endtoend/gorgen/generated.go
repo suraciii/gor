@@ -47,6 +47,17 @@ func (p *accountProxy) Snapshot(ctx context.Context) (int64, string, error) {
 	return reply.R0, reply.R1, err
 }
 
+type accountTickRequest struct {
+	A0 gor.TickStatus
+}
+type accountTickReply struct{}
+
+func (p *accountProxy) Tick(ctx context.Context, status gor.TickStatus) error {
+	var reply accountTickReply
+	err := p.rt.Invoke(ctx, p.id, "Tick", &accountTickRequest{A0: status}, &reply)
+	return err
+}
+
 func dispatchAccount(ctx context.Context, instance domain.Account, method string, args any, reply any) error {
 	switch method {
 	case "Deposit":
@@ -64,6 +75,10 @@ func dispatchAccount(ctx context.Context, instance domain.Account, method string
 		typedReply.R0 = r0
 		typedReply.R1 = r1
 		return err
+	case "Tick":
+		typedArgs := args.(*accountTickRequest)
+		err := instance.Tick(ctx, typedArgs.A0)
+		return err
 	default:
 		return fmt.Errorf("unknown method %q", method)
 	}
@@ -77,6 +92,17 @@ func newAccountCall(method string) (args any, reply any) {
 		return &accountResetRequest{}, &accountResetReply{}
 	case "Snapshot":
 		return &accountSnapshotRequest{}, &accountSnapshotReply{}
+	case "Tick":
+		return &accountTickRequest{}, &accountTickReply{}
+	default:
+		return nil, nil
+	}
+}
+
+func newAccountReminderCall(method string, status gor.TickStatus) (args any, reply any) {
+	switch method {
+	case "Tick":
+		return &accountTickRequest{A0: status}, &accountTickReply{}
 	default:
 		return nil, nil
 	}
@@ -91,7 +117,7 @@ func newAccountProxy(rt gor.Invoker, id gor.GrainId) domain.Account {
 // the generated Grain types. After it returns nil, gor.Register and gor.Ref
 // can use those types with rt.
 func Install(rt *gor.Runtime) error {
-	if err := gor.InstallType[domain.Account](rt, dispatchAccount, newAccountProxy, newAccountCall); err != nil {
+	if err := gor.InstallType[domain.Account](rt, dispatchAccount, newAccountProxy, newAccountCall, newAccountReminderCall); err != nil {
 		return err
 	}
 	return nil

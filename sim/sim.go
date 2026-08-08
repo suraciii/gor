@@ -28,7 +28,7 @@ type counter interface {
 	Add(context.Context, int64) (int64, error)
 	Arm(context.Context, string, time.Duration, time.Duration) error
 	Disarm(context.Context, string) error
-	Tick(context.Context) error
+	Tick(context.Context, gor.TickStatus) error
 }
 
 type counterAddRequest struct {
@@ -53,14 +53,16 @@ type counterDisarmRequest struct {
 
 type counterDisarmReply struct{}
 
-type counterTickRequest struct{}
+type counterTickRequest struct {
+	A0 gor.TickStatus
+}
 
 type counterTickReply struct{}
 
 type counterEntity struct {
 	value    gor.State[int64]
 	id       gor.GrainId
-	schedule gor.Schedule[counter]
+	schedule gor.Reminder[counter]
 	tracker  *timerTracker
 }
 
@@ -84,7 +86,7 @@ func (c *counterEntity) Disarm(ctx context.Context, name string) error {
 	return c.schedule.Cancel(ctx, name)
 }
 
-func (c *counterEntity) Tick(context.Context) error {
+func (c *counterEntity) Tick(context.Context, gor.TickStatus) error {
 	c.tracker.deliver(storeIdentity(c.id))
 	return nil
 }
@@ -108,8 +110,8 @@ func (p *counterProxy) Disarm(ctx context.Context, name string) error {
 	return p.invoker.Invoke(ctx, p.id, "Disarm", &counterDisarmRequest{A0: name}, &counterDisarmReply{})
 }
 
-func (p *counterProxy) Tick(ctx context.Context) error {
-	return p.invoker.Invoke(ctx, p.id, "Tick", &counterTickRequest{}, &counterTickReply{})
+func (p *counterProxy) Tick(ctx context.Context, tick gor.TickStatus) error {
+	return p.invoker.Invoke(ctx, p.id, "Tick", &counterTickRequest{A0: tick}, &counterTickReply{})
 }
 
 func dispatchCounter(ctx context.Context, instance counter, method string, args any, reply any) error {
@@ -130,7 +132,7 @@ func dispatchCounter(ctx context.Context, instance counter, method string, args 
 		typedArgs := args.(*counterDisarmRequest)
 		return instance.Disarm(ctx, typedArgs.A0)
 	case "Tick":
-		return instance.Tick(ctx)
+		return instance.Tick(ctx, args.(*counterTickRequest).A0)
 	default:
 		return fmt.Errorf("unknown method %q", method)
 	}
@@ -151,10 +153,17 @@ func newCounterCall(method string) (args any, reply any) {
 	}
 }
 
+func newCounterReminderCall(method string, status gor.TickStatus) (args any, reply any) {
+	if method == "Tick" {
+		return &counterTickRequest{A0: status}, &counterTickReply{}
+	}
+	return nil, nil
+}
+
 func installCounterType(rt *gor.Runtime) error {
 	return gor.InstallType[counter](rt, dispatchCounter, func(invoker gor.Invoker, id gor.GrainId) counter {
 		return &counterProxy{invoker: invoker, id: id}
-	}, newCounterCall)
+	}, newCounterCall, newCounterReminderCall)
 }
 
 func registerCounter(rt *gor.Runtime, factory func(*gor.Binder) counter) error {
@@ -169,7 +178,7 @@ func installCounterWithTracker(rt *gor.Runtime, tracker *timerTracker) error {
 		return &counterEntity{
 			value:    gor.NewState[int64](b, "value"),
 			id:       gor.Self(b),
-			schedule: gor.NewSchedule[counter](b),
+			schedule: gor.NewReminder[counter](b),
 			tracker:  tracker,
 		}
 	})
@@ -180,7 +189,7 @@ func baseRuntimeOptions(backend *fakeStore) []gor.Option {
 		gor.WithStore(backend),
 		gor.WithIdleTimeout(0),
 		gor.WithEvictionInterval(0),
-		gor.WithScheduleInterval(simulationStepDuration),
+		gor.WithReminderInterval(simulationStepDuration),
 		gor.WithMailboxCapacity(4),
 	}
 }

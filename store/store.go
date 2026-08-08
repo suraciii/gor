@@ -2,7 +2,7 @@
 // in-memory and SQLite implementations.
 //
 // Store implementations are part of the supported extension surface. They
-// persist entity state and coordinate membership and schedules through
+// persist Grain State and coordinate membership and Reminders through
 // compare-and-swap operations.
 package store
 
@@ -21,7 +21,7 @@ type GrainId struct {
 	GrainKey  string
 }
 
-// ETag identifies the version of a record, member, or schedule row.
+// ETag identifies the version of a record, member, or Reminder row.
 // The zero value means that the row must not exist when it is first written.
 type ETag int64
 
@@ -64,17 +64,17 @@ func timeFromValue(value int64) time.Time {
 }
 
 // Memory is an in-memory implementation of Store, MemberStore, and
-// ScheduleStore.
+// ReminderStore.
 type Memory struct {
 	mu          sync.RWMutex
 	records     map[GrainId]Record
-	schedules   map[scheduleKey]Schedule
+	reminders   map[reminderKey]Reminder
 	members     map[memberKey]Member
 	memberClock clock.Clock
 }
 
 var _ Store = (*Memory)(nil)
-var _ ScheduleStore = (*Memory)(nil)
+var _ ReminderStore = (*Memory)(nil)
 var _ MemberStore = (*Memory)(nil)
 
 // NewMemory returns an empty in-memory store.
@@ -88,7 +88,7 @@ func NewMemory(memberClocks ...clock.Clock) *Memory {
 	}
 	return &Memory{
 		records:     make(map[GrainId]Record),
-		schedules:   make(map[scheduleKey]Schedule),
+		reminders:   make(map[reminderKey]Reminder),
 		members:     make(map[memberKey]Member),
 		memberClock: memberClock,
 	}

@@ -182,7 +182,7 @@ func installLifecycleAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int
 	t.Helper()
 	if err := InstallType[lifecycleAccount](rt, dispatchLifecycleAccount, func(invoker Invoker, id GrainId) lifecycleAccount {
 		return &lifecycleAccountProxy{invoker: invoker, id: id}
-	}, newLifecycleAccountCall); err != nil {
+	}, newLifecycleAccountCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register[lifecycleAccount](rt, func(b *Binder) lifecycleAccount {
@@ -532,7 +532,7 @@ func TestBinderScope_ProvidesClockAndTypedReferences(t *testing.T) {
 		}
 		if err := InstallType[scopeAccount](rt, dispatchScopeAccount, func(invoker Invoker, id GrainId) scopeAccount {
 			return &scopeAccountProxy{invoker: invoker, id: id}
-		}, newScopeAccountCall); err != nil {
+		}, newScopeAccountCall, nil); err != nil {
 			t.Fatal(err)
 		}
 		if err := Register[scopeAccount](rt, func(b *Binder) scopeAccount {
@@ -891,7 +891,7 @@ func installAccountWithDispatch(t *testing.T, rt *Runtime, dispatch func(context
 	t.Helper()
 	if err := InstallType[Account](rt, dispatch, func(invoker Invoker, id GrainId) Account {
 		return &accountProxy{invoker: invoker, id: id}
-	}, newAccountCall); err != nil {
+	}, newAccountCall, nil); err != nil {
 		t.Fatal(err)
 	}
 }

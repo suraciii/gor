@@ -65,8 +65,8 @@ type Scope interface {
 }
 
 // BackgroundError reports a failure of an application callback that has no
-// caller waiting for its result: a claimed scheduled invocation, or a normal
-// deactivation hook. GrainId is the affected entity, Err is the callback's
+// caller waiting for its result: a claimed Reminder invocation, or a normal
+// deactivation hook. GrainId is the affected Grain, Err is the callback's
 // error, and Source identifies which kind of callback failed.
 type BackgroundError struct {
 	GrainId GrainId
@@ -81,13 +81,13 @@ type ErrorSource interface {
 	errorSource()
 }
 
-// ScheduledInvocation is the source of a failure from a claimed scheduled
-// invocation. Method is the entity method that was invoked.
-type ScheduledInvocation struct {
+// ReminderInvocation is the source of a failure from a claimed Reminder.
+// Method is the Grain method that was invoked.
+type ReminderInvocation struct {
 	Method string
 }
 
-func (ScheduledInvocation) errorSource() {}
+func (ReminderInvocation) errorSource() {}
 
 // Deactivation is the source of a failure from a normal deactivation hook.
 // Reason is the reason of that deactivation.
@@ -116,13 +116,13 @@ type Deactivatable interface {
 }
 
 // Runtime coordinates entity registration, activation, invocation, state, and
-// schedules. Invocations for the same identity are serialized, and a runtime
+// reminders. Invocations for the same identity are serialized, and a runtime
 // configured for a cluster can route an invocation to its current owner.
 // Create a Runtime with New and stop it with Close or Kill.
 type Runtime struct {
 	engine           *runtimepkg.Runtime
 	store            store.Store
-	scheduleStore    store.ScheduleStore
+	reminderStore    store.ReminderStore
 	clock            clock.Clock
 	onError          func(BackgroundError)
 	onCall           func(CallObservation)
@@ -154,8 +154,8 @@ type Runtime struct {
 type Config struct {
 	runtimepkg.Config
 	Store             store.Store
-	ScheduleStore     store.ScheduleStore
-	ScheduleInterval  time.Duration
+	ReminderStore     store.ReminderStore
+	ReminderInterval  time.Duration
 	Transport         transport.Transport
 	OnError           func(BackgroundError)
 	OnCall            func(CallObservation)
@@ -188,9 +188,10 @@ type Invoker interface {
 var _ Invoker = (*Runtime)(nil)
 
 type typeRegistration struct {
-	dispatch runtimepkg.Dispatch
-	newProxy func(Invoker, GrainId) any
-	newCall  func(string) (any, any)
+	dispatch        runtimepkg.Dispatch
+	newProxy        func(Invoker, GrainId) any
+	newCall         func(string) (any, any)
+	newReminderCall func(string, TickStatus) (any, any)
 }
 
 // Option configures a Runtime created by New. New applies options in argument
@@ -208,8 +209,8 @@ func (b *Binder) scopeRuntime() *Runtime {
 // New creates and starts a Runtime.
 //
 // By default, New uses clock.Real{}, store.NewMemory for entity state and
-// schedules, a mailbox capacity of 16, a one-minute idle timeout, one-second
-// eviction and schedule intervals, and one-second heartbeat and view
+// reminders, a mailbox capacity of 16, a one-minute idle timeout, one-second
+// eviction and Reminder intervals, and one-second heartbeat and view
 // intervals. A MemberStore and Transport must be configured together. In
 // clustered mode, ProbeInterval, ProbeTimeout, ProbeFailures, VoteTTL,
 // MaxTickGap, and MaxTableLatency default to one second, 500 ms, three, six
@@ -227,7 +228,7 @@ func New(options ...Option) (*Runtime, error) {
 			EvictionInterval: time.Second,
 		},
 		Store:             store.NewMemory(),
-		ScheduleInterval:  time.Second,
+		ReminderInterval:  time.Second,
 		HeartbeatInterval: time.Second,
 		ViewInterval:      time.Second,
 	}
@@ -237,9 +238,9 @@ func New(options ...Option) (*Runtime, error) {
 	if (config.MemberStore == nil) != (config.Transport == nil) {
 		return nil, errors.New("member store and transport must be configured together")
 	}
-	if config.ScheduleStore == nil {
-		if schedules, ok := config.Store.(store.ScheduleStore); ok {
-			config.ScheduleStore = schedules
+	if config.ReminderStore == nil {
+		if reminders, ok := config.Store.(store.ReminderStore); ok {
+			config.ReminderStore = reminders
 		}
 	}
 	var (
@@ -271,7 +272,7 @@ func New(options ...Option) (*Runtime, error) {
 	rt := &Runtime{
 		engine:        runtimepkg.New(config.Config),
 		store:         config.Store,
-		scheduleStore: config.ScheduleStore,
+		reminderStore: config.ReminderStore,
 		clock:         config.Clock,
 		onError:       config.OnError,
 		onCall:        config.OnCall,
@@ -286,8 +287,8 @@ func New(options ...Option) (*Runtime, error) {
 		rt.clusterView.Store(&initialView)
 		go rt.watchCluster()
 	}
-	if config.ScheduleStore != nil && config.ScheduleInterval > 0 {
-		rt.poller = timer.New(config.ScheduleStore, config.Clock, config.ScheduleInterval, scheduleInvoker{runtime: rt})
+	if config.ReminderStore != nil && config.ReminderInterval > 0 {
+		rt.poller = timer.New(config.ReminderStore, config.Clock, config.ReminderInterval, reminderInvoker{runtime: rt}, rt.newReminderCall)
 	}
 	if rt.clusterNode != nil && rt.transport != nil {
 		rt.startTransport()
@@ -330,30 +331,30 @@ func WithEvictionInterval(value time.Duration) Option {
 	}
 }
 
-// WithStore sets the store used for entity state. If omitted, New uses an
-// in-memory store; when the selected store also implements ScheduleStore and
-// no schedule store is supplied, New uses it for schedules too.
+// WithStore sets the store used for Grain State. If omitted, New uses an
+// in-memory store; when the selected store also implements ReminderStore and
+// no Reminder store is supplied, New uses it for Reminders too.
 func WithStore(value store.Store) Option {
 	return func(config *Config) {
 		config.Store = value
 	}
 }
 
-// WithScheduleStore sets the store used for entity schedules. If omitted, New
-// derives it from Store when Store implements ScheduleStore; otherwise schedule
-// operations return ErrScheduleStoreUnavailable.
-func WithScheduleStore(value store.ScheduleStore) Option {
+// WithReminderStore sets the store used for Reminders. If omitted, New
+// derives it from Store when Store implements ReminderStore; otherwise Reminder
+// operations return ErrReminderStoreUnavailable.
+func WithReminderStore(value store.ReminderStore) Option {
 	return func(config *Config) {
-		config.ScheduleStore = value
+		config.ReminderStore = value
 	}
 }
 
-// WithScheduleInterval sets the interval for background schedule polling. If
-// omitted, New polls once per second. A non-positive value keeps schedules
+// WithReminderInterval sets the interval for background Reminder polling. If
+// omitted, New polls once per second. A non-positive value keeps Reminders
 // persisted but disables automatic polling.
-func WithScheduleInterval(value time.Duration) Option {
+func WithReminderInterval(value time.Duration) Option {
 	return func(config *Config) {
-		config.ScheduleInterval = value
+		config.ReminderInterval = value
 	}
 }
 
@@ -367,10 +368,10 @@ func WithTransport(value transport.Transport) Option {
 }
 
 // OnError sets the callback for failures of background application callbacks:
-// claimed scheduled invocations and normal OnDeactivate hooks. If omitted,
+// claimed Reminder invocations and normal OnDeactivate hooks. If omitted,
 // those errors are not reported. The callback may run asynchronously and
 // concurrently with application code; it is not called for ordinary foreground
-// Invoke errors. A scheduled invocation whose delivery is canceled because the
+// Invoke errors. A Reminder invocation whose delivery is canceled because the
 // poller's context was canceled during shutdown is not reported. ListDue and
 // Claim failures are not reported either. Event sources are sealed: branch on
 // the concrete type of Source, never on method-name strings.
@@ -571,11 +572,11 @@ type boundInstance struct {
 	binder *Binder
 }
 
-// InstallType installs the dispatch and proxy factories required for T in rt.
-// Generated Install code calls it; application code should use the generated
-// installer rather than hand-writing this integration seam. It returns an
-// error when T is already installed in rt.
-func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, any, any) error, newProxy func(Invoker, GrainId) T, newCall func(string) (any, any)) error {
+// InstallType installs the dispatch, proxy, normal-call, and Reminder-call
+// factories required for T in rt. Generated Install code calls it; application
+// code should use the generated installer rather than hand-writing this seam.
+// It returns an error when T is already installed in rt.
+func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, any, any) error, newProxy func(Invoker, GrainId) T, newCall func(string) (any, any), newReminderCall func(string, TickStatus) (any, any)) error {
 	name := TypeName[T]()
 	rt.typesMu.Lock()
 	defer rt.typesMu.Unlock()
@@ -589,7 +590,8 @@ func InstallType[T any](rt *Runtime, dispatch func(context.Context, T, string, a
 		newProxy: func(invoker Invoker, id GrainId) any {
 			return newProxy(invoker, id)
 		},
-		newCall: newCall,
+		newCall:         newCall,
+		newReminderCall: newReminderCall,
 	}
 	return nil
 }
@@ -672,6 +674,18 @@ func (rt *Runtime) typeRegistration(name string) (typeRegistration, bool) {
 	defer rt.typesMu.Unlock()
 	registration, ok := rt.types[name]
 	return registration, ok
+}
+
+func (rt *Runtime) newReminderCall(id store.GrainId, method string, firstTickTime time.Time, period time.Duration, currentTickTime time.Time) (any, any) {
+	registration, ok := rt.typeRegistration(id.GrainType)
+	if !ok || registration.newReminderCall == nil {
+		return nil, nil
+	}
+	return registration.newReminderCall(method, TickStatus{
+		FirstTickTime:   firstTickTime,
+		Period:          period,
+		CurrentTickTime: currentTickTime,
+	})
 }
 
 // Close begins an orderly shutdown. It stops admitting new entity calls,
@@ -946,27 +960,23 @@ func (rt *Runtime) deactivateMovedActivations(view cluster.View) {
 	}
 }
 
-type scheduleInvoker struct {
+type reminderInvoker struct {
 	runtime *Runtime
 }
 
-func (i scheduleInvoker) Invoke(ctx context.Context, id store.GrainId, method string) error {
-	err := i.runtime.Invoke(ctx, GrainId(id), method, nil, nil)
-	// A delivery that failed because the poller's context was canceled is a
-	// clean shutdown, not a callback failure: reporting it would raise a false
-	// alarm on every orderly close. The judge is the poller context, not the
-	// shape of the error.
+func (i reminderInvoker) Invoke(ctx context.Context, id store.GrainId, method string, args any, reply any) error {
+	err := i.runtime.Invoke(ctx, GrainId(id), method, args, reply)
 	if err != nil && ctx.Err() == nil && i.runtime.onError != nil {
 		i.runtime.onError(BackgroundError{
 			GrainId: GrainId(id),
 			Err:     err,
-			Source:  ScheduledInvocation{Method: method},
+			Source:  ReminderInvocation{Method: method},
 		})
 	}
 	return err
 }
 
-func (i scheduleInvoker) Owns(id store.GrainId) bool {
+func (i reminderInvoker) Owns(id store.GrainId) bool {
 	return i.runtime.Owns(id)
 }
 

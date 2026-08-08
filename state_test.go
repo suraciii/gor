@@ -10,8 +10,8 @@ import (
 	"github.com/suraciii/gor/store"
 )
 
-func newTestBinder(id GrainId, backend store.Store, schedules store.ScheduleStore, sourceClock clock.Clock) *Binder {
-	return newBinder(&Runtime{store: backend, scheduleStore: schedules, clock: sourceClock}, id)
+func newTestBinder(id GrainId, backend store.Store, reminders store.ReminderStore, sourceClock clock.Clock) *Binder {
+	return newBinder(&Runtime{store: backend, reminderStore: reminders, clock: sourceClock}, id)
 }
 
 func TestState_PersistsAllRegisteredValuesAsOneRecord(t *testing.T) {

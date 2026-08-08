@@ -15,7 +15,7 @@ import (
 
 type scheduledAccount interface {
 	Arm(context.Context) error
-	Wake(context.Context) error
+	Wake(context.Context, TickStatus) error
 	Value(context.Context) (int64, error)
 }
 
@@ -23,7 +23,9 @@ type scheduledAccountArmRequest struct{}
 
 type scheduledAccountArmReply struct{}
 
-type scheduledAccountWakeRequest struct{}
+type scheduledAccountWakeRequest struct {
+	A0 TickStatus
+}
 
 type scheduledAccountWakeReply struct{}
 
@@ -35,9 +37,10 @@ type scheduledAccountValueReply struct {
 
 type scheduledAccountEntity struct {
 	value           State[int64]
-	schedule        Schedule[scheduledAccount]
+	schedule        Reminder[scheduledAccount]
 	wakeErr         error
 	wakeStarted     chan struct{}
+	wakeCalls       *atomic.Int32
 	cancelShapedErr bool
 }
 
@@ -50,7 +53,10 @@ func (a *scheduledAccountEntity) Arm(ctx context.Context) error {
 	return a.schedule.Set(ctx, "wake", After(12*time.Second), Handle(scheduledAccount.Wake))
 }
 
-func (a *scheduledAccountEntity) Wake(ctx context.Context) error {
+func (a *scheduledAccountEntity) Wake(ctx context.Context, _ TickStatus) error {
+	if a.wakeCalls != nil {
+		a.wakeCalls.Add(1)
+	}
 	if a.wakeStarted != nil {
 		close(a.wakeStarted)
 		<-ctx.Done()
@@ -75,8 +81,8 @@ func (p *scheduledAccountProxy) Arm(ctx context.Context) error {
 	return p.invoker.Invoke(ctx, p.id, "Arm", &scheduledAccountArmRequest{}, &scheduledAccountArmReply{})
 }
 
-func (p *scheduledAccountProxy) Wake(ctx context.Context) error {
-	return p.invoker.Invoke(ctx, p.id, "Wake", &scheduledAccountWakeRequest{}, &scheduledAccountWakeReply{})
+func (p *scheduledAccountProxy) Wake(ctx context.Context, tick TickStatus) error {
+	return p.invoker.Invoke(ctx, p.id, "Wake", &scheduledAccountWakeRequest{A0: tick}, &scheduledAccountWakeReply{})
 }
 
 func (p *scheduledAccountProxy) Value(ctx context.Context) (int64, error) {
@@ -85,12 +91,12 @@ func (p *scheduledAccountProxy) Value(ctx context.Context) (int64, error) {
 	return reply.R0, err
 }
 
-func dispatchScheduledAccount(ctx context.Context, instance scheduledAccount, method string, _ any, reply any) error {
+func dispatchScheduledAccount(ctx context.Context, instance scheduledAccount, method string, args any, reply any) error {
 	switch method {
 	case "Arm":
 		return instance.Arm(ctx)
 	case "Wake":
-		return instance.Wake(ctx)
+		return instance.Wake(ctx, args.(*scheduledAccountWakeRequest).A0)
 	case "Value":
 		typedReply := reply.(*scheduledAccountValueReply)
 		value, err := instance.Value(ctx)
@@ -116,9 +122,17 @@ func newScheduledAccountCall(method string) (args any, reply any) {
 	}
 }
 
+func newScheduledAccountReminderCall(method string, status TickStatus) (args any, reply any) {
+	if method == "Wake" {
+		return &scheduledAccountWakeRequest{A0: status}, &scheduledAccountWakeReply{}
+	}
+	return nil, nil
+}
+
 type scheduledAccountConfig struct {
 	wakeErr         error
 	wakeStarted     chan struct{}
+	wakeCalls       *atomic.Int32
 	cancelShapedErr bool
 }
 
@@ -130,16 +144,17 @@ func installScheduledAccount(t *testing.T, rt *Runtime, factoryCalls *atomic.Int
 	}
 	if err := InstallType[scheduledAccount](rt, dispatchScheduledAccount, func(invoker Invoker, id GrainId) scheduledAccount {
 		return &scheduledAccountProxy{invoker: invoker, id: id}
-	}, newScheduledAccountCall); err != nil {
+	}, newScheduledAccountCall, newScheduledAccountReminderCall); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register[scheduledAccount](rt, func(b *Binder) scheduledAccount {
 		factoryCalls.Add(1)
 		return &scheduledAccountEntity{
 			value:           NewState[int64](b, "value"),
-			schedule:        NewSchedule[scheduledAccount](b),
+			schedule:        NewReminder[scheduledAccount](b),
 			wakeErr:         config.wakeErr,
 			wakeStarted:     config.wakeStarted,
+			wakeCalls:       config.wakeCalls,
 			cancelShapedErr: config.cancelShapedErr,
 		}
 	}); err != nil {
@@ -153,19 +168,20 @@ func TestSchedule_OnErrorReceivesInvocationFailure(t *testing.T) {
 		fakeClock := clock.NewFake(start)
 		backend := store.NewMemory()
 		wakeErr := errors.New("scheduled wake failed")
+		wakeCalls := new(atomic.Int32)
 		errorsSeen := make(chan BackgroundError, 1)
 		rt := mustNew(t,
 			WithStore(backend),
 			WithClock(fakeClock),
 			WithIdleTimeout(5*time.Second),
 			WithEvictionInterval(time.Second),
-			WithScheduleInterval(time.Second),
+			WithReminderInterval(time.Second),
 			OnError(func(event BackgroundError) {
 				errorsSeen <- event
 			}),
 		)
 		defer rt.Close()
-		installScheduledAccount(t, rt, new(atomic.Int32), scheduledAccountConfig{wakeErr: wakeErr})
+		installScheduledAccount(t, rt, new(atomic.Int32), scheduledAccountConfig{wakeErr: wakeErr, wakeCalls: wakeCalls})
 
 		if err := Ref[scheduledAccount](rt, "alice").Arm(context.Background()); err != nil {
 			t.Fatalf("Arm: %v", err)
@@ -175,13 +191,16 @@ func TestSchedule_OnErrorReceivesInvocationFailure(t *testing.T) {
 
 		select {
 		case got := <-errorsSeen:
-			source, ok := got.Source.(ScheduledInvocation)
+			source, ok := got.Source.(ReminderInvocation)
 			wantID := GrainId{GrainType: TypeName[scheduledAccount](), GrainKey: "alice"}
 			if !ok || got.GrainId != wantID || source.Method != "Wake" || !errors.Is(got.Err, wakeErr) {
-				t.Fatalf("OnError event = %#v, want identity %v, ScheduledInvocation{Method: Wake}, error %v", got, wantID, wakeErr)
+				t.Fatalf("OnError event = %#v, want identity %v, ReminderInvocation{Method: Wake}, error %v", got, wantID, wakeErr)
 			}
 		default:
-			t.Fatal("OnError did not receive scheduled invocation failure")
+			t.Fatal("OnError did not receive Reminder invocation failure")
+		}
+		if got := wakeCalls.Load(); got != 1 {
+			t.Fatalf("Wake calls = %d, want 1 without automatic retry", got)
 		}
 	})
 }
@@ -206,7 +225,7 @@ func TestSchedule_DropsInvocationFailureWithoutOnError(t *testing.T) {
 			t.Fatalf("ListDue: %v", err)
 		}
 		if len(rows) != 0 {
-			t.Fatalf("schedules after failed one-shot invocation = %#v, want none", rows)
+			t.Fatalf("reminders after failed one-shot invocation = %#v, want none", rows)
 		}
 	})
 }
@@ -223,7 +242,7 @@ func TestSchedule_DropsCancellationOnRuntimeClose(t *testing.T) {
 			WithClock(fakeClock),
 			WithIdleTimeout(5*time.Second),
 			WithEvictionInterval(time.Second),
-			WithScheduleInterval(time.Second),
+			WithReminderInterval(time.Second),
 			OnError(func(event BackgroundError) {
 				errorsSeen <- event
 			}),
@@ -257,7 +276,7 @@ func newScheduledRuntime(t *testing.T, backend store.Store, sourceClock clock.Cl
 		WithClock(sourceClock),
 		WithIdleTimeout(5*time.Second),
 		WithEvictionInterval(time.Second),
-		WithScheduleInterval(time.Second),
+		WithReminderInterval(time.Second),
 	)
 	return rt
 }
@@ -266,19 +285,19 @@ func TestSchedule_SetOverwritesAndCancelDeletes(t *testing.T) {
 	start := time.Unix(0, 0).UTC()
 	fakeClock := clock.NewFake(start)
 	backend := store.NewMemory()
-	schedule := NewSchedule[scheduledAccount](newTestBinder(GrainId{GrainType: "account", GrainKey: "alice"}, backend, backend, fakeClock))
+	schedule := NewReminder[scheduledAccount](newTestBinder(GrainId{GrainType: "account", GrainKey: "alice"}, backend, backend, fakeClock))
 
 	if err := schedule.Set(context.Background(), "wake", After(time.Second), Handle(scheduledAccount.Wake)); err != nil {
 		t.Fatal(err)
 	}
-	if err := schedule.Set(context.Background(), "wake", Every(2*time.Second), Handle(scheduledAccount.Arm)); err != nil {
+	if err := schedule.Set(context.Background(), "wake", Every(2*time.Second), Handle(scheduledAccount.Wake)); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := backend.ListDue(context.Background(), start.Add(3*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Method != "Arm" || rows[0].Interval != 2*time.Second || !rows[0].DueAt.Equal(start.Add(2*time.Second)) {
+	if len(rows) != 1 || rows[0].Method != "Wake" || rows[0].Interval != 2*time.Second || !rows[0].FirstTickTime.Equal(start.Add(2*time.Second)) || !rows[0].DueAt.Equal(start.Add(2*time.Second)) {
 		t.Fatalf("overwritten schedule = %#v", rows)
 	}
 
@@ -290,38 +309,38 @@ func TestSchedule_SetOverwritesAndCancelDeletes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rows) != 0 {
-		t.Fatalf("schedules after cancel = %#v, want none", rows)
+		t.Fatalf("reminders after cancel = %#v, want none", rows)
 	}
 }
 
-func TestSchedule_ReturnsUnavailableWithoutScheduleStore(t *testing.T) {
-	schedule := NewSchedule[scheduledAccount](newTestBinder(GrainId{GrainType: "account", GrainKey: "alice"}, failingWriteStore{}, nil, clock.Real{}))
-	if err := schedule.Set(context.Background(), "wake", After(time.Second), Handle(scheduledAccount.Wake)); !errors.Is(err, ErrScheduleStoreUnavailable) {
-		t.Fatalf("Set error = %v, want ErrScheduleStoreUnavailable", err)
+func TestSchedule_ReturnsUnavailableWithoutReminderStore(t *testing.T) {
+	schedule := NewReminder[scheduledAccount](newTestBinder(GrainId{GrainType: "account", GrainKey: "alice"}, failingWriteStore{}, nil, clock.Real{}))
+	if err := schedule.Set(context.Background(), "wake", After(time.Second), Handle(scheduledAccount.Wake)); !errors.Is(err, ErrReminderStoreUnavailable) {
+		t.Fatalf("Set error = %v, want ErrReminderStoreUnavailable", err)
 	}
-	if err := schedule.Cancel(context.Background(), "wake"); !errors.Is(err, ErrScheduleStoreUnavailable) {
-		t.Fatalf("Cancel error = %v, want ErrScheduleStoreUnavailable", err)
+	if err := schedule.Cancel(context.Background(), "wake"); !errors.Is(err, ErrReminderStoreUnavailable) {
+		t.Fatalf("Cancel error = %v, want ErrReminderStoreUnavailable", err)
 	}
 }
 
-func TestNew_ScheduleStoreOptionIsOrderIndependent(t *testing.T) {
+func TestNew_ReminderStoreOptionIsOrderIndependent(t *testing.T) {
 	explicit := store.NewMemory()
-	first := mustNew(t, WithScheduleStore(explicit), WithStore(failingWriteStore{}), WithScheduleInterval(0), WithEvictionInterval(0))
-	if first.scheduleStore != explicit {
-		t.Fatal("WithStore replaced an earlier explicit ScheduleStore")
+	first := mustNew(t, WithReminderStore(explicit), WithStore(failingWriteStore{}), WithReminderInterval(0), WithEvictionInterval(0))
+	if first.reminderStore != explicit {
+		t.Fatal("WithStore replaced an earlier explicit ReminderStore")
 	}
 	first.Close()
 
-	second := mustNew(t, WithStore(failingWriteStore{}), WithScheduleStore(explicit), WithScheduleInterval(0), WithEvictionInterval(0))
-	if second.scheduleStore != explicit {
-		t.Fatal("WithScheduleStore did not replace the default ScheduleStore")
+	second := mustNew(t, WithStore(failingWriteStore{}), WithReminderStore(explicit), WithReminderInterval(0), WithEvictionInterval(0))
+	if second.reminderStore != explicit {
+		t.Fatal("WithReminderStore did not replace the default ReminderStore")
 	}
 	second.Close()
 
 	backend := store.NewMemory()
-	third := mustNew(t, WithStore(backend), WithScheduleInterval(0), WithEvictionInterval(0))
-	if third.scheduleStore != backend {
-		t.Fatal("New did not derive ScheduleStore from Store")
+	third := mustNew(t, WithStore(backend), WithReminderInterval(0), WithEvictionInterval(0))
+	if third.reminderStore != backend {
+		t.Fatal("New did not derive ReminderStore from Store")
 	}
 	third.Close()
 }

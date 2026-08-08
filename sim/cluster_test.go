@@ -38,7 +38,7 @@ func (*dualActivationEntity) Disarm(context.Context, string) error {
 	return nil
 }
 
-func (*dualActivationEntity) Tick(context.Context) error {
+func (*dualActivationEntity) Tick(context.Context, gor.TickStatus) error {
 	return nil
 }
 

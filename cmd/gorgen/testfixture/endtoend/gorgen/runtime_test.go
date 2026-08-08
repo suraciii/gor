@@ -3,6 +3,7 @@ package gorgen
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/suraciii/gor"
 	"github.com/suraciii/gor/cmd/gorgen/testfixture/endtoend/domain"
@@ -34,6 +35,26 @@ func TestGeneratedAccountPersistsAcrossRestart(t *testing.T) {
 	defer third.Close()
 	if value, label, err := account.Snapshot(context.Background()); err != nil || value != 0 || label != "account" {
 		t.Fatalf("Snapshot after reset = (%d, %q, %v), want (0, account, nil)", value, label, err)
+	}
+}
+
+func TestNewAccountReminderCallBuildsTypedRequest(t *testing.T) {
+	status := gor.TickStatus{
+		FirstTickTime:   time.Unix(10, 0).UTC(),
+		Period:          time.Minute,
+		CurrentTickTime: time.Unix(20, 0).UTC(),
+	}
+	args, reply := newAccountReminderCall("Tick", status)
+	typedArgs, ok := args.(*accountTickRequest)
+	if !ok || typedArgs.A0 != status {
+		t.Fatalf("newAccountReminderCall(Tick) args = %#v, want TickStatus %#v", args, status)
+	}
+	if _, ok := reply.(*accountTickReply); !ok {
+		t.Fatalf("newAccountReminderCall(Tick) reply = %T, want *accountTickReply", reply)
+	}
+	args, reply = newAccountReminderCall("Missing", status)
+	if args != nil || reply != nil {
+		t.Fatalf("newAccountReminderCall(Missing) = (%T, %T), want (nil, nil)", args, reply)
 	}
 }
 
