@@ -166,25 +166,38 @@ func TestNextDueAt_LargeDowntimeReturnsPromptly(t *testing.T) {
 	now := dueAt.Add(time.Hour)
 	reminder := store.Reminder{DueAt: dueAt, Interval: period}
 
-	result := make(chan time.Time, 1)
-	go func() {
-		result <- nextDueAt(reminder, now)
-	}()
-
-	select {
-	case got := <-result:
-		want := now.Add(period)
-		if !got.After(now) || !got.Equal(want) {
-			t.Fatalf("next due time = %s, want %s strictly after now", got, want)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("nextDueAt did not return promptly")
+	got := nextDueAt(reminder, now)
+	want := now.Add(period)
+	if !got.After(now) || !got.Equal(want) {
+		t.Fatalf("next due time = %s, want %s strictly after now", got, want)
 	}
 
 	future := now.Add(time.Hour)
 	reminder.DueAt = future
 	if got := nextDueAt(reminder, now); !got.Equal(future) {
 		t.Fatalf("future due time = %s, want unchanged %s", got, future)
+	}
+
+	reminder.DueAt = now
+	reminder.Interval = 2 * time.Nanosecond
+	if got := nextDueAt(reminder, now); !got.Equal(now.Add(reminder.Interval)) {
+		t.Fatalf("due-now next time = %s, want %s", got, now.Add(reminder.Interval))
+	}
+
+	for _, interval := range []time.Duration{0, -time.Nanosecond} {
+		reminder.Interval = interval
+		if got := nextDueAt(reminder, now); !got.IsZero() {
+			t.Fatalf("interval %s next time = %s, want zero", interval, got)
+		}
+	}
+
+	const maxElapsed = time.Duration(1<<63 - 1)
+	overflowDueAt := time.Unix(0, 0).UTC()
+	overflowNow := overflowDueAt.Add(maxElapsed)
+	reminder.DueAt = overflowDueAt
+	reminder.Interval = 2 * time.Nanosecond
+	if got := nextDueAt(reminder, overflowNow); !got.After(overflowNow) {
+		t.Fatalf("overflow fallback = %s, want strictly after %s", got, overflowNow)
 	}
 }
 
