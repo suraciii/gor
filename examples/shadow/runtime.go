@@ -32,6 +32,35 @@ func RegisterWithLifecycle(rt *gor.Runtime, events chan<- domain.LifecycleEvent)
 	)
 }
 
+// RegisterConformance installs the Single Silo recovery example with an
+// application-owned store. The runtime uses no membership or transport.
+func RegisterConformance(rt *gor.Runtime, application domain.ApplicationStore) error {
+	return registerConformance(rt, application, nil)
+}
+
+// RegisterConformanceWithObservation installs the conformance example and
+// sends Reminder observations to observed for deterministic tests.
+func RegisterConformanceWithObservation(rt *gor.Runtime, application domain.ApplicationStore, observed chan<- domain.RecoveryObservation) error {
+	return registerConformance(rt, application, observed)
+}
+
+func registerConformance(rt *gor.Runtime, application domain.ApplicationStore, observed chan<- domain.RecoveryObservation) error {
+	if err := register(rt,
+		func(b *gor.Binder) domain.Device {
+			return domain.NewDeviceWithApplication(b, application)
+		},
+		domain.NewWorkshop,
+	); err != nil {
+		return err
+	}
+	return gor.Register[domain.RecoveryCoordinator](rt, func(b *gor.Binder) domain.RecoveryCoordinator {
+		if observed == nil {
+			return domain.NewRecoveryCoordinator(b, application)
+		}
+		return domain.NewRecoveryCoordinatorWithObservation(b, application, observed)
+	})
+}
+
 func register(rt *gor.Runtime, deviceFactory func(*gor.Binder) domain.Device, workshopFactory func(*gor.Binder) domain.Workshop) error {
 	if err := gorgen.Install(rt); err != nil {
 		return err

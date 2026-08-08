@@ -330,7 +330,9 @@ References, Request Context, `OnError`, `OnCall`, `Kill`, `New`, `Store`, and
 application code because the Runtime must not own or interpret business
 records.
 
-The existing code does not yet contain this coordinator, ApplicationStore,
-process driver, or conformance test suite. This document defines the target
-before implementation. The implementation must preserve the current
-single-Silo boundary and must not make cluster membership a dependency.
+The coordinator, ApplicationStore, process driver, generated bindings, and
+conformance tests are implemented in `examples/shadow`. The existing shadow
+`Device.Report` keeps its workshopID contract, so the conformance path uses the
+separate typed `ReportAction` method for an ActionID. This keeps workshopID and
+ActionID separate while preserving the Single Silo boundary. The example does
+not configure cluster membership, a Transport, or private Runtime state.
