@@ -2,7 +2,7 @@ package domain
 
 import "context"
 
-//gor:entity
+//gor:grain
 type Account interface {
 	Deposit(ctx context.Context, amount int64) (int64, error)
 	Reset(ctx context.Context) error

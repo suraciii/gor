@@ -86,9 +86,9 @@ func newAccountProxy(rt gor.Invoker, id gor.GrainId) domain.Account {
 	return &accountProxy{id: id, rt: rt}
 }
 
-// Install installs the generated entity bindings in rt.
+// Install installs the generated Grain bindings in rt.
 // Call it once after creating rt and before registering or referencing any of
-// the generated entity types. After it returns nil, gor.Register and gor.Ref
+// the generated Grain types. After it returns nil, gor.Register and gor.Ref
 // can use those types with rt.
 func Install(rt *gor.Runtime) error {
 	if err := gor.InstallType[domain.Account](rt, dispatchAccount, newAccountProxy, newAccountCall); err != nil {

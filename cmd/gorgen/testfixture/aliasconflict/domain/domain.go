@@ -7,7 +7,7 @@ import (
 	bdomain "github.com/suraciii/gor/cmd/gorgen/testfixture/aliasconflict/b/domain"
 )
 
-//gor:entity
+//gor:grain
 type Ledger interface {
 	Merge(ctx context.Context, left adomain.Event, right bdomain.Event) (adomain.Event, error)
 }

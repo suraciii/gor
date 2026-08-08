@@ -31,7 +31,7 @@ type Shadow struct {
 	Configuration string
 }
 
-//gor:entity
+//gor:grain
 type Device interface {
 	Report(ctx context.Context, workshopID string, state string) error
 	Configure(ctx context.Context, configuration string) error
@@ -39,7 +39,7 @@ type Device interface {
 	MarkOffline(ctx context.Context) error
 }
 
-//gor:entity
+//gor:grain
 type Workshop interface {
 	DeviceOnline(ctx context.Context, deviceID string) error
 	DeviceOffline(ctx context.Context, deviceID string) error

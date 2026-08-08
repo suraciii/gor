@@ -6,7 +6,7 @@ import (
 	"github.com/suraciii/gor"
 )
 
-//gor:entity
+//gor:grain
 type Account interface {
 	Deposit(ctx context.Context, amount int64) (int64, error)
 	Snapshot(ctx context.Context) (int64, string, error)

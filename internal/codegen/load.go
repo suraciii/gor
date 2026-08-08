@@ -52,11 +52,11 @@ func Load(pattern string) (Loaded, error) {
 			}
 			for _, specification := range genDecl.Specs {
 				typeSpec := specification.(*ast.TypeSpec)
-				if !hasEntityMarker(genDecl, typeSpec) {
+				if !hasGrainMarker(genDecl, typeSpec) {
 					continue
 				}
 				if _, ok := typeSpec.Type.(*ast.InterfaceType); !ok {
-					return Loaded{}, locatedError(pkg.Fset, typeSpec.Pos(), "%s.%s is marked gor:entity but is not an interface", pkg.Name, typeSpec.Name.Name)
+					return Loaded{}, locatedError(pkg.Fset, typeSpec.Pos(), "%s.%s is marked gor:grain but is not an interface", pkg.Name, typeSpec.Name.Name)
 				}
 				entity, err := loadInterface(pkg, typeSpec, imports)
 				if err != nil {
@@ -67,7 +67,7 @@ func Load(pattern string) (Loaded, error) {
 		}
 	}
 	if len(pending) == 0 {
-		return Loaded{}, fmt.Errorf("package %s contains no gor:entity interfaces", pkg.PkgPath)
+		return Loaded{}, fmt.Errorf("package %s contains no gor:grain interfaces", pkg.PkgPath)
 	}
 	// Import names cannot be chosen while loading: whether two packages
 	// collide is only known once every signature has been collected.
@@ -93,7 +93,7 @@ func Load(pattern string) (Loaded, error) {
 	return Loaded{Model: model, Dir: filepath.Dir(files[0])}, nil
 }
 
-// pendingInterface carries the raw go/types data of an entity interface;
+// pendingInterface carries the raw go/types data of a Grain interface;
 // type strings are only rendered once every import has been collected and
 // aliases have been decided.
 type pendingInterface struct {
@@ -350,7 +350,7 @@ func isError(value types.Type) bool {
 	return types.Identical(value, types.Universe.Lookup("error").Type())
 }
 
-func hasEntityMarker(declaration *ast.GenDecl, specification *ast.TypeSpec) bool {
+func hasGrainMarker(declaration *ast.GenDecl, specification *ast.TypeSpec) bool {
 	return commentsHaveMarker(declaration.Doc) || commentsHaveMarker(specification.Doc)
 }
 
@@ -365,7 +365,7 @@ func commentsHaveMarker(group *ast.CommentGroup) bool {
 		} else if strings.HasPrefix(text, "/*") && strings.HasSuffix(text, "*/") {
 			text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "/*"), "*/"))
 		}
-		if text == "gor:entity" {
+		if text == "gor:grain" {
 			return true
 		}
 	}
