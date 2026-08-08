@@ -130,4 +130,11 @@ the stable error code.
 
 ## Gap
 
-The current implementation already uses the error envelope, processes business errors before encoding successful replies, and rebuilds coded errors on the source; public call paths, the cancellation boundary, and the shadow and simulator migrations are covered. Request Context validation and encoding are specified in [request-context.md](request-context.md) but are not implemented yet. Still not provided: arbitrary error type registration, field or error-chain fidelity, joined-structure fidelity, cancellation frames, or remote deadline propagation. These belong to "what is not done"; they are not current gaps.
+The current implementation uses the error envelope, processes business errors
+before encoding successful replies, rebuilds coded errors on the source, and
+implements Request Context validation and encoding as specified in
+[request-context.md](request-context.md). Public call paths, the cancellation
+boundary, and the shadow and simulator migrations are covered. Still not
+provided: arbitrary error type registration, field or error-chain fidelity,
+joined-structure fidelity, cancellation frames, or remote deadline propagation.
+These belong to "what is not done"; they are not current gaps.

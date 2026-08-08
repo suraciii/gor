@@ -11,12 +11,13 @@ import (
 )
 
 type callRequest struct {
-	Kind      string             `json:"kind"`
-	GrainType string             `json:"type"`
-	GrainKey  string             `json:"key"`
-	Method    string             `json:"method"`
-	Args      json.RawMessage    `json:"args"`
-	Occupied  []occupiedIdentity `json:"occupied,omitempty"`
+	Kind           string             `json:"kind"`
+	GrainType      string             `json:"type"`
+	GrainKey       string             `json:"key"`
+	Method         string             `json:"method"`
+	Args           json.RawMessage    `json:"args"`
+	Occupied       []occupiedIdentity `json:"occupied,omitempty"`
+	RequestContext json.RawMessage    `json:"request_context,omitempty"`
 }
 
 // occupiedIdentity is the wire form of one entity on a forwarded call's
@@ -84,13 +85,18 @@ func (rt *Runtime) forward(ctx context.Context, owner string, id GrainId, method
 	if err != nil {
 		return withCode(ErrRequestEncodeFailed, fmt.Errorf("encode %s arguments: %w", method, err))
 	}
+	encodedContext, err := requestContextPayload(ctx)
+	if err != nil {
+		return withCode(ErrRequestEncodeFailed, fmt.Errorf("encode request context: %w", err))
+	}
 	payload, err := json.Marshal(callRequest{
-		Kind:      requestKindInvoke,
-		GrainType: id.GrainType,
-		GrainKey:  id.GrainKey,
-		Method:    method,
-		Args:      encodedArgs,
-		Occupied:  occupiedToWire(runtimepkg.OccupiedFrom(ctx)),
+		Kind:           requestKindInvoke,
+		GrainType:      id.GrainType,
+		GrainKey:       id.GrainKey,
+		Method:         method,
+		Args:           encodedArgs,
+		Occupied:       occupiedToWire(runtimepkg.OccupiedFrom(ctx)),
+		RequestContext: encodedContext,
 	})
 	if err != nil {
 		return withCode(ErrRequestEncodeFailed, fmt.Errorf("encode invocation request: %w", err))
@@ -148,6 +154,12 @@ func (rt *Runtime) handleInvoke(ctx context.Context, request callRequest) ([]byt
 		return errorResponse(err)
 	}
 	defer release()
+
+	snapshot, err := decodeRequestContext(request.RequestContext)
+	if err != nil {
+		return errorResponse(withCode(ErrInvalidRequest, err))
+	}
+	ctx = withRequestContextSnapshot(ctx, snapshot)
 
 	registration, ok := rt.typeRegistration(request.GrainType)
 	if !ok {

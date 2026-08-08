@@ -521,6 +521,11 @@ func TestRuntime_ForwardCancellationDoesNotCancelRemote(t *testing.T) {
 
 		remote := findForwardTarget(t, first, "node-b")
 		ctx, cancel := context.WithCancel(context.Background())
+		var err error
+		ctx, err = WithRequestContext(ctx, "trace_id", "forward-cancel")
+		if err != nil {
+			t.Fatal(err)
+		}
 		callDone := make(chan error, 1)
 		go func() {
 			callDone <- first.Invoke(ctx, remote, "Block", &routedAccountBlockRequest{}, &routedAccountBlockReply{})
@@ -544,6 +549,9 @@ func TestRuntime_ForwardCancellationDoesNotCancelRemote(t *testing.T) {
 		}
 		if err := remoteContext.Err(); err != nil {
 			t.Fatalf("remote forwarded context was cancelled: %v", err)
+		}
+		if got, ok := RequestContextValue(remoteContext, "trace_id"); !ok || got != "forward-cancel" {
+			t.Fatalf("remote Request Context after source cancellation = (%v, %v), want forward-cancel", got, ok)
 		}
 		select {
 		case <-finished:

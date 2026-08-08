@@ -315,9 +315,11 @@ gate before the feature can be called complete.
 
 ## Gap
 
-This is a design-only correction for issue #94. It changes only repository
-design documents. No Go source, tests, generated files, `CONTEXT.md`,
-`ROADMAP.md`, GitHub state, or runtime behavior changed. The public API, JSON
-field, validation rules, lifecycle boundaries, and acceptance matrix are
-specified but are not implemented. Request Context must not be reported as
-available until the implementation and all required gates pass.
+The two public helpers, immutable snapshots, scalar normalization, validation,
+and finite-float checks are implemented. Local Calls keep the caller's context;
+forwarded invoke requests carry the optional `request_context` field and the
+receiver validates and replaces its private snapshot before activation. Typed
+integer decoding preserves `int64` and `uint64` values. State, Reminder,
+lifecycle, cancellation, admission, and response boundaries keep their existing
+behavior. Focused tests cover the acceptance matrix; the remaining release
+gates are the repository commands listed above.
