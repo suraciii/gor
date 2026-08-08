@@ -30,16 +30,16 @@ A step looks like this:
 
 This is the easiest place to get wrong; it is worth stating in no uncertain terms.
 
-Intuitively, observations at the quiescence point should be interleaving-independent: all calls are done, `Add` is commutative, and the entity's value is the same regardless of order.
+Intuitively, observations at the quiescence point should be interleaving-independent: all calls are done, `Add` is commutative, and the Grain's value is the same regardless of order.
 
-**Once faults can deactivate activations, this stops holding.** Two concurrent calls on the same entity with "the write took effect but errored" injected: the first call writes, errors, and the activation is deactivated. The second call either is still queued and gets rejected along with it (the entity's value was incremented once), or re-activates in time, reads the new value, and writes again (incremented twice). Which one happens depends on scheduling.
+**Once faults can deactivate activations, this stops holding.** Two concurrent calls on the same Grain with "the write took effect but errored" injected: the first call writes, errors, and the activation is deactivated. The second call either is still queued and gets rejected along with it (the Grain's value was incremented once), or re-activates in time, reads the new value, and writes again (incremented twice). Which one happens depends on scheduling.
 
 The multiset of outcomes is the same: both `{write error, write error}` and `{write error, closed}` are possible.
 
 So: **with fault injection, no observation is interleaving-independent.** The log therefore splits in two:
 
-- **Decisions** — what the PRNG produced: which entity this step hits, how much to add, which fault to inject, whether to crash. Fully decided by the seed.
-- **Observations** — outcomes, entity values, intermediate quantities of invariant checks. For humans; when something fails, reconstruct the incident from them.
+- **Decisions** — what the PRNG produced: which Grain this step hits, how much to add, which fault to inject, whether to crash. Fully decided by the seed.
+- **Observations** — outcomes, Grain values, intermediate quantities of invariant checks. For humans; when something fails, reconstruct the incident from them.
 
 **The reproduction test compares only the decision half.** The observation half is still written to the log, but does not take part in the comparison.
 
@@ -63,18 +63,22 @@ That is the defect, and it is **one root, not two**. "May a fault be consumed no
 
 ### The remedy: bind the target by the seed
 
-A fault is two facts — a kind and a target. The kind has always been a decision. The target must be a decision too. The store fault already does this: keyed by entity identity, drawn in the driver, read fresh on every call to that entity, not consumed by first arrival. The member fault must meet the same bar. This is not new machinery; it is removing the inconsistency that left the member fault the odd one out.
+A fault is two facts — a kind and a target. The kind has always been a decision. The target must be a decision too. The store fault already does this: keyed by GrainId, drawn in the driver, read fresh on every call to that Grain, not consumed by first arrival. The member fault must meet the same bar. This is not new machinery; it is removing the inconsistency that left the member fault the odd one out.
 
-The target of a member fault is a member row — the `(node address, generation)` the member store keys on — for the write and delay kinds, and a node for the list-error kind. The driver draws the target with the seed, the same way it draws node indices for calls and crashes, resolving a node to its current generation. The fault fires only on an operation addressing that target; if none does this step it does not fire — dropped, deterministically, the way a store fault on an entity nobody calls does not manifest. The delay kind is already shape-bound to an active-refresh write; it takes the target row as well, so two survivors heartbeating no longer race for one delay token. With the target fixed by the seed, restart-success is fixed by the seed (a write or list fault fails restart exactly when it targets the restarting node; a delay never does), liveness is fixed by the seed, and the decision half is pure again.
+The target of a member fault is a member row — the `(node address, generation)` the member store keys on — for the write and delay kinds, and a node for the list-error kind. The driver draws the target with the seed, the same way it draws node indices for calls and crashes, resolving a node to its current generation. The fault fires only on an operation addressing that target; if none does this step it does not fire — dropped, deterministically, the way a store fault on a Grain nobody calls does not manifest. The delay kind is already shape-bound to an active-refresh write; it takes the target row as well, so two survivors heartbeating no longer race for one delay token. With the target fixed by the seed, restart-success is fixed by the seed (a write or list fault fails restart exactly when it targets the restarting node; a delay never does), liveness is fixed by the seed, and the decision half is pure again.
 
 ### Per seam
 
 Whether a seam carries this defect turns on one test: does its first-arrival consumption move a runtime quantity the decision encoding reads?
 
-- **Store read/write fault** — keyed by entity identity, not consumed by first arrival. No defect.
-- **Schedule claim fault** — keyed by entity identity; the consuming `Claim` is CAS-unique, so the fault rides the one winner. Which node wins is scheduling, but the observable — one delivery, the fault applied — is invariant, and liveness is untouched. No defect; the residual scheduling dependence is the accepted outcome kind.
+- **Store read/write fault** — keyed by GrainId, not consumed by first arrival. No defect.
+- **Reminder claim fault** — keyed by GrainId; the consuming `Claim` is
+  CAS-unique, so the fault rides the one winner. Which Silo wins is a
+  scheduling detail. The observable is one delivery with the fault applied.
 - **Member fault** — single unkeyed field, first-arrival. Its consumption fixes restart-success, which moves liveness, which the decision encoding reads. **The defect.**
-- **Schedule list fault** — single unkeyed field, first-arrival, same *shape* as the member fault. But a list error is read-only and the poller retries next tick; it moves no quantity the decision encoding reads, so no divergence reaches the decision half. **Benign today; take the same target binding for consistency, not urgency** — a future seam that let schedule state feed a decision would reopen the leak through the same shape.
+- **Reminder list fault** — a single unkeyed field with first-arrival behavior.
+  A list error is read-only and the poller retries on the next tick. It does
+  not change the decision sequence today.
 - **Network fault** — not this shape. A partition is a deterministic group map applied per node pair (a whole pair goes silent); a per-message drop is drawn by the seed in the driver; delay is drawn unconditionally in the driver and released by the clock. None latches onto a target by first arrival.
 
 ### What does not change
@@ -117,19 +121,19 @@ A node = one `runtime.Runtime`. Several nodes share one `Store`. Before [step 6]
 - **Crash** — drop all in-memory state, keep the store.
 - **Restart** — build a new `Runtime` on the same store.
 
-**Double activation becomes testable here.** Two Runtimes sharing one store activating the same identity is double activation by itself — no network partition needed to produce it. The core risk of cluster instability is already covered by assertions at step 4; step 6 only changes the way it is produced.
+**Double activation becomes testable here.** Two Runtimes sharing one store activating the same GrainId is double activation by itself — no network partition needed to produce it. The core risk of cluster instability is already covered by assertions at step 4; step 6 only changes the way it is produced.
 
 ## A crash is not Close
 
 `Close()` drains the mailbox and waits for in-flight calls to finish. That is a graceful stop.
 
-A crash must make in-flight calls return with an error immediately, giving entities no teardown chance. So `runtime` needs one more stop path: `Kill()` — cancel all in-flight calls' contexts, close the mailbox, do not wait for draining.
+A crash must make in-flight calls return with an error immediately, giving Grains no teardown chance. So `runtime` needs one more stop path: `Kill()` — cancel all in-flight calls' contexts, close the mailbox, do not wait for draining.
 
 **`Kill()` must make every goroutine exit.** This is not cleanliness: synctest panics with a deadlock report when every goroutine in the bubble blocks forever. A leaking crashed node does not leak quietly; it takes down the whole simulation test.
 
-Go cannot kill a call that is executing a user method. `Kill()` can only cancel the context; a user method that ignores its context keeps running to completion. This differs from a real process crash, but there is no other way, and the entities in simulation tests are written by us.
+Go cannot kill a call that is executing a user method. `Kill()` can only cancel the context; a user method that ignores its context keeps running to completion. This differs from a real process crash, but there is no other way, and the Grains in simulation tests are written by us.
 
-**After a crash, wait for the fake store to finish its in-flight work.** `Kill()` cancels the context and the caller returns with the cancellation error right away, but the entity method is still asleep inside the fake store. The bubble's fake clock only advances while every goroutine is durably blocked, and once the root exits it stops outright: the sleeping goroutine can never wake, and synctest reports a leak.
+**After a crash, wait for the fake store to finish its in-flight work.** `Kill()` cancels the context and the caller returns with the cancellation error right away, but the Grain method is still asleep inside the fake store. The bubble's fake clock only advances while every goroutine is durably blocked, and once the root exits it stops outright: the sleeping goroutine can never wake, and synctest reports a leak.
 
 So the fake store must be able to report "no work in hand", and the driver waits for it before every observation step. The waiting is done with a channel: once the driver blocks, the fake clock advances, and the sleep ends on its own.
 
@@ -190,18 +194,18 @@ No, for two reasons:
 
 ## Invariants
 
-Checked after every step. The first two are read directly from the fake store's bookkeeping, independent of entity type:
+Checked after every step. The first two are read directly from the fake store's bookkeeping, independent of Grain type:
 
 - **ETags are monotonic.** A record's ETag only grows.
 - **Nothing is invented.** The content of storage at any moment must equal the bytes some `Write` committed. No write can be silently rewritten into something else.
 
 The third needs a porcupine model:
 
-- **The call history of a single entity is linearizable.**
+- **The call history of a single Grain is linearizable.**
 
 ## How porcupine plugs in
 
-The entity under test is a counter: `Add(ctx, n) (int64, error)`, returning the value after the add. The sequential spec fits in three lines, while the interleavings are many — just right.
+The Grain under test is a counter: `Add(ctx, n) (int64, error)`, returning the value after the add. The sequential spec fits in three lines, while the interleavings are many — just right.
 
 Each operation in the history records call time, return time, input, and output; times come from the bubble's fake clock.
 
@@ -213,7 +217,7 @@ One event per line, plain text, human-readable. Decisions and observations have 
 
 ```
 seed=8f3c2a1b
-0000 decision entity=Counter/a deltas=[3,5] fault=write.applied-then-error
+0000 decision Grain=Counter/a deltas=[3,5] fault=write.applied-then-error
      observe outcomes=[store-write-applied-then-error,closed]
      observe state Counter/a=3
 0001 decision crash node=1
@@ -255,9 +259,9 @@ One wrinkle, faced honestly. Replay divergence is itself scheduling-dependent, s
 
 ## What the later steps hang on the skeleton
 
-Step 5: the scheduled-task table is a new fault source (scan failures, claim failures, the claim landed but the reply was lost), with a new invariant: "one delivery per due time". See [timers.md](timers.md).
+Step 5: the Reminder table is a new fault source (scan failures, claim failures, the claim landed but the reply was lost), with a new invariant: "one delivery per due time". See [timers.md](timers.md).
 
-Step 6a: the membership table is yet another fault source, shaped like the scheduled-task table. New invariants:
+Step 6a: the membership table is yet another fault source, shaped like the Reminder table. New invariants:
 
 - **Membership views eventually converge.** After faults stop, all live nodes compute the same view.
 - **After convergence, one key belongs to one node.** During convergence there may be more than one: that is the acknowledged double-activation window, not a bug.
@@ -265,7 +269,7 @@ Step 6a: the membership table is yet another fault source, shaped like the sched
 
 "Live nodes" means nodes that **still consider themselves alive**, not nodes the driver did not crash. A persistently slow membership table makes nodes declare each other dead until everyone self-terminates (see [cluster.md](cluster.md)); that is 6a's known failure mode, and with no owner left at all it must not count as a broken invariant. After everyone is dead, the restart action brings nodes back: a fresh generation, a new row, and convergence must still happen.
 
-**Owner uniqueness must be checked with a batch of probe identities**, not just the two under test. `Owns` is pure computation; it writes nothing to storage and activates nothing, so a few dozen keys cost nothing, and checking a full batch equals comparing views: whenever two nodes' views differ, some key's owner necessarily disagrees. This also avoids opening a "hand over the view" method on the runtime for tests.
+**Owner uniqueness must be checked with a batch of probe GrainIds**, not just the two under test. `Owns` is pure computation; it writes nothing to storage and activates nothing, so a few dozen keys cost nothing, and checking a full batch equals comparing views: whenever two nodes' views differ, some key's owner necessarily disagrees. This also avoids opening a "hand over the view" method on the runtime for tests.
 
 **After ownership filtering, `claim-lost` is no longer an event every seed batch hits.** A non-owner poller never claims; two pollers claiming the same row is only possible inside the inconsistent-view window. This is the result of [timers.md](timers.md)'s rule, not a coverage regression.
 

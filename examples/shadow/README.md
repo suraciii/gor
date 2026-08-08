@@ -2,21 +2,26 @@
 
 A directly runnable device-shadow service: devices report state, the service keeps the last report; after more than 30 seconds without a new message, the device goes offline and its workshop's online count updates.
 
-## Why these things are entities
+## Why these things are Grains
 
-In the example, `Device` and `Workshop` both have stable identities, and each owns a set of state that must be updated serially.
+In the example, `Device` and `Workshop` are Grain types. Each Grain has a
+stable GrainId and State that must be updated serially.
 The four points below all correspond to the domain code in `domain/domain.go`.
 
-- **Large device count, mostly idle.** `Device` uses the device id as its identity, with state in `gor.State`; the runtime can evict idle activations from memory, while state stays in the store.
-- **Writes to one device must be serialized.** Reports and configuration both change the device's own shadow directly, with no locks; calls on the same identity are queued and executed by `gor`. Readers can see both entry points directly on the `Device` interface.
-- **Offline is a one-shot scheduled task that follows the device.** Every report resets the `offline` alarm; when the task fires, it marks the device offline and notifies the workshop.
-- **Online count is a cross-entity aggregation.** Devices notify `Workshop` proactively on going online, changing workshops, and going offline; the workshop only keeps the identity set of online devices — it does not hold device references and query them one by one.
+- **Large device count, mostly idle.** `Device` uses the device key as its
+  GrainKey. Its State uses `gor.State`. The Runtime can evict idle
+  Activations while State stays in the store.
+- **Writes to one device must be serialized.** Reports and configuration
+  change the Device Grain without locks. Calls for the same GrainId are
+  queued and executed by `gor`.
+- **Offline is a one-shot Reminder.** Each report resets the `offline`
+  Reminder. When it runs, it marks the Device Grain offline and notifies the
+  Workshop Grain.
+- **Online count is a cross-Grain aggregation.** Devices notify `Workshop`
+  when they go online, change workshops, or go offline. The Workshop Grain
+  keeps GrainIds. It does not call every Device Grain one by one.
 
-These are not about splitting the code into more types; each identity needs its own activation, state, and serialized calls.
-
-## What gor does not provide
-
-Shadow write, offline-alarm reset, and workshop notification are three independent operations. `gor` provides no cross-entity transactions and no compensation or rollback for the user: if the shadow write succeeds and a later alarm or notification fails, the device and workshop can be temporarily inconsistent. The example returns the error to the caller and leaves the window for the business to decide whether it is acceptable; the implementation order is in the `Report` method of `domain/domain.go`.
+Each GrainId has its own Activation, State, and serialized Calls.
 
 ## Running it
 
@@ -26,7 +31,7 @@ Run from the gor repository root:
 go run ./examples/shadow/cmd/shadow
 ```
 
-Registering the shadow entities only needs the runtime:
+Registering the shadow Grains only needs the Runtime:
 
 ```go
 if err := shadow.Register(rt); err != nil {
@@ -34,7 +39,8 @@ if err := shadow.Register(rt); err != nil {
 }
 ```
 
-Scheduled tasks and lifecycle hooks have no requester waiting. When starting the runtime, install the unified error sink, or these two kinds of errors are dropped:
+Reminders and lifecycle hooks have no requester waiting. When starting the
+Runtime, install the unified error sink, or these errors are dropped:
 
 ```go
 rt, err := gor.New(
@@ -59,9 +65,15 @@ go run ./examples/shadow/cmd/shadow -cluster -addr 127.0.0.1:8082 -node-addr 127
 go run ./examples/shadow/cmd/shadow -cluster -addr 127.0.0.1:8083 -node-addr 127.0.0.1:7373 -db ./data/cluster.db
 ```
 
-Run each in its own terminal. Every node serves the same HTTP API; send a request to any node and it is executed on the node that owns that entity, forwarded over the cluster transport when that node is a different one. The entity definitions and handlers are identical to the single-node service — clustering is a launcher concern, not a business-code one.
+Run each in its own terminal. Every node serves the same HTTP API. A request
+is executed on the Silo that owns its Grain. The Grain definitions and
+handlers are the same as in the single-Silo service.
 
-A node begins serving the moment it joins. As the nodes discover each other, which node owns which entity settles within about a second. During that window the same entity may be active on two nodes at once, so two writes to it can collide: one succeeds, the other fails and is returned to the caller — a client should retry it. This does not happen in the single-node service. The full boundary, including when this window opens beyond startup, is in [../../docs/programming-model.md](../../docs/programming-model.md).
+A node begins serving when it joins. As Silos discover each other, Grain
+ownership settles. During that window the same Grain may be active on two
+Silos. One State write can then fail with a conflict. This does not happen in
+the single-Silo service. The full boundary is in
+[../../docs/programming-model.md](../../docs/programming-model.md).
 
 ## Calling it
 

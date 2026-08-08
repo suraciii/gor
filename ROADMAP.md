@@ -2,13 +2,15 @@
 
 **Direction.** `gor` is for programs that need stateful objects on one machine. The main line is the single-node product; clustering is an optional extension that exists and is shipped, but is not the path the project is built around. See [docs/vision.md](docs/vision.md).
 
-**Status.** The single-node core (steps 1–5.5) is implemented and usable; for practical purposes, the single-node product is done. Clustering (step 6) is implemented and shipped in 0.0.x as a preview. Every item under "Required before an announced release" is done. Staying in 0.0.x rather than announcing is a choice the project has already made — see [design/release.md](design/release.md); it is a posture, not a roadmap step.
+**Status.** The single-node core (steps 1–5.5) is implemented and usable; for practical purposes, the single-node product is done. Clustering (step 6) is implemented and shipped in 0.0.x as a preview. The pre-announcement checklist is done. The announced 0.1.0 target and its remaining composition and failure-evidence work are defined below.
 
 Slicing principle: every step runs, is accepted, and delivers value on its own. Dependencies of the form "step 1 cannot be verified until step 6" are not allowed.
 
 ## The single-node core
 
-Steps 1 through 5.5 form the single-node product: a per-key runtime, persistent state, typed proxies, the simulation harness, scheduled tasks, and the API fixes the first real example surfaced. They are implemented.
+Steps 1 through 5.5 form the single-Silo product: a per-Grain runtime,
+persistent State, typed Grain References, the simulation harness, Reminders,
+and the API fixes the first real example surfaced. They are implemented.
 
 ### 1. Single-process runtime
 
@@ -50,15 +52,17 @@ Node crashes require `runtime` to gain a stop path that does not drain. This is 
 
 **Acceptance:** a fixed seed reproduces a sequence of injected store faults and node crashes, and a rerun yields a byte-identical decision sequence; invariants hold under those faults; a double activation created by two nodes sharing one store is blocked by the ETag on write conflict instead of being silently overwritten.
 
-What is reproduced is the injected decisions, not the whole execution. A fault deactivates the activation, and from then on even the entity's value depends on scheduling — see [design/simulation.md](design/simulation.md).
+What is reproduced is the injected decisions, not the whole execution. A
+fault deactivates the Activation, and later Grain State can depend on
+scheduling — see [design/simulation.md](design/simulation.md).
 
-### 5. Scheduled tasks
+### 5. Reminders
 
 One table plus one poller. Design: [design/timers.md](design/timers.md).
 
 Deliberately not repeating Orleans Reminders v1's design — the in-memory cache plus ring-partitioning scheme is what Orleans itself replaced in v2 (`Orleans.DurableJobs`). Start directly with a table plus a poller.
 
-The scheduled-task table does not go through `store.Store`; it is a new interface. It is also a new fault source on the step-4 skeleton — it must be hooked up in this step, not deferred to step 6.
+The Reminder table does not go through `store.Store`; it is a new interface. It is also a new fault source on the step-4 skeleton — it must be hooked up in this step, not deferred to step 6.
 
 Claiming via CAS must be done right now. In step 6, two nodes' pollers can scan the same row at the same time; fixing it then would mean rewriting all the earlier tests.
 
@@ -71,7 +75,8 @@ Implemented. The example's factory now takes only `*gor.Binder`; the load genera
 The friction from writing the first real example was minor, but all of it sat on the main path:
 
 - `gor.Now(b)` — the Binder already holds the injected `Clock`; without it, users would write `time.Now()`.
-- `gor.Ref[T](b, key)` — an entity calling another entity should not require the factory to capture a runtime object.
+- `gor.Ref[T](b, key)` — a Grain calling another Grain should not require the
+  factory to capture a Runtime object.
 - `OnError` — scheduled delivery failures used to be dropped silently; they are now visible to users through the unified error sink.
 - `OnActivate` / `OnDeactivate` — the lifecycle hooks used to be missing; they are now implemented as optional interfaces, so the example can be notified on activation and eviction.
 
@@ -81,13 +86,24 @@ Placed before step 6 because it changes the public API. API changes get more exp
 
 ## The single-node line, going forward
 
-The single-node core above is, for practical purposes, done. A user who runs `gor` on one node has the whole product: typed entities, state that survives a crash, calls serialized per key, scheduled tasks that survive a restart, lifecycle hooks, observability, and a stable error contract. What follows is not "making single-node usable" — it already is. The two steps below — a durability control for state writes and the reproducible-test foundation — are implemented. Clustering (step 6, below) is parked and was never a prerequisite for either.
+The single-Silo core above is usable. A user who runs `gor` on one machine
+has typed Grains, State that survives a crash, serialized Calls, Reminders,
+lifecycle hooks, observability, and a stable error contract. The 0.1.0 work
+still has to make these capabilities one public experience. Clustering is
+optional and is not a prerequisite.
 
 ### A durability control for state writes
 
-A state write is the operation single-node users care about most — it bounds how many state changes one entity can do per second ([design/benchmarks.md](design/benchmarks.md)). The write path gets a durability control: a way to run writes at a looser tier when the application accepts the trade. The tier is chosen at store open, applies to entity state only, and defaults to Full; the exact option, what a crash can cost at each tier, and the migration of older databases are in [design/persistence.md](design/persistence.md). This step is the capability and its measured baseline, not a redesign of the store interface.
+A State write is the operation single-Silo users care about most. It bounds
+how many State changes one Grain can make per second
+([design/benchmarks.md](design/benchmarks.md)). The durability control is
+implemented and applies to Grain State only. Its exact limits are in
+[design/persistence.md](design/persistence.md).
 
-Implemented. `store.WithDurability` on either SQLite constructor selects the tier — `DurabilityFull` (the default) or `DurabilityRelaxed`. Entity-state rows live in a database file derived from the named path by inserting `-state` before the extension; the schedule and membership tables stay in the named file and always run at Full. The Relaxed tier flushes the state database's write-ahead log on Close, and a database from an earlier 0.0.x migrates into the new layout on first open. The baseline is recorded at both tiers on real disk: Full 1.7 ms/op, Relaxed 14 us/op ([benchmarks.md](benchmarks.md)).
+Implemented. `store.WithDurability` selects Full or Relaxed durability for
+Grain State. Reminder and membership data stays at Full durability. The
+baseline is recorded at both tiers on real disk: Full 1.7 ms/op, Relaxed 14
+us/op ([benchmarks.md](benchmarks.md)).
 
 **Acceptance.** A single-node user can pick a durability tier without writing their own store; the benchmark records a number at the relaxed tier alongside the full-durability baseline; the durability trade is stated in product language in the docs.
 
@@ -103,6 +119,27 @@ Implemented. The decision encoding reads driver-owned liveness only — `simulat
 
 bbolt and pebble are candidates for a single-node store, and a single-node-first store raises their relevance: the design leaned toward SQLite partly for cluster reasons — SQLite "satisfies both state storage and coordination tables", and coordination tables are a cluster need ([design/persistence.md](design/persistence.md)). Postgres was cluster-only and leaves with clustering. This is a goal, not a gap: the store interface is public, a user can ship their own backend, and no measured `gor`-specific number shows bbolt or pebble beating a relaxed-durability SQLite for this workload. The durability control above is the step with evidence; this becomes a step only when measurement shows a real user pain. They stay deliberately un-milestoned goals.
 
+## Announced release target: 0.1.0
+
+The next announced release is governed by the [0.1.0 product contract](docs/release-0.1.0.md) and delivered in the order specified by [design/release-0.1.0.md](design/release-0.1.0.md). This is a target specification, not a claim that the work is complete.
+
+The release target keeps the product single-Silo and makes the Grain, State,
+Reminder, lifecycle, Call, persistence, and observability capabilities
+dependable as one public experience. Cluster production is outside this
+target. A release item is complete only when its failure behavior is tested
+and the conformance Application can use it through the public API.
+
+The implementation batches are:
+
+1. Freeze the public contract and acceptance matrix.
+2. Harden Grain Activation, Calls, lifecycle, shutdown, and errors.
+3. Verify State and Reminder recovery under crashes and duplicate attempts.
+4. Complete call context, serialization, and application-storage boundaries.
+5. Run the conformance application and deterministic failure suite.
+6. Pass clean-install and full repository release gates.
+
+The first batch is documentation-only and must be reviewed before implementation begins.
+
 ## Optional extension: clustering
 
 Clustering is implemented and shipped in the 0.0.x tags. It is an optional extension, not the main line: it exists for workloads that have outgrown one machine, and single-node users are not asked to pay for it. The boundary is stated in [docs/vision.md](docs/vision.md) and in user terms in [docs/programming-model.md](docs/programming-model.md): during the window while nodes disagree about ownership, a write that always succeeds on a single node can return a conflict to the caller, who must retry. Further cluster work — rolling upgrades and operational cleanup — is deliberately deferred; it is not on the main line.
@@ -115,13 +152,15 @@ This step must state plainly, in both docs and API: the directory is eventually 
 
 Too big; sliced into four segments. The split points are chosen on "does it need the network" — the dividing line is transport, then probing.
 
-6t depends on none of the earlier segments and can run in parallel with 6a: it only deals with operating-system sockets and knows nothing of entities, identities, or the membership table.
+6t depends on none of the earlier segments and can run in parallel with 6a:
+it only deals with operating-system sockets and knows nothing of Grains,
+GrainIds, or the membership table.
 
 #### 6a. Membership table and ring
 
 A membership table, a node state machine (joining / active / dead), view polling, a hash ring, and local routing decisions. No transport: if the computed target is not this node, return an error carrying the owner's address.
 
-A new table and a new fault source, shaped like step 5's scheduled-task table — deliberately so; step 5 just blazed this trail.
+A new table and a new fault source, shaped like step 5's Reminder table — deliberately so; step 5 just blazed this trail.
 
 6a's membership-table-and-ring stage only defines member states and the view; the evidence for declaring death is completed by 6c's probe voting.
 
@@ -133,7 +172,8 @@ Implemented. The two boundaries of declaring death are written into [design/clus
 
 A thin, self-written transport: long-lived connections, multiplexing, frames, lazy dialing. Design: [design/transport.md](design/transport.md).
 
-It knows nothing of entities, identities, or the membership table — it moves bytes. So it does not depend on 6a and can proceed in parallel. Implemented.
+It knows nothing of Grains, GrainIds, or the membership table. It moves
+bytes, so it does not depend on 6a. Implemented.
 
 **Acceptance:** out-of-order responses match their requests; a response that arrives after a timeout is dropped, not handed to the next request; when a connection breaks, every in-flight request returns with an error and no goroutine leaks; an oversized frame does not make the peer allocate memory based on the frame header.
 
@@ -141,7 +181,10 @@ It knows nothing of entities, identities, or the membership table — it moves b
 
 Wire 6a's routing decisions to 6t's transport, plus a fake network (delay, packet loss, partition). Envelope and forwarding semantics: the "Forwarding" section of [design/cluster.md](design/cluster.md); how the server side recovers types from bytes: [design/codegen.md](design/codegen.md).
 
-Implemented. Calls to entities not on this node are forwarded through the transport to the node that currently owns them, sharing the same call path as local calls; the fake network deterministically simulates partitions, drops, recovery, and delay. Reorder is not a distinct fault under this transport model (see [design/simulation.md](design/simulation.md)). Probing and death voting are 6c.
+Implemented. Calls to Grains not on this Silo are forwarded through the
+transport to the Silo that owns them. Local and forwarded Calls share one
+call path. The fake network simulates partitions, drops, recovery, and
+delay. Probing and death voting are 6c.
 
 This step already changed the generated artifacts. `Invoke`'s argument went from `[]any` to `any`; each method has one request struct, and each type has one constructor like `newAccountCall`. Like step 3 taking over `dispatch`, this is a planned breaking change.
 
@@ -161,11 +204,11 @@ The boundary: the two sides of a partition can vote each other dead, even to the
 
 ## Required before an announced release
 
-Not part of any step above, but completed before gor points users at a version. All items below are done; gor currently sits at 0.0.x (publicly visible tags, not announced — see [design/release.md](design/release.md)). Whether and when to announce a version is a maintainer judgment, and the current choice is not to announce; it is not a roadmap step.
+Not part of any step above, this checklist is the baseline that was completed before the 0.1.0 target was formed. gor currently sits at 0.0.x (publicly visible tags, not announced — see [design/release.md](design/release.md)). The additional 0.1.0 composition, failure-evidence, and usability requirements are tracked in [docs/release-0.1.0.md](docs/release-0.1.0.md).
 
-- ~~English documentation. Done last — the docs are still changing; translating early means translating twice.~~ **Done.** `README`, `ROADMAP`, `FINDINGS`, `benchmarks.md`, the six `docs/` files, `examples/shadow/README`, and all 17 `design/` files are now English-only, the Chinese originals fully replaced with nothing kept in both languages; `research/`, `AGENTS.md`, `CLAUDE.md`, and `.github/PULL_REQUEST_TEMPLATE.md` stay in Chinese as internal evidence and maintainer-facing text — commits and reviews are written in Chinese anyway — and every link to `research/` carries an `(in Chinese)` marker.
+- ~~English documentation. Done last — the docs are still changing; translating early means translating twice.~~ **Done.** `README`, `ROADMAP`, `FINDINGS`, `benchmarks.md`, the six `docs/` files, `examples/shadow/README`, and all 17 `design/` files are now English-only, the Chinese originals fully replaced with nothing kept in both languages; `research/`, `CLAUDE.md`, and `.github/PULL_REQUEST_TEMPLATE.md` stay in Chinese as internal evidence and maintainer-facing text — commits and reviews are written in Chinese anyway — and every link to `research/` carries an `(in Chinese)` marker.
 - ~~Public API doc comments. To be completed after step 6c, once the public API is finalized as a release candidate; must meet [design/api-documentation.md](design/api-documentation.md) before `v0.1.0`.~~ **Done.**
-- ~~Error and cancellation contract. Stable error codes and the cross-node cancellation boundary must be implemented before `v0.1.0`.~~ **Done.** Spec: [docs/errors.md](docs/errors.md) and [design/errors.md](design/errors.md). The stable code is the only cross-node identity of an error; the cancellation boundary is implemented per spec. The spec previously had one self-contradiction (merged errors matched locally but not across nodes); it was ruled that "the error code is the unique reachable value in the error tree", and the implementation was brought in line.
+- ~~Error and cancellation contract. Stable error codes and the cross-node cancellation boundary must be implemented before `v0.1.0`.~~ **Done.** Spec: [docs/errors.md](docs/errors.md) and [design/errors.md](design/errors.md). A stable code is the only cross-node error identifier. The cancellation boundary is implemented per spec.
 - ~~Root runtime shutdown contract. The spec is complete, see [design/runtime.md](design/runtime.md), [design/cluster.md](design/cluster.md), and [docs/programming-model.md](docs/programming-model.md); implementation had not started. Before `v0.1.0`, new calls must stop being admitted during the shutdown window.~~ **Done.** The root runtime's stop state machine and single admission gate are implemented: four transition functions, atomic `admit`/release; the public `Invoke` / inbound handler / scheduled delivery share one gate that sits before the ownership decision and forwarding; `closing→killing` is an escalation, not a no-op; cluster nodes explicitly report their end reason via `DeclaredDead()`; stop coordination uses receive channels only. Transport teardown comes after admitted forwarded requests and inbound replies. Also fixed a real bug where a declared-dead node sent an empty view and triggered a graceful deactivation.
 - ~~Deactivation reasons and the background error sink for lifecycle hooks. The spec is complete, see [design/runtime.md](design/runtime.md), [design/timers.md](design/timers.md), and [docs/programming-model.md](docs/programming-model.md); the hooks themselves were implemented, but the deactivation reasons (`DeactivationReason`) and the structured background error sink (`BackgroundError`) were not — both are public API breaking changes. These two must be delivered before `v0.1.0`.~~ **Done.** `OnDeactivate` receives the deactivation reason (idle, ownership lost, normal shutdown, instance untrusted); the reason is fixed at the first transition out of the active state, and the hook gets a work context with no deadline that is never canceled; the background error sink now emits events whose sources are a closed set — scheduled delivery carries the method name, deactivation hook failure carries the deactivation reason, nothing outside the package can add sources, and sources are no longer guessed from method names. Poller scan and claim failures and deliveries canceled mid-shutdown do not enter the sink. Two public API migrations ship with this item (`OnDeactivate` gains a parameter, `OnError` takes an event).
 - ~~A real example application, rerun with the new signatures after step 5.5~~ **Done.** See [examples/shadow/](examples/shadow/); design: [docs/example.md](docs/example.md). Its output is [FINDINGS.md](FINDINGS.md) — nine API frictions; the first six went into step 5.5, the README's non-goals, or doc additions; the last three record frictions that still exist.

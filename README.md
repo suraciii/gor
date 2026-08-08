@@ -1,17 +1,24 @@
 # gor
 
-**A persistent, stateful runtime for Go.** A single binary, library-shaped, embeddable, designed for deterministic simulation testing from day one.
+**A persistent Grain Runtime for Go.** It is embeddable, runs as one Silo,
+and is designed for deterministic simulation testing.
 
-> **Status:** single-process features are implemented and usable. Multi-node calls can be routed and forwarded to the node that owns the entity; neighbor failure is decided by direct probing and death voting; errors carry stable codes across nodes. Detailed progress: [ROADMAP.md](ROADMAP.md)
+> **Status:** single-Silo features are implemented and usable. Cluster
+> features are an optional preview. Detailed progress: [ROADMAP.md](ROADMAP.md)
 
 ## What this is
 
-A Go library that makes objects with an identity, state, single-threaded execution, and crash recovery your programming unit. You write ordinary Go interfaces and ordinary structs; `gor` handles activation, call serialization, persistence, and scheduled wake-ups. Cross-node distribution is an optional extension, not the main line: it exists for workloads that have outgrown one machine, and single-node users are not asked to pay for it.
+A Go library that makes a Grain with a GrainId, State, serialized Calls, and
+restart recovery your programming unit. You write Go interfaces and structs.
+`gor` handles Activation, Call ordering, persistence, and Reminders. A
+future cluster is an optional extension, not the main line.
 
-The idea comes from Microsoft Orleans' virtual actor model, but this is not a port of Orleans. The trade-offs are recorded one by one in the [ADR and design documents](design/README.md); the three most important:
+`gor` is a Go port of the Orleans runtime model. The Go API uses Go forms,
+but the product terms and runtime meaning follow Orleans. The main design
+rules are in the [design documents](design/README.md):
 
 - The programming model is typed at compile time, not `any` in, `any` out — proxies are generated from Go interfaces ([design/codegen.md](design/codegen.md)).
-- Single-node is a first-class citizen, not a degenerate mode of clustering. No sidecar, no external database — `import` it and it works.
+- One Silo is a first-class product. It needs no sidecar or remote service.
 - Deterministic simulation testing is an architectural constraint, not a testing technique retrofitted afterwards ([design/testing.md](design/testing.md)). This is the main difference between this project and comparable implementations.
 
 ## Why it exists
@@ -29,13 +36,13 @@ Measured details: [research/landscape.md](research/landscape.md) (in Chinese).
 
 ## What it does not do
 
-`gor` explicitly does not pursue these; the reasons are in [docs/vision.md](docs/vision.md):
+`gor` does not provide these in 0.1.0; the boundaries are in
+[docs/vision.md](docs/vision.md):
 
-- No Orleans API compatibility layer, and no one-to-one correspondence of concepts.
-- No general-purpose actor framework (no supervision trees, mailbox policies, or behavior switching — the Akka-style capabilities).
-- No workflow DSL or orchestration graphs.
-- No "unbounded horizontal scaling". The target scale is a single machine to a small cluster.
-- No cross-entity transactions. A call that touches two entities and fails halfway fails halfway — `gor` gives no rollback and no outbox. If you need atomicity, make them one entity.
+- No source or binary compatibility promise with Orleans.
+- No Call Filters.
+- No reentrant or interleaved Grain Calls.
+- No cluster operation tools or unbounded scale.
 
 ## Documentation
 

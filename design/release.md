@@ -27,7 +27,7 @@ A milestone is the set of issues committed to one tag. It is the only planning o
 
 A **0.0.x** tag (publicly visible, not announced — see "0.0.x") may be cut when its milestone has zero open items and `make ci` is green on the candidate commit. GitHub counts open issues and open pull requests against a milestone; both must be closed. No date, no issue count, no feature threshold: the batch committed to the milestone is done. This is the default release kind while gor is pre-announcement.
 
-An **announced release** (v0.1.0 and later) is cut by maintainer judgment, not by a checklist — see "The bar for v1.0.0" and the 0.0.x note that readiness is complete and announcing is a choice. The 0.0.x chain leads up to it; the maintainer decides when to stop tagging 0.0.x and announce.
+An **announced release** (v0.1.0 and later) is cut after its product contract and release-specific evidence gates are complete. For v0.1.0, those gates are [docs/release-0.1.0.md](../docs/release-0.1.0.md) and [release-0.1.0.md](release-0.1.0.md). The maintainer still decides when to create the tag and publish the release after the gates pass.
 
 Closing a milestone freezes its scope as a completed set; it is not the same act as pushing the tag, which stays the manual step in "Release sequence." The two may be separated — v0.0.1's milestone was closed as a scope marker, and its tag was pushed afterward.
 
@@ -39,7 +39,7 @@ The current 0.0.x is the lowest-numbered open milestone. Route a new issue by th
 2. **Is it cut-blocking?** A defect a user hits with ordinary use is cut-blocking: route it to the current 0.0.x. A written-but-unimplemented spec, or a defect that needs unusual input to trigger, is not cut-blocking: route it to the next 0.0.x (create one if none exists). Once in a milestone, an issue stays there until it is done or is moved at cut time.
 3. **Otherwise it is backlog.** An issue with no milestone is recorded work not committed to any tag — future direction, environment debt with no user impact, or a gap explicitly deferred. No milestone is a legitimate, intended state, not a mistake and not a queue to drain before a release.
 
-The one fork not decidable from the issue alone is "ordinary use" versus "unusual input" in question 2. That is a judgment about how likely a user is to hit the defect. Worked example: a codegen import collision triggered by two method-signature packages sharing a name (common — cut-blocking, current 0.0.x) versus one triggered only by an entity package literally named `context` (rare — next 0.0.x). The agent proposes a placement; the maintainer confirms that single fork. Seeding a milestone's initial batch, deciding to announce, and judging an issue misrouted when its work cannot wait are also maintainer calls; routing, straggler-moving, and the zero-open cut check are mechanical.
+The one fork not decidable from the issue alone is "ordinary use" versus "unusual input" in question 2. That is a judgment about how likely a user is to hit the defect. Worked example: a codegen import collision triggered by two method-signature packages sharing a name (common — cut-blocking, current 0.0.x) versus one triggered only by a Grain package literally named `context` (rare — next 0.0.x). The agent proposes a placement; the maintainer confirms that single fork. Seeding a milestone's initial batch, deciding to announce, and judging an issue misrouted when its work cannot wait are also maintainer calls; routing, straggler-moving, and the zero-open cut check are mechanical.
 
 ### Merge order on the linear trunk
 
@@ -87,7 +87,7 @@ gor is in the 0.0.x band. A 0.0.x tag is publicly visible — the repository is 
 
 The 0.0.x release-note question has a zero-maintenance answer: none is written. The `release-note` blocks in merged PRs still accumulate as raw material; their only consumer is the maintainer writing the first announced release's note. Nothing is assembled, published, or kept in sync per 0.0.x tag.
 
-The readiness work for an announced release is already complete. Every [ROADMAP.md](../ROADMAP.md) "required" item is done — English documentation, public API doc comments, the error and cancellation contract, the root runtime shutdown contract, deactivation reasons and the background error sink, the example application, observability, and the performance baseline — and `make ci` passes. The benchmark failure that had blocked the baseline is fixed (`cluster.New` honors the six probe-parameter defaults from [design/cluster.md](cluster.md), `make bench` passes on a real-disk path, the forwarding baseline re-verified on 2026-08-06), and the cluster startup snippet in [docs/programming-model.md](../docs/programming-model.md) runs verbatim in a clean module. The reason gor is at 0.0.x and not announced is the maintainer's judgment that it is not time, not a missing technical gate. Inventing a new checklist to "earn" an announced release would be dishonest; when the maintainer decides to announce, that decision is the gate.
+The pre-announcement readiness work is complete. Every [ROADMAP.md](../ROADMAP.md) checklist item is done — English documentation, public API doc comments, the error and cancellation contract, the root runtime shutdown contract, deactivation reasons and the background error sink, the example application, observability, and the performance baseline — and `make ci` passes. The 0.1.0 contract adds a release-specific composition gate: the subsystem promises must be verified together under restart, failure, and duplicate delivery, and a public-API conformance application must demonstrate the integration boundary. Those requirements are not retroactively claimed by the old checklist.
 
 Multi-node is still a preview capability and partitions can misjudge healthy nodes, so no release — 0.0.x or announced — should be treated as settled.
 
@@ -118,4 +118,4 @@ Steps 1, 2, 4, and 5 need maintainer judgment and stay manual. Step 3 already ha
 
 ## Gap
 
-0.0.x tags are cut under the Planning rules: each is annotated, and no GitHub Release is created for any of them. The readiness work for an announced release is complete; staying in 0.0.x rather than announcing is a choice, not a missing gate.
+0.0.x tags are cut under the Planning rules: each is annotated, and no GitHub Release is created for any of them. The pre-announcement checklist is complete; the additional v0.1.0 contract and evidence gates determine when the first announced release is ready.

@@ -2,7 +2,7 @@
 
 ## Activation
 
-An entity's "activation" is its in-memory instance on some node. Lifecycle:
+A Grain's Activation is its in-memory instance on some Silo. Lifecycle:
 
 ```
 absent ── call arrives ──▶ activating ──▶ active ── idle timeout ──▶ deactivating ──▶ absent
@@ -11,11 +11,11 @@ absent ── call arrives ──▶ activating ──▶ active ── idle tim
                    reads state from the store                         persists
 ```
 
-Key point: **users never explicitly create or destroy entities.** `Ref[T](rt, key)` only constructs a reference; it triggers no I/O. Only the first method call triggers activation.
+Key point: **users never explicitly create or destroy Grains.** `Ref[T](rt, key)` only constructs a reference; it triggers no I/O. Only the first method call triggers activation.
 
 ## Lifecycle hooks
 
-Two optional interfaces; the runtime calls whichever the entity implements:
+Two optional interfaces; the runtime calls whichever the Grain implements:
 
 ```go
 type Activatable interface {
@@ -36,26 +36,29 @@ const (
 )
 ```
 
-**Use optional interfaces, not required methods.** Most entities need neither; making them write two empty methods would be pure ceremony. Passing functions at registration time is out too — it would put "what this entity does on activation" a mile away from the entity itself.
+**Use optional interfaces, not required methods.** Most Grains need neither; making them write two empty methods would be pure ceremony. Passing functions at registration time is out too — it would put "what this Grain does on activation" a mile away from the Grain itself.
 
-`OnActivate` runs after state is read back from the store and before the first call enters the mailbox. If it returns an error, activation failed: the call that triggered this activation gets the error, the activation is not established, the placeholder closes with the error, and the next call starts over. There is no "half-activated" intermediate state — an entity that failed `OnActivate` yet still serves is worse than having no hook at all.
+`OnActivate` runs after state is read back from the store and before the first call enters the mailbox. If it returns an error, activation failed: the call that triggered this activation gets the error, the activation is not established, the placeholder closes with the error, and the next call starts over. There is no "half-activated" intermediate state — a Grain that failed `OnActivate` yet still serves is worse than having no hook at all.
 
 `OnDeactivate` runs right before the instance disappears, after the mailbox has been drained. It receives the `DeactivationReason` that first started the deactivation. There are only four reasons:
 
 | Reason | What first triggers deactivation | What the app can do with it |
 | --- | --- | --- |
 | `Idle` | The instance idles past the timeout. | Don't treat a local reclamation as the business object going offline. |
-| `OwnershipLost` | The current node no longer owns the identity, or the view has no active owner. | Release node-local leases or connections; don't announce that the business object is gone. |
+| `OwnershipLost` | The current node no longer owns the GrainId, or the view has no active owner. | Release node-local leases or connections; don't announce that the business object is gone. |
 | `RuntimeClosed` | The root runtime begins a graceful stop. | Do teardown before the process exits. |
-| `Faulted` | A method panicked, or the entity asked to discard the current instance. | Don't treat an untrusted instance as a normal farewell; raise the alert level. |
+| `Faulted` | A method panicked, or the Grain asked to discard the current instance. | Don't treat an untrusted instance as a normal farewell; raise the alert level. |
 
 This is the complete public set. A value may join the set only if it forces the app to make a different decision; a reason must not be added just because the implementation gained a branch. Panic and discard both mean the current instance is no longer trustworthy; migration and no-owner both mean the current node loses ownership — hence one value each.
 
 The reason is written in the same atomic transition where `beginDeactivation(reason)` moves the activation from `active` to `deactivating`. Later events must not overwrite it once the activation is already deactivating. If the root runtime has entered `closing`, one activation may have already started deactivating for `Idle`; its reason stays `Idle`. A deactivation reason describes why an activation first leaves; the root state machine describes whether the whole runtime admits calls, how it waits, and with which stop error it rejects calls. These are two concepts and must not share one enum.
 
-**Returning an error changes nothing.** Deactivation cannot be rejected, and the state is in the store anyway. The error has no caller; like scheduled delivery failures, it goes to the runtime's error sink (see [timers.md](timers.md)), with no retry. The sink's source carries `Deactivation{Reason: reason}` instead of a fabricated method name.
+**Returning an error changes nothing.** Deactivation cannot be rejected, and
+State is in the store anyway. The error has no caller. Like Reminder delivery
+failures, it goes to the Runtime error sink (see [timers.md](timers.md)), with
+no retry. The sink source carries `Deactivation{Reason: reason}`.
 
-Each normal deactivation hook gets a fresh `context.Background()`. This context has no deadline and is never canceled; it inherits nothing from any caller of the entity. A graceful stop waits for hooks that already started, so a hook must finish promptly.
+Each normal deactivation hook gets a fresh `context.Background()`. This context has no deadline and is never canceled; it inherits nothing from any caller of the Grain. A graceful stop waits for hooks that already started, so a hook must finish promptly.
 
 **Neither `Kill()` nor this node being declared dead starts `OnDeactivate`.** An abrupt stop gives no teardown chance to hooks that have not started. Hooks that already started are not canceled, and an abrupt stop does not wait for them; handing them a canceled context would only create a third semantics of partial teardown.
 
@@ -71,7 +74,7 @@ Each node keeps a table:
 
 ```go
 type activation struct {
-    id       Identity
+    id       GrainId
     instance any
     mailbox  *mail.Box
     lastUsed time.Time
@@ -110,11 +113,11 @@ call ──▶ ring: who owns this id? ── self ──▶ runtime ──▶ l
                              transport.Send ──▶ remote node
 ```
 
-**The fork is in `gor`, not in `runtime`.** `runtime` only sees the left branch: give it an Identity, it finds or builds the activation and delivers the call into the mailbox. It does not know the right branch exists — and so single-node mode has no extra code to route around (see [cluster.md](cluster.md)).
+**The fork is in `gor`, not in `runtime`.** `runtime` only sees the left branch: give it a GrainId, it finds or builds the activation and delivers the call into the mailbox. It does not know the right branch exists — and so single-node mode has no extra code to route around (see [cluster.md](cluster.md)).
 
 ## Reentrancy
 
-By default, an entity does not accept a second call while processing one.
+By default, a Grain does not accept a second call while processing one.
 
 This brings the classic deadlock — A calls B, B calls A back. Orleans relaxes the restriction with `[Reentrant]` / `[AlwaysInterleave]` annotations, at the cost of the user having to reason about invariants under interleaved execution.
 
@@ -122,11 +125,11 @@ gor's stance: no reentrancy for now. A deadlock in gor shows up as a call timeou
 
 If practice proves it necessary, it will be added — at method granularity, not type granularity.
 
-Call cycle detection requires carrying a set of already-occupied entities along the call chain. Go has no `AsyncLocal`; the only option is to carry it explicitly in `context.Context` — a genuine disadvantage of Go relative to .NET, see [research/go-capabilities.md](../research/go-capabilities.md) (in Chinese).
+Call cycle detection requires carrying a set of already-occupied Grains along the call chain. Go has no `AsyncLocal`; the only option is to carry it explicitly in `context.Context` — a genuine disadvantage of Go relative to .NET, see [research/go-capabilities.md](../research/go-capabilities.md) (in Chinese).
 
 ## Errors and timeouts
 
-Every call carries a timeout (from `ctx`). The semantics of the timeout must be stated clearly: a timeout means the caller is no longer waiting, not that the entity stops executing. The method body may already have changed state.
+Every call carries a timeout (from `ctx`). The semantics of the timeout must be stated clearly: a timeout means the caller is no longer waiting, not that the Grain stops executing. The method body may already have changed state.
 
 No automatic retry is provided. The runtime does not know whether a method is idempotent; retrying on the user's behalf causes problems like duplicate charges. Retrying is the caller's decision.
 
@@ -160,21 +163,27 @@ running ── Close ──▶ closing ── graceful stop done ──▶ stopp
    └── node declared dead ──▶ dead ── abrupt stop done ──▶ stopped
 ```
 
-There are only four transition functions: `beginClose` moves `running` to `closing`; `beginKill` moves `running` or `closing` to `killing`; `becomeDead` only moves a root runtime still in `running` to `dead`; `finishStop` moves `closing`, `killing`, or `dead` to `stopped`. There are no back edges. A repeated `Close` and a `Kill` after the runtime has already stopped do not change state; a `Kill` during `closing` is an escalation, not a no-op that waits out the pending `Close`.
+There are only four transition functions: `beginClose` moves `running` to
+`closing`; `beginKill` moves `running` or `closing` to `killing`;
+`becomeDead` only moves a root Runtime still in `running` to `dead`;
+`finishStop` moves `closing`, `killing`, or `dead` to `stopped`. There are no
+back edges. A repeated `Close` and a `Kill` after the Runtime has stopped do
+not change state. A `Kill` during `closing` is an escalation.
 
 ### Admission is the only boundary
 
-The atomic transition by which `beginClose`, `beginKill`, or `becomeDead` successfully leaves `running` is the linearization point of call admission. It also closes the public stop signal. A closed signal is not proof that all resources are released; it only proves that no entity call can be admitted after this point.
+The atomic transition by which `beginClose`, `beginKill`, or `becomeDead` successfully leaves `running` is the linearization point of call admission. It also closes the public stop signal. A closed signal is not proof that all resources are released; it only proves that no Grain call can be admitted after this point.
 
-Every entity call first goes through the root-level `admit`. In the same serialized domain as the state transitions, it checks `running` and registers this call, and returns a release that must be called on completion. An `admit` either lands before the transition and becomes an admitted call, or lands after it and immediately gets the stop error. It must not read the state first and enter the execution runtime or start forwarding afterwards.
+Every Grain call first goes through the root-level `admit`. In the same serialized domain as the state transitions, it checks `running` and registers this call, and returns a release that must be called on completion. An `admit` either lands before the transition and becomes an admitted call, or lands after it and immediately gets the stop error. It must not read the state first and enter the execution runtime or start forwarding afterwards.
 
 The following entry points all use the same `admit`; none has its own closing check:
 
 - The public `Runtime.Invoke` admits before ownership and forwarding.
 - The inbound `invoke` handler admits before handing to the local execution runtime. It must not call the inner execution runtime directly.
-- Scheduled deliveries still go through the root call entry, so they are bound by the same rule.
+- Reminder deliveries still go through the root Call entry, so they are bound
+  by the same rule.
 
-Probes are not entity calls and do not count toward the call count; but they read the same root state and refuse to reply when it is not `running`. When an inbound request is rejected for stopping, it is not first checked against a separate `Done` check, and the result does not differ by local or forwarded origin.
+Probes are not Grain calls and do not count toward the call count; but they read the same root state and refuse to reply when it is not `running`. When an inbound request is rejected for stopping, it is not first checked against a separate `Done` check, and the result does not differ by local or forwarded origin.
 
 `closing`, `killing`, and the `stopped` reached from either of them all return the root package's `ErrRuntimeClosed`, whose stable code is `gor.runtime_closed`. `dead` and the `stopped` reached from it return `gor.node_dead`. The cross-node reconstruction rules for these two errors are in `errors.md`; direct and forwarded calls judge by the same stable code. Internal mailbox, execution runtime, or transport errors must not supersede this root-level admission result.
 
@@ -196,7 +205,7 @@ Thus the inner execution runtime can still drain while `closing`, but it is no l
 
 ### Gap
 
-The root runtime's stop state machine is implemented: the four transition functions `beginClose`, `beginKill`, `becomeDead`, `finishStop`, with the atomic `admit`/release as the only admission gate; the public `Runtime.Invoke`, the inbound `invoke` handler, and scheduled deliveries share the same entry and admit before ownership and forwarding. `closing`/`killing` and the `stopped` reached from them return `gor.runtime_closed`; `dead` and the `stopped` reached from it return `gor.node_dead`.
+The root runtime's stop state machine is implemented: the four transition functions `beginClose`, `beginKill`, `becomeDead`, `finishStop`, with the atomic `admit`/release as the only admission gate; the public `Runtime.Invoke`, the inbound `invoke` handler, and Reminder deliveries share the same entry and admit before ownership and forwarding. `closing`/`killing` and the `stopped` reached from them return `gor.runtime_closed`; `dead` and the `stopped` reached from it return `gor.node_dead`.
 
 Stop coordination is implemented as pure channel waiting: the execution runtime exposes `BeginClose`/`BeginKill` plus a `Done()` channel, the cluster node exposes a `DeclaredDead()` channel, and the root coordinator in `closeGracefully`/`closeImmediately` receives only `clusterDone`, `engine.Done()`, `drained`, and `transportDone`. The inner execution runtime supports the `closing → killing` escalation (`BeginKill` from `closing` is not a no-op: it closes the `killing` channel, marks deactivation hooks that have not started to be skipped, and cancels execution). The cluster node explicitly reports "declared dead externally" via `DeclaredDead()` rather than "exited on its own", and the root layer no longer infers the reason from whether it initiated the stop itself. A declared-dead node no longer publishes the final empty view, so graceful migration and abrupt stop do not race to start.
 
@@ -204,6 +213,6 @@ Transport teardown meets the invariant above. `closeTransport` routes by stop mo
 
 Deactivation reasons are implemented: `activation` saves the reason in the same atomic transition of `beginDeactivation(reason)`; `waitForDeactivation` and `skipOnDeactivate` read it in the same critical section and hand it to the hook. The reason is written only in that transition; later events (including the root runtime having entered `closing`) do not overwrite it. The four entry points map one-to-one onto the table above: idle eviction passes `Idle`, `Deactivate` (view eviction or no active owner) passes `OwnershipLost`, `beginStopDeactivationsLocked` passes `RuntimeClosed`, and `stopActivation` for panic and discard passes `Faulted`. Each hook gets a fresh `context.Background()` (no deadline, never canceled, inheriting no caller context); `Kill()` and being declared dead still skip hooks that have not started, and hooks that already started are neither canceled nor waited for. Hook errors are reported through the structured sink, with source `Deactivation{Reason: reason}`; see [timers.md](timers.md).
 
-Call cycle detection is implemented: each call carries the chain of entities it already occupies in its context; forwarded requests carry the chain on the wire; and a call whose target is already on its chain is rejected at delivery with an error naming the cycle, projected onto the stable code `gor.call_cycle`. The chain is per call, so a slow call that is not a cycle still times out as a plain timeout.
+Call cycle detection is implemented: each call carries the chain of Grains it already occupies in its context; forwarded requests carry the chain on the wire; and a call whose target is already on its chain is rejected at delivery with an error naming the cycle, projected onto the stable code `gor.call_cycle`. The chain is per call, so a slow call that is not a cycle still times out as a plain timeout.
 
 The only reason `Kill()` exists is simulation tests — a real process crash does not politely call a function first. It is not a shutdown API for users; users shut down with `Close()`.

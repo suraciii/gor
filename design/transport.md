@@ -1,6 +1,6 @@
 # Transport
 
-Moves bytes between nodes. **This layer does not understand message semantics** — it does not know what an Identity, a method, or an entity is.
+Moves bytes between nodes. **This layer does not understand message semantics** — it does not know what a GrainId, a method, or a Grain is.
 
 ## No gRPC
 
@@ -58,7 +58,7 @@ No mutex protects the pending table. This is not cleanliness for its own sake: b
 
 `Send` hands the request together with a reply channel to the owner, then selects on the reply and `ctx.Done()`.
 
-**Each server-side handler runs in its own goroutine; it must not run in the owner.** The owner only registers and hands over; running a handler to completion in the owner would block every other request on this connection behind it — the entire reason correlation ids exist is so requests do not wait on each other. The layer above can least afford this: `gor` packs calls of many entities into one connection, and entity calls are serial anyway, so one busy entity would stall every other entity from the same node.
+**Each server-side handler runs in its own goroutine; it must not run in the owner.** The owner only registers and hands over; running a handler to completion in the owner would block every other request on this connection behind it — the entire reason correlation ids exist is so requests do not wait on each other. The layer above can least afford this: `gor` packs calls of many Grains into one connection, and Grain calls are serial anyway, so one busy Grain would stall every other Grain from the same node.
 
 Handlers also write responses back to the owner through a channel; only the owner ever lays out frames.
 
@@ -92,7 +92,7 @@ Deciding whether a node is really gone is the membership table's job ([cluster.m
 
 ## Encoding is not this layer's business
 
-The transport moves opaque bytes. Encoding happens in the `gor` layer with `encoding/json` — the same story as entity state persistence; no second serialization story is introduced.
+The transport moves opaque bytes. Encoding happens in the `gor` layer with `encoding/json` — the same story as Grain state persistence; no second serialization story is introduced.
 
 It was chosen not because it is fast but because it is already in the project and humans can read it directly in production. [architecture.md](architecture.md) explains why no custom format, and what that gives up.
 

@@ -54,7 +54,7 @@ joining → active → dead
 
 **Declaring death**: decided only by the current neighbors' unexpired `suspect_votes`. A stale `iam_alive_at` is not evidence of death.
 
-`dead` is terminal. A declared-dead node must not modify its own row even if it is still alive — its CAS fails on the etag mismatch, and then it must self-terminate; it must not keep serving under an identity the whole world considers dead.
+`dead` is terminal. A declared-dead node must not modify its own row even if it is still alive — its CAS fails on the etag mismatch, and then it must self-terminate; it must not keep serving under a GrainId the whole world considers dead.
 
 **But a CAS failure alone is not proof of your own death.** A heartbeat CAS collision has two causes: someone else changed the row to `dead`, or the previous heartbeat actually landed and only the reply was lost on the way — the latter advances the etag without the node knowing. Both causes give the same signal, and self-termination is irreversible, so on a collision the node must read the whole table again: if its row is `dead` it self-terminates; otherwise it takes the fresh etag and keeps heartbeating.
 
@@ -76,7 +76,7 @@ Death must go through the table; only then does the matter have an answer everyo
 
 "Must not modify your own row" is not enough. A declared-dead node still holds several activations whose ETags are stale, while new calls were already routed to other nodes.
 
-So when a node sees its current generation as `dead` in a successfully read snapshot, it must report the cause "declared dead externally" to the root runtime. The root runtime first stops admitting entity calls and closes the public stop signal, then follows the abrupt stop: cancel executing calls, reject the queue, and drop activations. Calls after that return an error that the node has stopped serving. In the view a dead node computes, it owns nothing — but rejecting local calls cannot wait for the view to change; the old view may still assign some identity to it for a while.
+So when a node sees its current generation as `dead` in a successfully read snapshot, it must report the cause "declared dead externally" to the root runtime. The root runtime first stops admitting Grain calls and closes the public stop signal, then follows the abrupt stop: cancel executing calls, reject the queue, and drop activations. Calls after that return an error that the node has stopped serving. In the view a dead node computes, it owns nothing — but rejecting local calls cannot wait for the view to change; the old view may still assign some GrainId to it for a while.
 
 An active `Close()` also writes the node's membership row as `dead`. That is only a normal leave — the root runtime already began a graceful stop — and the cluster node's completion signal must not be mistaken for an external death declaration. The cluster node must hand its end reason to the root runtime; a bare `Done` channel that carries no reason is not enough.
 
@@ -104,7 +104,7 @@ This keeps the probe count per node constant at two. A bigger cluster does not i
 
 Probing reuses `Transport.Send` from [transport.md](transport.md). It goes through the same lazy dialing, framing, multiplexing, and fake-transport path. No separate UDP, HTTP, or side-channel sockets.
 
-`cluster` does not import `transport`. It only depends on an async `Prober`: give it a target member ID, get back a reply channel. `gor`'s adapter sends the `probe` request defined in [Envelope](#envelope) via `Transport.Send`. The transport's server-side handler dispatches on `kind`; `probe` goes straight to `cluster`, not through an entity call.
+`cluster` does not import `transport`. It only depends on an async `Prober`: give it a target member ID, get back a reply channel. `gor`'s adapter sends the `probe` request defined in [Envelope](#envelope) via `Transport.Send`. The transport's server-side handler dispatches on `kind`; `probe` goes straight to `cluster`, not through a Grain call.
 
 A probe request carries only `kind`. The server's current member ID goes into the ordinary response's `reply`, and the initiator compares it with the target in its snapshot; only an exact match counts as success. A new process reusing the address must not erase votes for an old generation.
 
@@ -215,7 +215,7 @@ All of the following are verified in `make sim` with the fake transport and the 
 
 ## Placement
 
-A consistent-hash ring: nodes hash onto the ring by address, and entities land on the first `active` node by hashing their Identity.
+A consistent-hash ring: nodes hash onto the ring by address, and Grains land on the first `active` node by hashing their GrainId.
 
 A hash ring is chosen over "random placement plus directory lookup": **a hash ring makes locating mostly pure local computation, with no network round trip.** The cost is that node changes cause activation migration.
 
@@ -231,7 +231,7 @@ A virtual point's position comes from `hash(address + generation + index)`. Incl
 
 ### The ring is the directory; there is no second table
 
-Placement is computed from `hash(Identity)` plus the current membership view — one pure local computation. **No separate directory table records "who is where".**
+Placement is computed from `hash(GrainId)` plus the current membership view — one pure local computation. **No separate directory table records "who is where".**
 
 Orleans has a directory table because it does not place by hash: it puts activations on chosen silos and uses the ring only to partition the directory, so something must keep the books. `gor` places by ring; the ring itself is the ledger.
 
@@ -259,7 +259,7 @@ Rejecting the directory table above is admitting this window cannot be closed: a
 
 ## Routing
 
-Every call first computes which node `hash(Identity)` lands on:
+Every call first computes which node `hash(GrainId)` lands on:
 
 - **Self** — hand to `runtime` as usual, exactly as in single-process mode.
 - **Someone else** — forward it (transport in the next section).
@@ -268,7 +268,7 @@ Every call first computes which node `hash(Identity)` lands on:
 
 The ring and the membership view get their own package, shaped like `timer`: it takes a membership-table interface, a `Clock`, and its own address, and periodically reads the full table against the injected clock to compute the view. `gor` wires it up and, on view changes, hands the activations that no longer belong to this node to `runtime` for dropping.
 
-**The ring is a pure function.** Give it a membership view and an Identity, and it computes a node. It reads no time, does no I/O, holds no state; unit tests feed it views directly. Fetching the view is the stateful half, kept separate from the ring.
+**The ring is a pure function.** Give it a membership view and a GrainId, and it computes a node. It reads no time, does no I/O, holds no state; unit tests feed it views directly. Fetching the view is the stateful half, kept separate from the ring.
 
 ## Transport
 
@@ -312,7 +312,7 @@ When the caller's ctx is canceled, the forwarding side drops the pending request
 
 ### Forwarding does not retry
 
-Cannot send, connection dropped, the other side rejected — the error goes straight to the caller. Only the user knows whether retrying is safe; this is the same stance as with `State.Set()` conflicts and scheduled delivery failures.
+Cannot send, connection dropped, the other side rejected — the error goes straight to the caller. Only the user knows whether retrying is safe; this is the same stance as with `State.Set()` conflicts and Reminder delivery failures.
 
 ## Migration
 

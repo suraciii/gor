@@ -23,7 +23,7 @@ Within one v0 minor version, patch versions do not actively break documented usa
 
 When moving to the next v0 minor version, gor reserves the right to change:
 
-- how the runtime is wired up and entities are called.
+- how the Runtime is wired up and Grains are called.
 - the automatically generated call artifacts.
 - options, error details, and resource usage.
 - routing, fault handling, and recovery behavior in a cluster.
@@ -37,9 +37,10 @@ Production should pin to a specific v0 minor version. Moving to the next minor v
 
 v0's usable scope is single-process. For the published single-process capabilities, users can rely on these basic semantics:
 
-- calls on the same identity execute in order.
+- Calls for the same GrainId execute in order.
 - state confirmed successfully survives a process restart.
-- documented scheduled delivery, overload, and failure outcomes behave as described.
+- documented Reminder delivery, overload, and failure outcomes behave as
+  described.
 
 These are product promises, not promises about implementation shape, throughput numbers, or exact execution instants.
 
@@ -75,4 +76,4 @@ If this v1 promise must ever be broken, gor will release a new major version wit
 
 ## Gap
 
-The readiness work for an announced release is complete (every ROADMAP "required" item is done); staying in 0.0.x is a choice, not a missing requirement. The broader v0 discipline and assembled release notes start at 0.1.0. The README presents single-process as the usable scope and describes multi-node failure detection as direct probing with death voting, while the reliability limits are stated in this document's "What can already be relied on" section.
+The pre-announcement checklist is complete, but the first announced release also requires the 0.1.0 product contract's composition and failure-evidence gates. The broader v0 discipline and assembled release notes start at 0.1.0. The README presents single-process as the usable scope and describes multi-node failure detection as direct probing with death voting, while the reliability limits are stated in this document's "What can already be relied on" section.

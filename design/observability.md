@@ -4,7 +4,7 @@
 
 `gor` is responsible for providing a minimal set of runtime observability facts.
 
-Application-side proxies can count calls but cannot see the activation directory or mailboxes. They cannot reliably answer how many activations exist, nor find entities with a backlog. Only the runtime holds these facts.
+Application-side proxies can count calls but cannot see the activation directory or mailboxes. They cannot reliably answer how many activations exist, nor find Grains with a backlog. Only the runtime holds these facts.
 
 `gor` is not responsible for aggregation, storage, export, or alerting. Those depend on the monitoring system the application already has. Building them into the library would pull in dependencies and decide labels, retention, and sampling policy for the user.
 
@@ -16,7 +16,7 @@ Only two kinds of facts are exposed.
 
 ```go
 type Activation struct {
-	Identity Identity
+	GrainId GrainId
 	Queued   int
 }
 
@@ -25,7 +25,7 @@ func (rt *Runtime) Activations() []Activation
 
 `Activations` returns the activations on this node in the `active` state. Instances being created, deactivating, or already stopped are not in the result.
 
-The result is sorted by `(Identity.Type, Identity.Key)`. One call returns a copy of one point in time. It is not retained and does not refresh itself.
+The result is sorted by `(GrainId.Type, GrainId.Key)`. One call returns a copy of one point in time. It is not retained and does not refresh itself.
 
 `len(rt.Activations())` answers how many activations exist right now. `Queued` answers whose mailbox is backing up. Comparing it with the runtime's configured capacity tells how far from overload rejection you are.
 
@@ -33,13 +33,13 @@ The result is sorted by `(Identity.Type, Identity.Key)`. One call returns a copy
 
 The snapshot observes only this node. In cluster mode, each node collects on its own; cross-node aggregation belongs to the application's monitoring system.
 
-Activation time, last-used time, the executing method, and per-entity cumulative counts are not exposed. These values would let the runtime make no new decision, yet they grow state, lock contention, and label cardinality.
+Activation time, last-used time, the executing method, and per-Grain cumulative counts are not exposed. These values would let the runtime make no new decision, yet they grow state, lock contention, and label cardinality.
 
 ### Call completion
 
 ```go
 type CallObservation struct {
-	EntityType string
+	GrainType string
 	Method     string
 	Duration   time.Duration
 	Err        error
@@ -50,13 +50,19 @@ func OnCall(func(CallObservation)) Option
 
 `OnCall` follows the configuration shape of `OnError`. It is a callback, not an exporter interface. There is exactly one action here; inventing a single-method interface for it has no value.
 
-A call made through an entity proxy or `Runtime.Invoke` fires the callback once, after the outcome is settled and before returning to the caller. `Duration` spans from entering the runtime to the settled outcome, including routing, activation, queuing, and method execution, not the callback itself. `Err` is the same error this call returns to the caller.
+A call made through a Grain proxy or `Runtime.Invoke` fires the callback once, after the outcome is settled and before returning to the caller. `Duration` spans from entering the runtime to the settled outcome, including routing, activation, queuing, and method execution, not the callback itself. `Err` is the same error this call returns to the caller.
 
-Applications choose metric dimensions with `EntityType` and `Method`, record latency distributions with `Duration`, and compute error rates with `Err != nil`. The entity key is not in the event. Using unbounded keys as metric labels lets the monitoring system run away; investigating a single entity's backlog should use the activation snapshot.
+Applications choose metric dimensions with `GrainType` and `Method`, record
+latency distributions with `Duration`, and compute error rates with
+`Err != nil`. The GrainKey is not in the event. Using unbounded keys as metric
+labels lets the monitoring system run away; use the Activation snapshot to
+inspect one Grain's backlog.
 
 After caller cancellation, the callback still fires, with `Err` being the cancellation error. A canceled method may keep executing, but no second completion event is emitted. The event describes the outcome the caller saw; it does not pretend to know the final business outcome.
 
-An entity method delivered by a scheduled task is an ordinary call and produces this event. `OnDeactivate` is not a call and produces none; its failures still go only through `OnError`.
+A Grain method delivered by a Reminder is an ordinary Call and produces this
+event. `OnDeactivate` is not a Call and produces none; its failures still go
+only through `OnError`.
 
 When a forwarded call completes, the originating node records one end-to-end call. The receiving node must not record the same logical call again. Inbound forwarded calls still go through the same local execution path; no second dispatch semantics are set up.
 
