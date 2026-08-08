@@ -41,20 +41,20 @@ This matches Orleans' stance: when the official docs discuss the eventual consis
 
 Two goals:
 
-**Embedded** — the single-node default. Candidates: SQLite (`modernc.org/sqlite`, pure Go, no CGO), bbolt, pebble.
+**Embedded** — the single-node default: SQLite (`modernc.org/sqlite`, pure Go, no CGO). SQLite is the selected embedded backend. bbolt and pebble remain unprovided backend goals.
 
-Leaning toward SQLite: it satisfies both state storage and coordination tables (coordination needs transactions plus CAS; bbolt's single-writer model can do it too, but SQL expresses multi-row conditional updates like membership more directly), and it has the best operational observability — when something goes wrong, you can look directly with `sqlite3`. The cost is being slower than bbolt/pebble, and the pure-Go SQLite is slower still. The choice will be settled by measured numbers at implementation [step 2](../ROADMAP.md#2-persistent-state); it is not decided in advance now.
+SQLite satisfies both state storage and coordination tables (coordination needs transactions plus CAS; bbolt's single-writer model can do it too, but SQL expresses multi-row conditional updates like membership more directly), and it has the best operational observability — when something goes wrong, you can look directly with `sqlite3`. The cost is being slower than bbolt/pebble, and the pure-Go SQLite is slower still.
 
 What to measure is how these two `Store` methods behave under real access patterns, not generic read/write throughput:
 
 - Point-read one record by key.
 - CAS-write one record (read-modify-write with ETag check); a single record commits on its own — because `Set()` does not batch.
-- Concurrent writes across multiple keys. This one best separates the three candidates: bbolt is single-writer; pebble and SQLite are not.
+- Concurrent writes across multiple keys. The relevant comparison is bbolt versus the non-single-writer options: bbolt is single-writer; pebble and SQLite are not. SQLite is the selected embedded backend; pebble remains an unprovided goal.
 - How long a cold start takes to open a database with tens of thousands of existing records.
 
 Record the conditions with the numbers: record size, concurrency, machine, WAL on or off. Numbers without conditions are not numbers.
 
-**Postgres** — cluster mode. It is the only choice that satisfies all three: shared across multiple nodes, conditional updates for CAS, and the ops team already has it.
+**Postgres** — the cluster-mode target. It is the only choice that satisfies all three: shared across multiple nodes, conditional updates for CAS, and the ops team already has it. It remains an unprovided backend goal.
 
 No Redis backend: the atomic conditional updates the membership table needs would rely on Lua scripts on Redis, and Redis' persistence semantics make failures like "lost death votes" hard to reason about.
 
@@ -62,7 +62,7 @@ No cloud-proprietary storage (DynamoDB / Azure Tables and the like). The code Or
 
 ## Gap
 
-The current code provides only the in-memory and SQLite backends. bbolt, pebble, Postgres, and others remain goals or candidates, not currently available implementations.
+The current code provides only the in-memory and SQLite backends. bbolt, pebble, and Postgres remain unprovided goals, not currently available implementations.
 
 ## How State connects to the runtime
 
