@@ -100,6 +100,9 @@ zero-downtime upgrade format without a real user need. Typed interfaces,
 stable type names, and written compatibility rules define the application
 contract.
 
+The Request Context API, lifetime, encoding, and failure rules are in
+[request-context.md](request-context.md).
+
 ### 5. Build the integration sample
 
 Add a small example and tests that use only public APIs. It must contain:

@@ -20,6 +20,7 @@ When a document diverges significantly from the code, it lists a "Gap" section i
 - [cluster.md](cluster.md) — membership, placement, directory consistency.
 - [transport.md](transport.md) — byte transport between nodes: frames, connections, multiplexing, and close semantics; the substrate boundary for forwarding.
 - [errors.md](errors.md) — stable error codes, the call error envelope, and the cross-node cancellation boundary.
+- [request-context.md](request-context.md) — the per-Call Request Context API, encoding, lifetime, and failure rules.
 - [codegen.md](codegen.md) — typed proxies generated from Go interfaces.
 - [testing.md](testing.md) — unit tests and deterministic simulation tests.
 - [simulation.md](simulation.md) — the simulation skeleton: seed, fault injection, crashes, event log.
