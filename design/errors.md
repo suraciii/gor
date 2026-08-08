@@ -48,11 +48,11 @@ This version's framework code set is sealed as follows:
 | `gor.overloaded` | The call was rejected for a full queue before the method started. |
 | `gor.type_not_installed` | The target node does not have this Grain type. |
 | `gor.unknown_method` | The target type has no such method. |
-| `gor.invalid_request` | The request's shape or arguments cannot be decoded under the current contract. |
+| `gor.invalid_request` | The request's shape, arguments, or Request Context cannot be decoded under the current contract. |
 | `gor.persistence_conflict` | The state write hit a version conflict. |
 | `gor.persistence_failed` | The state write failed, and it was not a version conflict. |
 | `gor.panic` | The factory or the Grain method panicked. |
-| `gor.request_encode_failed` | The source could not encode the arguments into a call request. |
+| `gor.request_encode_failed` | The source could not validate Request Context or encode the invoke request, including its arguments. |
 | `gor.reply_encode_failed` | The return values of a successful call could not be encoded. |
 | `gor.transport_failed` | The request, response, or connection failed to transfer; the execution outcome is unknown. |
 | `gor.call_cycle` | A Call targeted a Grain already occupied by the same Call chain, so it could never start. |
@@ -86,7 +86,12 @@ Call handling runs in this order:
 
 Step 2 is the priority rule. Reply encoding is a diagnostic-layer failure and must not replace a business error already obtained. When step 4 fails, there is no sendable call result; treat it as `gor.transport_failed`, which must not override a business error that is already sendable.
 
-Request-encoding failures, `Send` failures, and response-decoding failures also return `gor.request_encode_failed` or `gor.transport_failed`. `gor.transport_failed` does not mean the request was not delivered, the method did not start, or state did not change.
+The Request Context helper uses `gor.request_encode_failed` for validation errors
+before a Call is admitted and returns the unchanged parent context. The same
+code covers a source failure to encode the full invoke request before
+`Transport.Send`. A `Send` failure or response-decoding failure returns
+`gor.transport_failed`. `gor.transport_failed` does not mean the request was
+not delivered, the method did not start, or State did not change.
 
 ## Local and remote
 
@@ -125,4 +130,4 @@ the stable error code.
 
 ## Gap
 
-The current implementation already uses the error envelope, processes business errors before encoding successful replies, and rebuilds coded errors on the source; public call paths, the cancellation boundary, and the shadow and simulator migrations are covered. Still not provided: arbitrary error type registration, field or error-chain fidelity, joined-structure fidelity, cancellation frames, or remote deadline propagation. These belong to "what is not done"; they are not current gaps.
+The current implementation already uses the error envelope, processes business errors before encoding successful replies, and rebuilds coded errors on the source; public call paths, the cancellation boundary, and the shadow and simulator migrations are covered. Request Context validation and encoding are specified in [request-context.md](request-context.md) but are not implemented yet. Still not provided: arbitrary error type registration, field or error-chain fidelity, joined-structure fidelity, cancellation frames, or remote deadline propagation. These belong to "what is not done"; they are not current gaps.

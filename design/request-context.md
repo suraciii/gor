@@ -14,7 +14,7 @@ context carries Request Context for local and future forwarded Calls.
 
 ## Decision
 
-Use two public functions on `context.Context`:
+Use two public functions that take `context.Context`:
 
 ```go
 func WithRequestContext(ctx context.Context, key string, value any) (context.Context, error)
@@ -141,8 +141,15 @@ The field is absent when the context has no entries. Its JSON shape is:
 ```
 
 The `null` entry uses `{"type":"null"}` and has no `value` field. The other
-types use the type names in the table above. The decoder must reject an
-unknown type, a wrong JSON value for a type, an invalid key, or a repeated key.
+types use the type names in the table above. The type tag selects the decode
+target before `value` is decoded. In particular, `int64` and `uint64` values
+must be decoded directly into those Go types, not through `any` or `float64`.
+Normal typed `encoding/json` decoding is sufficient.
+
+The decoder must reject an unknown type, a wrong JSON value for a type, or an
+invalid key. It does not need a duplicate-key parser. Repeated object keys
+follow the existing `encoding/json` object behavior and do not create a
+separate 0.1.0 failure.
 
 `encoding/json` sorts map keys when it creates the canonical bytes. The
 complete canonical JSON object for `request_context` must meet both limits:
@@ -295,7 +302,8 @@ I/O for these cases.
 | Independent forwarded Call | Run a context-bearing Call, then run a Call with the base context. | The second Call has no Request Context. No value is retained on the target Activation. |
 | State and Reminder isolation | Make a context-bearing Call, inspect State and Reminder records, then deliver a Reminder. | No Request Context field is stored. The Reminder sees an empty context. |
 | Validation boundary | Try an unsupported value, invalid key, non-finite float, too many entries, and an oversized context. | The helper returns `ErrRequestEncodeFailed`, leaves the parent unchanged, and no factory or method runs. |
-| Malformed peer request | Send an invalid or oversized `request_context` field directly to the handler. | The handler returns `ErrInvalidRequest` before activation or method entry. |
+| Canonical integer decoding | Forward `int64` and `uint64` values, including values above the exact `float64` range. | The target reads exact `int64` and `uint64` values, not `float64` values. |
+| Malformed peer request | Send an unknown type, wrong typed value, invalid key, or oversized `request_context` field directly to the handler. | The handler returns `ErrInvalidRequest` before activation or method entry. |
 | Cancellation | Cancel before local delivery, cancel during a local method, and cancel a forwarded send after delivery. | Existing local and forwarded cancellation results remain unchanged. The target forwarded method can still read its Request Context. |
 | Admission and shutdown | Fill a mailbox, close the Runtime, and send an inbound request after admission closes. | Queue and shutdown rules remain unchanged. Request Context cannot bypass admission or start a rejected method. |
 | Lifecycle boundaries | Start an Activation with one context, make later Calls with another, then deactivate it. | Only the triggering `OnActivate` sees its context. `OnDeactivate` sees none. |
@@ -307,8 +315,9 @@ gate before the feature can be called complete.
 
 ## Gap
 
-This is a design-only batch for issue #94. No Go source, test, generated file,
-product context, roadmap entry, or runtime behavior changed. The public API,
-JSON field, validation rules, lifecycle boundaries, and acceptance matrix are
-specified here but are not implemented yet. Request Context must not be
-reported as available until the implementation and all required gates pass.
+This is a design-only correction for issue #94. It changes only repository
+design documents. No Go source, tests, generated files, `CONTEXT.md`,
+`ROADMAP.md`, GitHub state, or runtime behavior changed. The public API, JSON
+field, validation rules, lifecycle boundaries, and acceptance matrix are
+specified but are not implemented. Request Context must not be reported as
+available until the implementation and all required gates pass.
