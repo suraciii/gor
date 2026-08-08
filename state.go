@@ -23,6 +23,7 @@ type Binder struct {
 type stateCell interface {
 	encode() ([]byte, error)
 	decode([]byte) error
+	isPresent() bool
 }
 
 func newBinder(runtime *Runtime, id GrainId) *Binder {
@@ -39,9 +40,9 @@ func Self(b *Binder) GrainId {
 }
 
 // NewState registers a named persistent value for the entity bound to b and
-// returns its handle. The name must be unique within that entity; registering
-// the same name twice panics. A newly registered state has its type's zero
-// value until activation data is loaded or Set succeeds.
+// returns its handle. The name must be unique within that Grain; registering
+// the same name twice panics. A newly registered State is absent and has its
+// type's zero value until activation data is loaded or Set succeeds.
 func NewState[T any](b *Binder, name string) State[T] {
 	if _, exists := b.states[name]; exists {
 		panic(fmt.Sprintf("state %q is already registered", name))
@@ -51,10 +52,10 @@ func NewState[T any](b *Binder, name string) State[T] {
 	return State[T]{cell: cell}
 }
 
-// State is a handle to one named JSON-encoded value in an entity's persistent
-// state record. All State handles for one entity share one JSON object, one
-// store record, and one ETag; setting one handle rewrites the complete record.
-// Obtain a State with NewState; the zero value is not usable.
+// State is a handle to one named JSON-encoded value in a Grain's persistent
+// state record. All State handles for one Grain share one JSON object, one
+// store record, and one ETag; setting or clearing one handle rewrites the
+// complete record. Obtain a State with NewState; the zero value is not usable.
 type State[T any] struct {
 	cell *stateCellValue[T]
 }
@@ -67,7 +68,26 @@ func (s State[T]) Get() T {
 	return s.cell.value
 }
 
-// Set JSON-encodes value and persists the entity's complete state record using
+// Exists reports whether this named State has a confirmed value. It does not
+// compare the value with T's zero value.
+func (s State[T]) Exists() bool {
+	return s.cell.isPresent()
+}
+
+// Clear removes this named State from the confirmed record and resets Get to
+// T's zero value after the write succeeds. The write uses the current Grain
+// ETag and has the same conflict and store failure behavior as Set.
+func (s State[T]) Clear(ctx context.Context) error {
+	if err := s.cell.binder.persist(ctx, s.cell, nil, false); err != nil {
+		return err
+	}
+	var zero T
+	s.cell.value = zero
+	s.cell.present = false
+	return nil
+}
+
+// Set JSON-encodes value and persists the Grain's complete state record using
 // ctx. A JSON encoding error for value or another registered state leaves the
 // current value unchanged and is returned without a store write. Store errors
 // leave the current in-memory value unchanged, but do not establish whether the
@@ -83,16 +103,18 @@ func (s State[T]) Set(ctx context.Context, value T) error {
 	if err != nil {
 		return err
 	}
-	if err := s.cell.binder.persist(ctx, s.cell, encoded); err != nil {
+	if err := s.cell.binder.persist(ctx, s.cell, encoded, true); err != nil {
 		return err
 	}
 	s.cell.value = value
+	s.cell.present = true
 	return nil
 }
 
 type stateCellValue[T any] struct {
-	binder *Binder
-	value  T
+	binder  *Binder
+	value   T
+	present bool
 }
 
 func (s *stateCellValue[T]) encode() ([]byte, error) {
@@ -100,7 +122,15 @@ func (s *stateCellValue[T]) encode() ([]byte, error) {
 }
 
 func (s *stateCellValue[T]) decode(data []byte) error {
-	return json.Unmarshal(data, &s.value)
+	if err := json.Unmarshal(data, &s.value); err != nil {
+		return err
+	}
+	s.present = true
+	return nil
+}
+
+func (s *stateCellValue[T]) isPresent() bool {
+	return s.present
 }
 
 func (b *Binder) load(ctx context.Context) error {
@@ -133,18 +163,22 @@ func (b *Binder) load(ctx context.Context) error {
 	return nil
 }
 
-func (b *Binder) persist(ctx context.Context, changed stateCell, changedData []byte) error {
+func (b *Binder) persist(ctx context.Context, changed stateCell, changedData []byte, changedPresent bool) error {
 	document := make(map[string]json.RawMessage, len(b.states))
 	for name, cell := range b.states {
-		var data []byte
 		if cell == changed {
-			data = changedData
-		} else {
-			var err error
-			data, err = cell.encode()
-			if err != nil {
-				return err
+			if !changedPresent {
+				continue
 			}
+			document[name] = json.RawMessage(changedData)
+			continue
+		}
+		if !cell.isPresent() {
+			continue
+		}
+		data, err := cell.encode()
+		if err != nil {
+			return err
 		}
 		document[name] = json.RawMessage(data)
 	}
