@@ -160,29 +160,52 @@ func waitForRecovery(ctx context.Context, calls <-chan gor.CallObservation, time
 	}
 }
 
+type databasePathFamily struct {
+	label   string
+	members []string
+}
+
 func validateDatabasePaths(runtimePath, businessPath string) error {
-	paths := []struct {
+	bases := []struct {
 		label string
 		path  string
 	}{
 		{label: "runtime coordination", path: runtimePath},
-		{label: "runtime State", path: derivedRuntimeStatePath(runtimePath)},
+		{label: "runtime state", path: derivedRuntimeStatePath(runtimePath)},
 		{label: "application", path: businessPath},
 	}
-	absolutePaths := make([]string, len(paths))
-	for index, database := range paths {
-		absolute, err := cleanDatabasePath(database.path)
+	families := make([]databasePathFamily, len(bases))
+	for index, base := range bases {
+		absolute, err := cleanDatabasePath(base.path)
 		if err != nil {
-			return fmt.Errorf("resolve %s database path: %w", database.label, err)
+			return fmt.Errorf("resolve %s database path: %w", base.label, err)
 		}
-		absolutePaths[index] = absolute
+		members := []string{absolute, absolute + "-wal", absolute + "-shm"}
+		for _, member := range members[1:] {
+			if err := rejectSymlinkComponents(member); err != nil {
+				return fmt.Errorf("resolve %s database path: %w", base.label, err)
+			}
+		}
+		families[index] = databasePathFamily{label: base.label, members: members}
+	}
+	var paths []struct {
+		label string
+		path  string
+	}
+	for _, family := range families {
+		for _, member := range family.members {
+			paths = append(paths, struct {
+				label string
+				path  string
+			}{label: family.label, path: member})
+		}
 	}
 	for left := 0; left < len(paths); left++ {
 		for right := left + 1; right < len(paths); right++ {
-			if absolutePaths[left] == absolutePaths[right] {
-				return fmt.Errorf("database paths for %s and %s must be different: both resolve to %q", paths[left].label, paths[right].label, absolutePaths[left])
+			if paths[left].path == paths[right].path {
+				return fmt.Errorf("database paths for %s and %s must be different: both resolve to %q", paths[left].label, paths[right].label, paths[left].path)
 			}
-			same, err := sameExistingFile(absolutePaths[left], absolutePaths[right])
+			same, err := sameExistingFile(paths[left].path, paths[right].path)
 			if err != nil {
 				return fmt.Errorf("compare %s and %s database paths: %w", paths[left].label, paths[right].label, err)
 			}

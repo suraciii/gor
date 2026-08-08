@@ -39,11 +39,25 @@ func TestValidateDatabasePathsAcceptsSeparatePaths(t *testing.T) {
 	}
 }
 
+func TestValidateDatabasePathsRejectsSQLiteSidecarAliases(t *testing.T) {
+	for _, sidecar := range []string{"-wal", "-shm"} {
+		t.Run(sidecar, func(t *testing.T) {
+			err := validateDatabasePaths("runtime.db", "runtime.db"+sidecar)
+			if err == nil || !strings.Contains(err.Error(), "must be different") {
+				t.Fatalf("validateDatabasePaths for %s = %v, want sidecar collision error", sidecar, err)
+			}
+		})
+	}
+	if err := validateDatabasePaths("runtime.db", "runtime-state.db-wal"); err == nil || !strings.Contains(err.Error(), "must be different") {
+		t.Fatalf("validateDatabasePaths for Runtime State sidecar = %v, want sidecar collision error", err)
+	}
+}
+
 func TestValidateDatabasePathsRejectsDerivedRuntimeStatePath(t *testing.T) {
 	directory := t.TempDir()
 	runtimePath := filepath.Join(directory, "runtime.db")
 	businessPath := derivedRuntimeStatePath(runtimePath)
-	if err := validateDatabasePaths(runtimePath, businessPath); err == nil || !strings.Contains(err.Error(), "runtime State") {
+	if err := validateDatabasePaths(runtimePath, businessPath); err == nil || !strings.Contains(err.Error(), "runtime state") {
 		t.Fatalf("validateDatabasePaths(%q, %q) = %v, want derived State alias error", runtimePath, businessPath, err)
 	}
 }
@@ -87,6 +101,25 @@ func TestValidateDatabasePathsRejectsHardLinkAliases(t *testing.T) {
 	}
 	if err := validateDatabasePaths(runtimePath, businessPath); err == nil || !strings.Contains(err.Error(), "must not alias") {
 		t.Fatalf("validateDatabasePaths(%q, %q) = %v, want hard-link alias error", runtimePath, businessPath, err)
+	}
+}
+
+func TestValidateDatabasePathsRejectsSQLiteSidecarHardLinkAlias(t *testing.T) {
+	directory := t.TempDir()
+	runtimePath := filepath.Join(directory, "runtime.db")
+	sidecarPath := runtimePath + "-wal"
+	businessPath := filepath.Join(directory, "business.db")
+	if err := os.WriteFile(sidecarPath, []byte("runtime wal"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(sidecarPath, businessPath); err != nil {
+		if errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.EXDEV) || errors.Is(err, syscall.EPERM) {
+			t.Fatalf("hard links are required for this deterministic test: %v", err)
+		}
+		t.Fatal(err)
+	}
+	if err := validateDatabasePaths(runtimePath, businessPath); err == nil || !strings.Contains(err.Error(), "must not alias") {
+		t.Fatalf("validateDatabasePaths(%q, %q) = %v, want sidecar hard-link error", runtimePath, businessPath, err)
 	}
 }
 

@@ -148,13 +148,6 @@ func (d *device) ReportAction(ctx context.Context, actionID string, state string
 	if actionID == "" {
 		return errors.New("application action ID is empty")
 	}
-	shadow := d.shadow.Get()
-	shadow.ReportedState = state
-	shadow.ReportedAt = gor.Now(d.binder)
-	shadow.Online = true
-	if err := d.shadow.Set(ctx, shadow); err != nil {
-		return err
-	}
 	traceID, err := traceIDFromContext(ctx)
 	if err != nil {
 		return err
@@ -167,7 +160,11 @@ func (d *device) ReportAction(ctx context.Context, actionID string, state string
 	}); err != nil {
 		return err
 	}
-	return nil
+	shadow := d.shadow.Get()
+	shadow.ReportedState = state
+	shadow.ReportedAt = gor.Now(d.binder)
+	shadow.Online = true
+	return d.shadow.Set(ctx, shadow)
 }
 
 func (d *device) Configure(ctx context.Context, configuration string) error {

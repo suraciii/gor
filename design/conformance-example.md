@@ -153,14 +153,17 @@ err = gor.Ref[Device](rt, "device-1").ReportAction(ctx, "report-1", "temperature
 
 `Device.ReportAction` performs these steps in order:
 
-1. Read the current shadow State.
-2. Write the new shadow with `State.Set`.
-3. Read `trace_id` with `gor.RequestContextValue` and copy it, when present,
-   into the Application pending record as ordinary business data.
-4. Save `PendingAction{ActionID: "report-1", ...}` through ApplicationStore.
+1. Read `trace_id` with `gor.RequestContextValue` and validate it.
+2. Save `PendingAction{ActionID: "report-1", ...}` through ApplicationStore.
+3. Read the current shadow State.
+4. Write the new shadow with `State.Set`.
 
-The copied trace ID is application data. It is not Request Context after the
-write. Request Context is not stored in Runtime State or Reminder records.
+The pending save comes before the State write so a deterministic
+`ErrPendingActionConflict` leaves Device State unchanged. This is not a
+distributed transaction: if a pending save succeeds but the later State write
+has an uncertain result, retry the same ActionID. The copied trace ID is
+application data. It is not Request Context after the write. Request Context
+is not stored in Runtime State or Reminder records.
 The `Recover` method must observe an empty Request Context because the
 Runtime creates Reminder Calls with a fresh context.
 
