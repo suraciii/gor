@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/suraciii/gor"
@@ -160,18 +161,106 @@ func waitForRecovery(ctx context.Context, calls <-chan gor.CallObservation, time
 }
 
 func validateDatabasePaths(runtimePath, businessPath string) error {
-	runtimeAbsolute, err := filepath.Abs(filepath.Clean(runtimePath))
-	if err != nil {
-		return fmt.Errorf("resolve Runtime database path: %w", err)
+	runtimeStatePath := derivedRuntimeStatePath(runtimePath)
+	runtimePaths := []struct {
+		label string
+		path  string
+	}{
+		{label: "runtime coordination", path: runtimePath},
+		{label: "runtime State", path: runtimeStatePath},
 	}
-	businessAbsolute, err := filepath.Abs(filepath.Clean(businessPath))
+	businessAbsolute, err := resolveDatabasePath(businessPath)
 	if err != nil {
 		return fmt.Errorf("resolve Application database path: %w", err)
 	}
-	if runtimeAbsolute == businessAbsolute {
-		return fmt.Errorf("runtime and application database paths must be different: both resolve to %q", runtimeAbsolute)
+	for _, runtime := range runtimePaths {
+		runtimeAbsolute, err := resolveDatabasePath(runtime.path)
+		if err != nil {
+			return fmt.Errorf("resolve %s path: %w", runtime.label, err)
+		}
+		if runtimeAbsolute == businessAbsolute {
+			return fmt.Errorf("application database path aliases the %s path: both resolve to %q", runtime.label, runtimeAbsolute)
+		}
+		same, err := sameExistingFile(runtime.path, businessPath)
+		if err != nil {
+			return fmt.Errorf("compare %s and application database paths: %w", runtime.label, err)
+		}
+		if same {
+			return fmt.Errorf("application database path aliases the existing %s file", runtime.label)
+		}
 	}
 	return nil
+}
+
+func derivedRuntimeStatePath(runtimePath string) string {
+	directory, base := filepath.Split(runtimePath)
+	extension := filepath.Ext(base)
+	return filepath.Join(directory, strings.TrimSuffix(base, extension)+"-state"+extension)
+}
+
+func resolveDatabasePath(path string) (string, error) {
+	absolute, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	volume := filepath.VolumeName(absolute)
+	rest := strings.TrimPrefix(absolute, volume)
+	current := volume
+	separator := string(filepath.Separator)
+	if strings.HasPrefix(rest, separator) {
+		current = volume + separator
+		rest = strings.TrimPrefix(rest, separator)
+	}
+	parts := strings.Split(rest, separator)
+	links := 0
+	for index := 0; index < len(parts); {
+		if parts[index] == "" || parts[index] == "." {
+			index++
+			continue
+		}
+		candidate := filepath.Join(current, parts[index])
+		info, err := os.Lstat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			return filepath.Clean(filepath.Join(candidate, filepath.Join(parts[index+1:]...))), nil
+		}
+		if err != nil {
+			return "", err
+		}
+		index++
+		if info.Mode()&os.ModeSymlink == 0 {
+			current = filepath.Clean(candidate)
+			continue
+		}
+		links++
+		if links > 255 {
+			return "", errors.New("too many database path symlinks")
+		}
+		target, err := os.Readlink(candidate)
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			current = filepath.Clean(target)
+		} else {
+			current = filepath.Clean(filepath.Join(filepath.Dir(candidate), target))
+		}
+	}
+	return filepath.Clean(current), nil
+}
+
+func sameExistingFile(leftPath, rightPath string) (bool, error) {
+	left, leftErr := os.Stat(leftPath)
+	if leftErr != nil && !errors.Is(leftErr, os.ErrNotExist) {
+		return false, leftErr
+	}
+	right, rightErr := os.Stat(rightPath)
+	if rightErr != nil && !errors.Is(rightErr, os.ErrNotExist) {
+		return false, rightErr
+	}
+	if leftErr != nil || rightErr != nil {
+		return false, nil
+	}
+	return os.SameFile(left, right), nil
 }
 
 func makeParent(path string) error {

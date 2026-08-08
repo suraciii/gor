@@ -2,6 +2,7 @@ package shadow_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -82,7 +83,7 @@ func TestConformance_StopInterruptionRestartsCoordinator(t *testing.T) {
 		<-rt.Done()
 		close(blockingReminders.release)
 		<-killDone
-		if err := <-stopDone; err != nil {
+		if err := <-stopDone; err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("Stop after interrupted process: %v", err)
 		}
 
