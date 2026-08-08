@@ -464,7 +464,7 @@ func installSideEffectEntity(t *testing.T, rt *Runtime, calls *atomic.Int32) {
 	t.Helper()
 	if err := InstallType[sideEffectEntity](rt, dispatchSideEffectEntity, func(invoker Invoker, id GrainId) sideEffectEntity {
 		return &sideEffectEntityProxy{invoker: invoker, id: id}
-	}, newSideEffectEntityCall); err != nil {
+	}, newSideEffectEntityCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register[sideEffectEntity](rt, func(b *Binder) sideEffectEntity {

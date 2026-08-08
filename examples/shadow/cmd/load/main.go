@@ -69,7 +69,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 		gor.WithClock(sourceClock),
 		gor.WithIdleTimeout(idleTimeout),
 		gor.WithEvictionInterval(evictionInterval),
-		gor.WithScheduleInterval(time.Second),
+		gor.WithReminderInterval(time.Second),
 		gor.OnError(shadow.LogBackgroundError),
 	)
 	if err != nil {

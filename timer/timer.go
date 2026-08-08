@@ -1,8 +1,8 @@
-// Package timer polls persisted schedules and delivers due entity calls for
+// Package timer polls persisted Reminders and delivers due Grain Calls for
 // gor.
 //
 // It is an implementation package, not an application dependency. Create and
-// manage schedules through the root gor package's Schedule APIs instead of
+// manage Reminders through the root gor package's Reminder APIs instead of
 // importing timer directly.
 package timer
 
@@ -15,33 +15,40 @@ import (
 )
 
 type Table interface {
-	ListDue(context.Context, time.Time) ([]store.Schedule, error)
-	Claim(context.Context, store.Schedule, time.Time) (bool, error)
+	ListDue(context.Context, time.Time) ([]store.Reminder, error)
+	Claim(context.Context, store.Reminder, time.Time) (bool, error)
 }
 
 type Invoker interface {
 	Owns(store.GrainId) bool
-	Invoke(context.Context, store.GrainId, string) error
+	Invoke(context.Context, store.GrainId, string, any, any) error
 }
+
+// ReminderCallFactory creates the normal typed request and reply values for a
+// claimed Reminder. The root package converts these time values into its
+// public TickStatus before calling generated code.
+type ReminderCallFactory func(store.GrainId, string, time.Time, time.Duration, time.Time) (any, any)
 
 type Poller struct {
 	table    Table
 	clock    clock.Clock
 	interval time.Duration
 	invoker  Invoker
+	newCall  ReminderCallFactory
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
 }
 
-func New(table Table, clock clock.Clock, interval time.Duration, invoker Invoker) *Poller {
+func New(table Table, clock clock.Clock, interval time.Duration, invoker Invoker, newCall ReminderCallFactory) *Poller {
 	ctx, cancel := context.WithCancel(context.Background())
 	poller := &Poller{
 		table:    table,
 		clock:    clock,
 		interval: interval,
 		invoker:  invoker,
+		newCall:  newCall,
 		ctx:      ctx,
 		cancel:   cancel,
 		done:     make(chan struct{}),
@@ -73,31 +80,37 @@ func (p *Poller) run(ticker clock.Ticker) {
 
 func (p *Poller) poll() {
 	now := p.clock.Now()
-	schedules, err := p.table.ListDue(p.ctx, now)
+	reminders, err := p.table.ListDue(p.ctx, now)
 	if err != nil {
 		return
 	}
-	for _, schedule := range schedules {
+	for _, reminder := range reminders {
 		if p.ctx.Err() != nil {
 			return
 		}
-		if !p.invoker.Owns(schedule.GrainId) {
+		if !p.invoker.Owns(reminder.GrainId) {
 			continue
 		}
-		nextDueAt := nextDueAt(schedule, now)
-		claimed, err := p.table.Claim(p.ctx, schedule, nextDueAt)
+		nextDueAt := nextDueAt(reminder, now)
+		claimed, err := p.table.Claim(p.ctx, reminder, nextDueAt)
 		if err != nil || !claimed {
 			continue
 		}
-		_ = p.invoker.Invoke(p.ctx, schedule.GrainId, schedule.Method)
+		if p.newCall == nil {
+			continue
+		}
+		args, reply := p.newCall(reminder.GrainId, reminder.Method, reminder.FirstTickTime, reminder.Interval, reminder.DueAt)
+		_ = p.invoker.Invoke(p.ctx, reminder.GrainId, reminder.Method, args, reply)
 	}
 }
 
-func nextDueAt(schedule store.Schedule, now time.Time) time.Time {
-	if schedule.Interval == 0 {
+func nextDueAt(reminder store.Reminder, now time.Time) time.Time {
+	if reminder.Interval <= 0 {
 		return time.Time{}
 	}
-	elapsed := now.Sub(schedule.DueAt)
-	steps := elapsed/schedule.Interval + 1
-	return schedule.DueAt.Add(steps * schedule.Interval)
+	next := reminder.DueAt.Add(reminder.Interval)
+	for !next.After(now) {
+		next = next.Add(reminder.Interval)
+	}
+	return next
 }

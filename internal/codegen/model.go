@@ -20,9 +20,10 @@ type Interface struct {
 }
 
 type Method struct {
-	Name    string
-	Params  []Parameter
-	Results []string
+	Name     string
+	Reminder bool
+	Params   []Parameter
+	Results  []string
 }
 
 type Parameter struct {

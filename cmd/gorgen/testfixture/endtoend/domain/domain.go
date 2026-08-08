@@ -11,6 +11,7 @@ type Account interface {
 	Deposit(ctx context.Context, amount int64) (int64, error)
 	Snapshot(ctx context.Context) (int64, string, error)
 	Reset(ctx context.Context) error
+	Tick(ctx context.Context, status gor.TickStatus) error
 }
 
 type account struct {
@@ -35,4 +36,8 @@ func (a *account) Snapshot(context.Context) (int64, string, error) {
 
 func (a *account) Reset(ctx context.Context) error {
 	return a.balance.Set(ctx, 0)
+}
+
+func (a *account) Tick(context.Context, gor.TickStatus) error {
+	return nil
 }

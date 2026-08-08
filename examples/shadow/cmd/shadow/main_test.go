@@ -31,7 +31,7 @@ func TestNewRuntimeReportsScheduledFailure(t *testing.T) {
 			gor.WithClock(sourceClock),
 			gor.WithIdleTimeout(0),
 			gor.WithEvictionInterval(0),
-			gor.WithScheduleInterval(time.Second),
+			gor.WithReminderInterval(time.Second),
 		)
 		if err != nil {
 			logger.SetOutput(previousWriter)
@@ -47,7 +47,7 @@ func TestNewRuntimeReportsScheduledFailure(t *testing.T) {
 			logger.SetOutput(previousWriter)
 		}()
 
-		if err := backend.Put(context.Background(), store.Schedule{
+		if err := backend.Put(context.Background(), store.Reminder{
 			GrainId: store.GrainId{GrainType: gor.TypeName[domain.Device](), GrainKey: "device-1"},
 			Name:    "broken",
 			Method:  "NotAMethod",

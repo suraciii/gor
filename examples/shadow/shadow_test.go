@@ -26,7 +26,7 @@ func TestDeviceShadowTracksReportsAndWorkshopPresence(t *testing.T) {
 			gor.WithClock(sourceClock),
 			gor.WithIdleTimeout(0),
 			gor.WithEvictionInterval(0),
-			gor.WithScheduleInterval(time.Second),
+			gor.WithReminderInterval(time.Second),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -71,12 +71,12 @@ func TestDeviceShadowTracksReportsAndWorkshopPresence(t *testing.T) {
 		if err := device.Report(ctx, "assembly", "temperature=21"); err != nil {
 			t.Fatal(err)
 		}
-		schedules, err := backend.ListDue(ctx, start.Add(59*time.Second))
+		reminders, err := backend.ListDue(ctx, start.Add(59*time.Second))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(schedules) != 1 || !schedules[0].DueAt.Equal(start.Add(59*time.Second)) {
-			t.Fatalf("offline schedule after second report = %#v, want one schedule due at 59s", schedules)
+		if len(reminders) != 1 || !reminders[0].DueAt.Equal(start.Add(59*time.Second)) {
+			t.Fatalf("offline schedule after second report = %#v, want one schedule due at 59s", reminders)
 		}
 
 		sourceClock.Advance(2 * time.Second)
@@ -93,12 +93,12 @@ func TestDeviceShadowTracksReportsAndWorkshopPresence(t *testing.T) {
 		if got, err := workshop.OnlineCount(ctx); err != nil || got != 0 {
 			t.Fatalf("online count after timeout = (%d, %v), want (0, nil)", got, err)
 		}
-		schedules, err = backend.ListDue(ctx, sourceClock.Now().Add(domain.OfflineAfter))
+		reminders, err = backend.ListDue(ctx, sourceClock.Now().Add(domain.OfflineAfter))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(schedules) != 0 {
-			t.Fatalf("schedules after timeout = %#v, want none", schedules)
+		if len(reminders) != 0 {
+			t.Fatalf("reminders after timeout = %#v, want none", reminders)
 		}
 
 		if err := device.Report(ctx, "assembly", "temperature=22"); err != nil {
@@ -119,7 +119,7 @@ func TestDeviceIdleEvictionRunsLifecycleAndReloadsState(t *testing.T) {
 			gor.WithClock(sourceClock),
 			gor.WithIdleTimeout(2*time.Second),
 			gor.WithEvictionInterval(time.Second),
-			gor.WithScheduleInterval(0),
+			gor.WithReminderInterval(0),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -177,11 +177,11 @@ func TestScheduledFailureReachesOnError(t *testing.T) {
 		errorsSeen := make(chan gor.BackgroundError, 1)
 		rt, err := gor.New(
 			gor.WithStore(backend),
-			gor.WithScheduleStore(backend),
+			gor.WithReminderStore(backend),
 			gor.WithClock(sourceClock),
 			gor.WithIdleTimeout(0),
 			gor.WithEvictionInterval(0),
-			gor.WithScheduleInterval(time.Second),
+			gor.WithReminderInterval(time.Second),
 			gor.OnError(func(event gor.BackgroundError) {
 				errorsSeen <- event
 			}),
@@ -205,7 +205,7 @@ func TestScheduledFailureReachesOnError(t *testing.T) {
 		select {
 		case got := <-errorsSeen:
 			wantID := gor.GrainId{GrainType: gor.TypeName[domain.Device](), GrainKey: "device-1"}
-			source, ok := got.Source.(gor.ScheduledInvocation)
+			source, ok := got.Source.(gor.ReminderInvocation)
 			if !ok || got.GrainId != wantID || source.Method != "MarkOffline" || !errors.Is(got.Err, errWorkshopWrite) {
 				t.Fatalf("OnError event = %#v, want %v.MarkOffline with %v", got, wantID, errWorkshopWrite)
 			}

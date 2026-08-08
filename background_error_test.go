@@ -13,23 +13,23 @@ import (
 	"github.com/suraciii/gor/store"
 )
 
-// failingScheduleStore fails schedule listing or claiming on demand. It exists
+// failingReminderStore fails schedule listing or claiming on demand. It exists
 // to pin the boundary of the background error exit: list and claim failures
 // are scheduler state, not application callback failures.
-type failingScheduleStore struct {
+type failingReminderStore struct {
 	*store.Memory
 	failList  atomic.Bool
 	failClaim atomic.Bool
 }
 
-func (s *failingScheduleStore) ListDue(ctx context.Context, now time.Time) ([]store.Schedule, error) {
+func (s *failingReminderStore) ListDue(ctx context.Context, now time.Time) ([]store.Reminder, error) {
 	if s.failList.Load() {
 		return nil, errors.New("simulated list failure")
 	}
 	return s.Memory.ListDue(ctx, now)
 }
 
-func (s *failingScheduleStore) Claim(ctx context.Context, schedule store.Schedule, nextDueAt time.Time) (bool, error) {
+func (s *failingReminderStore) Claim(ctx context.Context, schedule store.Reminder, nextDueAt time.Time) (bool, error) {
 	if s.failClaim.Load() {
 		return false, errors.New("simulated claim failure")
 	}
@@ -39,19 +39,21 @@ func (s *failingScheduleStore) Claim(ctx context.Context, schedule store.Schedul
 // misnamedSchedule is an entity whose interface contains a method literally
 // named OnDeactivate. Its signature differs from the Deactivatable hook, so it
 // does not implement Deactivatable; a scheduled failure of this method must
-// still be reported as a ScheduledInvocation, not as a Deactivation.
+// still be reported as a ReminderInvocation, not as a Deactivation.
 type misnamedSchedule interface {
 	Arm(context.Context) error
-	OnDeactivate(context.Context) error
+	OnDeactivate(context.Context, TickStatus) error
 }
 
 type misnamedScheduleArmRequest struct{}
 type misnamedScheduleArmReply struct{}
-type misnamedScheduleDeactivateRequest struct{}
+type misnamedScheduleDeactivateRequest struct {
+	A0 TickStatus
+}
 type misnamedScheduleDeactivateReply struct{}
 
 type misnamedScheduleEntity struct {
-	schedule Schedule[misnamedSchedule]
+	schedule Reminder[misnamedSchedule]
 	wakeErr  error
 }
 
@@ -64,7 +66,7 @@ func (e *misnamedScheduleEntity) Arm(ctx context.Context) error {
 	return e.schedule.Set(ctx, "wake", After(12*time.Second), Handle(misnamedSchedule.OnDeactivate))
 }
 
-func (e *misnamedScheduleEntity) OnDeactivate(context.Context) error {
+func (e *misnamedScheduleEntity) OnDeactivate(context.Context, TickStatus) error {
 	return e.wakeErr
 }
 
@@ -72,16 +74,16 @@ func (p *misnamedScheduleProxy) Arm(ctx context.Context) error {
 	return p.invoker.Invoke(ctx, p.id, "Arm", &misnamedScheduleArmRequest{}, &misnamedScheduleArmReply{})
 }
 
-func (p *misnamedScheduleProxy) OnDeactivate(ctx context.Context) error {
-	return p.invoker.Invoke(ctx, p.id, "OnDeactivate", &misnamedScheduleDeactivateRequest{}, &misnamedScheduleDeactivateReply{})
+func (p *misnamedScheduleProxy) OnDeactivate(ctx context.Context, tick TickStatus) error {
+	return p.invoker.Invoke(ctx, p.id, "OnDeactivate", &misnamedScheduleDeactivateRequest{A0: tick}, &misnamedScheduleDeactivateReply{})
 }
 
-func dispatchMisnamedSchedule(ctx context.Context, instance misnamedSchedule, method string, _ any, _ any) error {
+func dispatchMisnamedSchedule(ctx context.Context, instance misnamedSchedule, method string, args any, _ any) error {
 	switch method {
 	case "Arm":
 		return instance.Arm(ctx)
 	case "OnDeactivate":
-		return instance.OnDeactivate(ctx)
+		return instance.OnDeactivate(ctx, args.(*misnamedScheduleDeactivateRequest).A0)
 	default:
 		return fmt.Errorf("unknown method %q", method)
 	}
@@ -98,15 +100,22 @@ func newMisnamedScheduleCall(method string) (any, any) {
 	}
 }
 
+func newMisnamedScheduleReminderCall(method string, status TickStatus) (any, any) {
+	if method == "OnDeactivate" {
+		return &misnamedScheduleDeactivateRequest{A0: status}, &misnamedScheduleDeactivateReply{}
+	}
+	return nil, nil
+}
+
 func installMisnamedSchedule(t *testing.T, rt *Runtime, wakeErr error) {
 	t.Helper()
 	if err := InstallType[misnamedSchedule](rt, dispatchMisnamedSchedule, func(invoker Invoker, id GrainId) misnamedSchedule {
 		return &misnamedScheduleProxy{invoker: invoker, id: id}
-	}, newMisnamedScheduleCall); err != nil {
+	}, newMisnamedScheduleCall, newMisnamedScheduleReminderCall); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register[misnamedSchedule](rt, func(b *Binder) misnamedSchedule {
-		return &misnamedScheduleEntity{schedule: NewSchedule[misnamedSchedule](b), wakeErr: wakeErr}
+		return &misnamedScheduleEntity{schedule: NewReminder[misnamedSchedule](b), wakeErr: wakeErr}
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +124,7 @@ func installMisnamedSchedule(t *testing.T, rt *Runtime, wakeErr error) {
 // TestBackgroundError_ScheduledMethodNamedOnDeactivate pins the sealed-source
 // contract against the exact trap the old method-string API had: a scheduled
 // method deliberately named "OnDeactivate" must still be reported as a
-// ScheduledInvocation.
+// ReminderInvocation.
 func TestBackgroundError_ScheduledMethodNamedOnDeactivate(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(0, 0).UTC()
@@ -126,7 +135,7 @@ func TestBackgroundError_ScheduledMethodNamedOnDeactivate(t *testing.T) {
 			WithClock(fakeClock),
 			WithIdleTimeout(0),
 			WithEvictionInterval(0),
-			WithScheduleInterval(time.Second),
+			WithReminderInterval(time.Second),
 			OnError(func(event BackgroundError) {
 				errorsSeen <- event
 			}),
@@ -143,12 +152,12 @@ func TestBackgroundError_ScheduledMethodNamedOnDeactivate(t *testing.T) {
 		select {
 		case got := <-errorsSeen:
 			wantID := GrainId{GrainType: TypeName[misnamedSchedule](), GrainKey: "alice"}
-			source, ok := got.Source.(ScheduledInvocation)
+			source, ok := got.Source.(ReminderInvocation)
 			if !ok {
-				t.Fatalf("source = %#v, want ScheduledInvocation", got.Source)
+				t.Fatalf("source = %#v, want ReminderInvocation", got.Source)
 			}
 			if got.GrainId != wantID || source.Method != "OnDeactivate" || !errors.Is(got.Err, wakeErr) {
-				t.Fatalf("event = %#v, want identity %v, ScheduledInvocation{Method: OnDeactivate}, error %v", got, wantID, wakeErr)
+				t.Fatalf("event = %#v, want identity %v, ReminderInvocation{Method: OnDeactivate}, error %v", got, wantID, wakeErr)
 			}
 			if _, isDeactivation := got.Source.(Deactivation); isDeactivation {
 				t.Fatalf("source = %#v, must not be Deactivation", got.Source)
@@ -172,7 +181,7 @@ func TestBackgroundError_CancelShapedErrorFromLivePoller(t *testing.T) {
 			WithClock(fakeClock),
 			WithIdleTimeout(0),
 			WithEvictionInterval(0),
-			WithScheduleInterval(time.Second),
+			WithReminderInterval(time.Second),
 			OnError(func(event BackgroundError) {
 				errorsSeen <- event
 			}),
@@ -188,12 +197,12 @@ func TestBackgroundError_CancelShapedErrorFromLivePoller(t *testing.T) {
 
 		select {
 		case got := <-errorsSeen:
-			source, ok := got.Source.(ScheduledInvocation)
+			source, ok := got.Source.(ReminderInvocation)
 			if !ok {
-				t.Fatalf("source = %#v, want ScheduledInvocation", got.Source)
+				t.Fatalf("source = %#v, want ReminderInvocation", got.Source)
 			}
 			if source.Method != "Wake" || !errors.Is(got.Err, context.Canceled) {
-				t.Fatalf("event = %#v, want ScheduledInvocation{Method: Wake} with a cancel-shaped error", got)
+				t.Fatalf("event = %#v, want ReminderInvocation{Method: Wake} with a cancel-shaped error", got)
 			}
 		default:
 			t.Fatal("cancel-shaped error from a live poller did not reach OnError")
@@ -247,14 +256,14 @@ func TestBackgroundError_ScheduleFaultsAreSilent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(0, 0).UTC()
 		fakeClock := clock.NewFake(start)
-		backend := &failingScheduleStore{Memory: store.NewMemory()}
+		backend := &failingReminderStore{Memory: store.NewMemory()}
 		errorsSeen := make(chan BackgroundError, 1)
 		rt := mustNew(t,
 			WithStore(backend),
 			WithClock(fakeClock),
 			WithIdleTimeout(0),
 			WithEvictionInterval(0),
-			WithScheduleInterval(time.Second),
+			WithReminderInterval(time.Second),
 			OnError(func(event BackgroundError) {
 				errorsSeen <- event
 			}),
@@ -316,7 +325,7 @@ func TestBackgroundError_CanceledDeliveryNotReported(t *testing.T) {
 			WithClock(fakeClock),
 			WithIdleTimeout(0),
 			WithEvictionInterval(0),
-			WithScheduleInterval(time.Second),
+			WithReminderInterval(time.Second),
 			OnError(func(event BackgroundError) {
 				errorsSeen <- event
 			}),

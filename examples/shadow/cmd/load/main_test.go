@@ -17,7 +17,7 @@ func TestReportDevicesReturnsAfterSuccess(t *testing.T) {
 		gor.WithClock(clock.NewFake(time.Unix(0, 0).UTC())),
 		gor.WithIdleTimeout(0),
 		gor.WithEvictionInterval(0),
-		gor.WithScheduleInterval(0),
+		gor.WithReminderInterval(0),
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -24,12 +24,14 @@ func (p *deviceProxy) Configure(ctx context.Context, configuration string) error
 	return err
 }
 
-type deviceMarkOfflineRequest struct{}
+type deviceMarkOfflineRequest struct {
+	A0 gor.TickStatus
+}
 type deviceMarkOfflineReply struct{}
 
-func (p *deviceProxy) MarkOffline(ctx context.Context) error {
+func (p *deviceProxy) MarkOffline(ctx context.Context, tick gor.TickStatus) error {
 	var reply deviceMarkOfflineReply
-	err := p.rt.Invoke(ctx, p.id, "MarkOffline", &deviceMarkOfflineRequest{}, &reply)
+	err := p.rt.Invoke(ctx, p.id, "MarkOffline", &deviceMarkOfflineRequest{A0: tick}, &reply)
 	return err
 }
 
@@ -63,7 +65,8 @@ func dispatchDevice(ctx context.Context, instance domain.Device, method string, 
 		err := instance.Configure(ctx, typedArgs.A0)
 		return err
 	case "MarkOffline":
-		err := instance.MarkOffline(ctx)
+		typedArgs := args.(*deviceMarkOfflineRequest)
+		err := instance.MarkOffline(ctx, typedArgs.A0)
 		return err
 	case "Report":
 		typedArgs := args.(*deviceReportRequest)
@@ -89,6 +92,15 @@ func newDeviceCall(method string) (args any, reply any) {
 		return &deviceReportRequest{}, &deviceReportReply{}
 	case "Shadow":
 		return &deviceShadowRequest{}, &deviceShadowReply{}
+	default:
+		return nil, nil
+	}
+}
+
+func newDeviceReminderCall(method string, status gor.TickStatus) (args any, reply any) {
+	switch method {
+	case "MarkOffline":
+		return &deviceMarkOfflineRequest{A0: status}, &deviceMarkOfflineReply{}
 	default:
 		return nil, nil
 	}
@@ -169,6 +181,13 @@ func newWorkshopCall(method string) (args any, reply any) {
 	}
 }
 
+func newWorkshopReminderCall(method string, status gor.TickStatus) (args any, reply any) {
+	switch method {
+	default:
+		return nil, nil
+	}
+}
+
 func newWorkshopProxy(rt gor.Invoker, id gor.GrainId) domain.Workshop {
 	return &workshopProxy{id: id, rt: rt}
 }
@@ -178,10 +197,10 @@ func newWorkshopProxy(rt gor.Invoker, id gor.GrainId) domain.Workshop {
 // the generated Grain types. After it returns nil, gor.Register and gor.Ref
 // can use those types with rt.
 func Install(rt *gor.Runtime) error {
-	if err := gor.InstallType[domain.Device](rt, dispatchDevice, newDeviceProxy, newDeviceCall); err != nil {
+	if err := gor.InstallType[domain.Device](rt, dispatchDevice, newDeviceProxy, newDeviceCall, newDeviceReminderCall); err != nil {
 		return err
 	}
-	if err := gor.InstallType[domain.Workshop](rt, dispatchWorkshop, newWorkshopProxy, newWorkshopCall); err != nil {
+	if err := gor.InstallType[domain.Workshop](rt, dispatchWorkshop, newWorkshopProxy, newWorkshopCall, newWorkshopReminderCall); err != nil {
 		return err
 	}
 	return nil

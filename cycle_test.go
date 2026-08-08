@@ -96,7 +96,7 @@ func installChainWithFactory(t *testing.T, rt *Runtime, factory func(*Binder) ch
 	t.Helper()
 	if err := InstallType[chainEntity](rt, dispatchChain, func(invoker Invoker, id GrainId) chainEntity {
 		return &chainEntityProxy{invoker: invoker, id: id}
-	}, newChainCall); err != nil {
+	}, newChainCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register[chainEntity](rt, factory); err != nil {

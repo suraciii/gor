@@ -6,11 +6,11 @@ import (
 )
 
 // handleProbe is the entity interface the extraction tripwire locks its map
-// on. Both methods must have the schedule shape func(handleProbe,
-// context.Context) error, which is what Handle admits.
+// on. Both methods must have the Reminder shape func(handleProbe,
+// context.Context, TickStatus) error, which is what Handle admits.
 type handleProbe interface {
-	Wake(context.Context) error
-	Arm(context.Context) error
+	Wake(context.Context, TickStatus) error
+	Arm(context.Context, TickStatus) error
 }
 
 // TestHandle_ExtractsTrailingMethodName locks the map from an interface method
@@ -18,7 +18,7 @@ type handleProbe interface {
 // reflect and runtime.FuncForPC, and FuncForPC's name format is not a
 // Go-documented contract — it is empirically stable, but Go is free to change
 // it. This test exists so that a Go upgrade which changes the encoding breaks
-// the build instead of silently mis-naming schedules: a mis-read name would be
+// the build instead of silently mis-naming reminders: a mis-read name would be
 // stored into the schedule table, match no dispatch case, and fail every
 // delivery with "unknown method". It is a tripwire for an external contract,
 // not a check of business logic — keep it as long as Handle reads names from
@@ -26,7 +26,7 @@ type handleProbe interface {
 func TestHandle_ExtractsTrailingMethodName(t *testing.T) {
 	handles := []struct {
 		name   string
-		method func(handleProbe, context.Context) error
+		method func(handleProbe, context.Context, TickStatus) error
 		want   string
 	}{
 		{name: "Wake", method: handleProbe.Wake, want: "Wake"},

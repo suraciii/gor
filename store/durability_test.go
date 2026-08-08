@@ -87,7 +87,7 @@ func TestOpenSQLiteRelaxed_WritesPersistAcrossCloseAndFlush(t *testing.T) {
 	if _, err := s.Write(context.Background(), id, []byte("stale"), first); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale Write error = %v, want ErrConflict", err)
 	}
-	if err := s.Put(context.Background(), Schedule{
+	if err := s.Put(context.Background(), Reminder{
 		GrainId: GrainId{GrainType: "account", GrainKey: "alice"},
 		Name:    "tick",
 		Method:  "Tick",

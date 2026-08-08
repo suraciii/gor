@@ -117,7 +117,7 @@ var (
 	errMemberAppliedFailure        = errors.New("sim member write applied before failure")
 )
 
-type scheduleKey struct {
+type reminderKey struct {
 	identity store.GrainId
 	name     string
 }
@@ -144,7 +144,7 @@ type fakeStore struct {
 	readBarriers        map[store.GrainId]readBarrier
 	members             map[fakeMemberKey]store.Member
 	memberFault         memberFaultSpec
-	schedules           map[scheduleKey]store.Schedule
+	reminders           map[reminderKey]store.Reminder
 	scheduleListFault   scheduleFaultSpec
 	scheduleClaimFaults map[store.GrainId]scheduleFaultKind
 	timerTracker        *timerTracker
@@ -159,7 +159,7 @@ type fakeStore struct {
 }
 
 var _ store.Store = (*fakeStore)(nil)
-var _ store.ScheduleStore = (*fakeStore)(nil)
+var _ store.ReminderStore = (*fakeStore)(nil)
 var _ store.MemberStore = (*fakeStore)(nil)
 
 func newFakeStore(tracker *timerTracker) *fakeStore {
@@ -170,7 +170,7 @@ func newFakeStore(tracker *timerTracker) *fakeStore {
 		plans:               make(map[store.GrainId]faultPlan),
 		readBarriers:        make(map[store.GrainId]readBarrier),
 		members:             make(map[fakeMemberKey]store.Member),
-		schedules:           make(map[scheduleKey]store.Schedule),
+		reminders:           make(map[reminderKey]store.Reminder),
 		scheduleClaimFaults: make(map[store.GrainId]scheduleFaultKind),
 		timerTracker:        tracker,
 		memberClock:         clock.Real{},
@@ -408,12 +408,12 @@ func (s *fakeStore) checkMemberStatuses() error {
 	return nil
 }
 
-func (s *fakeStore) snapshotDue(now time.Time, caller string) ([]store.Schedule, scheduleFaultSpec) {
+func (s *fakeStore) snapshotDue(now time.Time, caller string) ([]store.Reminder, scheduleFaultSpec) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stats.listCalls++
-	result := make([]store.Schedule, 0)
-	for _, schedule := range s.schedules {
+	result := make([]store.Reminder, 0)
+	for _, schedule := range s.reminders {
 		if !schedule.DueAt.After(now) {
 			result = append(result, schedule)
 		}
@@ -447,11 +447,11 @@ func (s *fakeStore) snapshotDue(now time.Time, caller string) ([]store.Schedule,
 	return result, fault
 }
 
-func (s *fakeStore) ListDue(ctx context.Context, now time.Time) ([]store.Schedule, error) {
+func (s *fakeStore) ListDue(ctx context.Context, now time.Time) ([]store.Reminder, error) {
 	return s.listDueFor(ctx, "", now)
 }
 
-func (s *fakeStore) listDueFor(_ context.Context, caller string, now time.Time) ([]store.Schedule, error) {
+func (s *fakeStore) listDueFor(_ context.Context, caller string, now time.Time) ([]store.Reminder, error) {
 	defer s.endOperation(s.beginOperation())
 	result, fault := s.snapshotDue(now, caller)
 	if fault.kind == scheduleListError {
@@ -464,10 +464,10 @@ func (s *fakeStore) listDueFor(_ context.Context, caller string, now time.Time) 
 	return result, nil
 }
 
-func (s *fakeStore) Claim(_ context.Context, schedule store.Schedule, nextDueAt time.Time) (bool, error) {
+func (s *fakeStore) Claim(_ context.Context, schedule store.Reminder, nextDueAt time.Time) (bool, error) {
 	defer s.endOperation(s.beginOperation())
 	s.mu.Lock()
-	current, ok := s.schedules[scheduleKey{identity: schedule.GrainId, name: schedule.Name}]
+	current, ok := s.reminders[reminderKey{identity: schedule.GrainId, name: schedule.Name}]
 	if !ok || current.ETag != schedule.ETag {
 		s.stats.claimLost++
 		s.mu.Unlock()
@@ -481,11 +481,11 @@ func (s *fakeStore) Claim(_ context.Context, schedule store.Schedule, nextDueAt 
 		return false, errScheduleClaimFailure
 	}
 	if nextDueAt.IsZero() {
-		delete(s.schedules, scheduleKey{identity: schedule.GrainId, name: schedule.Name})
+		delete(s.reminders, reminderKey{identity: schedule.GrainId, name: schedule.Name})
 	} else {
 		current.DueAt = nextDueAt
 		current.ETag++
-		s.schedules[scheduleKey{identity: schedule.GrainId, name: schedule.Name}] = current
+		s.reminders[reminderKey{identity: schedule.GrainId, name: schedule.Name}] = current
 	}
 	s.stats.claimWon++
 	if fault == scheduleClaimAppliedError {
@@ -499,16 +499,16 @@ func (s *fakeStore) Claim(_ context.Context, schedule store.Schedule, nextDueAt 
 	return true, nil
 }
 
-func (s *fakeStore) Put(_ context.Context, schedule store.Schedule) error {
+func (s *fakeStore) Put(_ context.Context, schedule store.Reminder) error {
 	defer s.endOperation(s.beginOperation())
 	s.mu.Lock()
-	key := scheduleKey{identity: schedule.GrainId, name: schedule.Name}
-	current, ok := s.schedules[key]
+	key := reminderKey{identity: schedule.GrainId, name: schedule.Name}
+	current, ok := s.reminders[key]
 	schedule.ETag = 1
 	if ok {
 		schedule.ETag = current.ETag + 1
 	}
-	s.schedules[key] = schedule
+	s.reminders[key] = schedule
 	s.mu.Unlock()
 	return nil
 }
@@ -516,7 +516,7 @@ func (s *fakeStore) Put(_ context.Context, schedule store.Schedule) error {
 func (s *fakeStore) Delete(_ context.Context, id store.GrainId, name string) error {
 	defer s.endOperation(s.beginOperation())
 	s.mu.Lock()
-	delete(s.schedules, scheduleKey{identity: id, name: name})
+	delete(s.reminders, reminderKey{identity: id, name: name})
 	s.mu.Unlock()
 	return nil
 }

@@ -36,7 +36,7 @@ type Device interface {
 	Report(ctx context.Context, workshopID string, state string) error
 	Configure(ctx context.Context, configuration string) error
 	Shadow(ctx context.Context) (Shadow, error)
-	MarkOffline(ctx context.Context) error
+	MarkOffline(ctx context.Context, tick gor.TickStatus) error
 }
 
 //gor:grain
@@ -50,7 +50,7 @@ type device struct {
 	binder          *gor.Binder
 	id              gor.GrainId
 	shadow          gor.State[Shadow]
-	schedule        gor.Schedule[Device]
+	schedule        gor.Reminder[Device]
 	lifecycleEvents chan<- LifecycleEvent
 }
 
@@ -67,7 +67,7 @@ func newDevice(b *gor.Binder, events chan<- LifecycleEvent) Device {
 		binder:          b,
 		id:              gor.Self(b),
 		shadow:          gor.NewState[Shadow](b, "shadow"),
-		schedule:        gor.NewSchedule[Device](b),
+		schedule:        gor.NewReminder[Device](b),
 		lifecycleEvents: events,
 	}
 }
@@ -130,7 +130,7 @@ func (d *device) emitLifecycle(kind string) {
 	}
 }
 
-func (d *device) MarkOffline(ctx context.Context) error {
+func (d *device) MarkOffline(ctx context.Context, _ gor.TickStatus) error {
 	shadow := d.shadow.Get()
 	shadow.Online = false
 	if err := d.shadow.Set(ctx, shadow); err != nil {

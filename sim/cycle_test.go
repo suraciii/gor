@@ -67,7 +67,7 @@ func newCycleCallerCall(method string) (args any, reply any) {
 func installCycleCaller(rt *gor.Runtime) error {
 	if err := gor.InstallType[cycleCaller](rt, dispatchCycleCaller, func(invoker gor.Invoker, id gor.GrainId) cycleCaller {
 		return &cycleCallerProxy{invoker: invoker, id: id}
-	}, newCycleCallerCall); err != nil {
+	}, newCycleCallerCall, nil); err != nil {
 		return err
 	}
 	return gor.Register[cycleCaller](rt, func(b *gor.Binder) cycleCaller {

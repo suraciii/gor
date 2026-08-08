@@ -80,7 +80,7 @@ func newObservedRuntime(t *testing.T, sourceClock clock.Clock, events chan<- Cal
 		WithClock(sourceClock),
 		WithIdleTimeout(0),
 		WithEvictionInterval(0),
-		WithScheduleInterval(0),
+		WithReminderInterval(0),
 	}
 	if events != nil {
 		base = append(base, OnCall(func(observation CallObservation) {
@@ -92,7 +92,7 @@ func newObservedRuntime(t *testing.T, sourceClock clock.Clock, events chan<- Cal
 		return nil
 	}, func(string) (any, any) {
 		return nil, nil
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register[observedAccount](rt, factory); err != nil {
@@ -165,7 +165,7 @@ func TestOnCallDoesNotReportDeactivation(t *testing.T) {
 	})
 }
 
-func TestOnCallReportsScheduledInvocation(t *testing.T) {
+func TestOnCallReportsReminderInvocation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(0, 0).UTC()
 		fakeClock := clock.NewFake(start)
@@ -175,7 +175,7 @@ func TestOnCallReportsScheduledInvocation(t *testing.T) {
 			WithClock(fakeClock),
 			WithIdleTimeout(0),
 			WithEvictionInterval(0),
-			WithScheduleInterval(time.Second),
+			WithReminderInterval(time.Second),
 			OnCall(func(observation CallObservation) {
 				events <- observation
 			}),

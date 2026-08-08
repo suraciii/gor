@@ -63,7 +63,7 @@ func installBlockingEntity(t *testing.T, rt *Runtime, entries, release chan stru
 	t.Helper()
 	if err := InstallType[blockingEntity](rt, dispatchBlockingEntity, func(invoker Invoker, id GrainId) blockingEntity {
 		return &blockingEntityProxy{invoker: invoker, id: id}
-	}, newBlockingEntityCall); err != nil {
+	}, newBlockingEntityCall, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register[blockingEntity](rt, func(b *Binder) blockingEntity {

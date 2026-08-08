@@ -35,6 +35,7 @@ type renderInterface struct {
 
 type renderMethod struct {
 	Name             string
+	Reminder         bool
 	Params           string
 	Results          string
 	ContextName      string
@@ -116,6 +117,7 @@ func prepareMethod(entity Interface, method Method) renderMethod {
 	values := method.Results[:len(method.Results)-1]
 	rendered := renderMethod{
 		Name:         method.Name,
+		Reminder:     method.Reminder,
 		Params:       joinParameters(method.Params),
 		Results:      joinResults(method.Results),
 		ContextName:  method.Params[0].Name,
@@ -248,6 +250,15 @@ func new{{ $entity.Name }}Call(method string) (args any, reply any) {
 	}
 }
 
+func new{{ $entity.Name }}ReminderCall(method string, status gor.TickStatus) (args any, reply any) {
+	switch method {
+{{range .Methods}}{{if .Reminder}}	case "{{.Name}}":
+		return &{{.ArgsName}}{A0: status}, &{{.ReplyName}}{}
+{{end}}{{end}}	default:
+		return nil, nil
+	}
+}
+
 func {{$entity.ConstructorName}}(rt gor.Invoker, id gor.GrainId) {{$.SourcePackage}}.{{$entity.Name}} {
 	return &{{.ProxyName}}{id: id, rt: rt}
 }
@@ -258,7 +269,7 @@ func {{$entity.ConstructorName}}(rt gor.Invoker, id gor.GrainId) {{$.SourcePacka
 // the generated Grain types. After it returns nil, gor.Register and gor.Ref
 // can use those types with rt.
 func Install(rt *gor.Runtime) error {
-{{range .Interfaces}}	if err := gor.InstallType[{{$.SourcePackage}}.{{.Name}}](rt, {{.DispatchName}}, {{.ConstructorName}}, new{{.Name}}Call); err != nil {
+{{range .Interfaces}}	if err := gor.InstallType[{{$.SourcePackage}}.{{.Name}}](rt, {{.DispatchName}}, {{.ConstructorName}}, new{{.Name}}Call, new{{.Name}}ReminderCall); err != nil {
 		return err
 	}
 {{end}}	return nil

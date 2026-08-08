@@ -64,6 +64,13 @@ func newAccountCall(method string) (args any, reply any) {
 	}
 }
 
+func newAccountReminderCall(method string, status gor.TickStatus) (args any, reply any) {
+	switch method {
+	default:
+		return nil, nil
+	}
+}
+
 func newAccountProxy(rt gor.Invoker, id gor.GrainId) domain.Account {
 	return &accountProxy{id: id, rt: rt}
 }
@@ -105,6 +112,13 @@ func newLedgerCall(method string) (args any, reply any) {
 	}
 }
 
+func newLedgerReminderCall(method string, status gor.TickStatus) (args any, reply any) {
+	switch method {
+	default:
+		return nil, nil
+	}
+}
+
 func newLedgerProxy(rt gor.Invoker, id gor.GrainId) domain.Ledger {
 	return &ledgerProxy{id: id, rt: rt}
 }
@@ -114,10 +128,10 @@ func newLedgerProxy(rt gor.Invoker, id gor.GrainId) domain.Ledger {
 // the generated Grain types. After it returns nil, gor.Register and gor.Ref
 // can use those types with rt.
 func Install(rt *gor.Runtime) error {
-	if err := gor.InstallType[domain.Account](rt, dispatchAccount, newAccountProxy, newAccountCall); err != nil {
+	if err := gor.InstallType[domain.Account](rt, dispatchAccount, newAccountProxy, newAccountCall, newAccountReminderCall); err != nil {
 		return err
 	}
-	if err := gor.InstallType[domain.Ledger](rt, dispatchLedger, newLedgerProxy, newLedgerCall); err != nil {
+	if err := gor.InstallType[domain.Ledger](rt, dispatchLedger, newLedgerProxy, newLedgerCall, newLedgerReminderCall); err != nil {
 		return err
 	}
 	return nil

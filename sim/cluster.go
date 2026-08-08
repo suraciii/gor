@@ -77,7 +77,7 @@ func (c *simulationCluster) newRuntime(id, generation int) (*gor.Runtime, error)
 		c.tracker,
 		gor.WithClock(c.clock),
 		gor.WithMemberStore(members),
-		gor.WithScheduleStore(&nodeScheduleStore{backend: c.backend, addr: addr}),
+		gor.WithReminderStore(&nodeReminderStore{backend: c.backend, addr: addr}),
 		gor.WithNodeAddr(addr),
 		gor.WithGeneration(memberGeneration(id, generation)),
 		gor.WithHeartbeatInterval(simulationStepDuration),

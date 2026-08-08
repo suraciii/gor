@@ -77,7 +77,7 @@ func (l *eventLog) addState(id store.GrainId, value int64) {
 }
 
 func (l *eventLog) addScheduleObservation(stats scheduleStats, deliveries int) {
-	l.add("     observe schedules list-calls=%d claim-won=%d claim-lost=%d deliveries=%d list-errors=%d list-delays=%d claim-errors=%d claim-applied-errors=%d", stats.listCalls, stats.claimWon, stats.claimLost, deliveries, stats.listErrors, stats.listDelays, stats.claimErrors, stats.claimAppliedErrors)
+	l.add("     observe reminders list-calls=%d claim-won=%d claim-lost=%d deliveries=%d list-errors=%d list-delays=%d claim-errors=%d claim-applied-errors=%d", stats.listCalls, stats.claimWon, stats.claimLost, deliveries, stats.listErrors, stats.listDelays, stats.claimErrors, stats.claimAppliedErrors)
 }
 
 func (l *eventLog) addMemberObservation(stats memberStats) {
