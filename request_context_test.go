@@ -112,6 +112,18 @@ func TestRequestContext_NilContextIsRejected(t *testing.T) {
 	}
 }
 
+func TestRequestContext_RejectsInvalidUTF8String(t *testing.T) {
+	parent := context.Background()
+	invalid := string([]byte{'o', 'k', 0xff})
+	got, err := WithRequestContext(parent, "value", invalid)
+	if got != parent || err == nil || !errors.Is(err, ErrRequestEncodeFailed) {
+		t.Fatalf("invalid UTF-8 string = (%v, %v), want unchanged parent and request-encode-failed", got, err)
+	}
+	if _, ok := RequestContextValue(parent, "value"); ok {
+		t.Fatal("invalid UTF-8 string was stored in the parent context")
+	}
+}
+
 func TestRequestContext_ValidationLeavesParentUnchanged(t *testing.T) {
 	base := context.Background()
 	type namedString string
@@ -580,11 +592,20 @@ func TestRequestContext_ForwardedAndIndependentCalls(t *testing.T) {
 
 		id := findRequestContextTarget(t, first, "node-b")
 		ctx := requestContextCallContext(t)
+		var err error
+		ctx, err = WithRequestContext(ctx, "int", int64(math.MaxInt64))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, err = WithRequestContext(ctx, "uint", uint64(math.MaxUint64))
+		if err != nil {
+			t.Fatal(err)
+		}
 		result, err := Ref[requestContextProbe](first, id.GrainKey).Snapshot(ctx)
 		if err != nil {
 			t.Fatalf("forwarded Snapshot: %v", err)
 		}
-		if result.Trace != "trace-42" || result.Int != -42 || result.Uint != 42 || !result.HasNil || result.HasMissing || !result.ServerAbsent {
+		if result.Trace != "trace-42" || result.Int != math.MaxInt64 || result.Uint != math.MaxUint64 || !result.HasNil || result.HasMissing || !result.ServerAbsent {
 			t.Fatalf("forwarded Request Context result = %#v", result)
 		}
 		independent, err := Ref[requestContextProbe](first, id.GrainKey).Snapshot(context.Background())
@@ -612,6 +633,57 @@ func findRequestContextTarget(t *testing.T, rt *Runtime, owner string) GrainId {
 	}
 	t.Fatalf("no Request Context identity owned by %q", owner)
 	return GrainId{}
+}
+
+func TestRequestContext_ConcurrentDerivationsPreserveParentSnapshot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rt := mustNew(t, WithIdleTimeout(0), WithEvictionInterval(0))
+		defer rt.Close()
+		installRequestContextProbe(t, rt, func(*Binder) requestContextProbe {
+			return &requestContextProbeEntity{}
+		})
+		parent, err := WithRequestContext(context.Background(), "trace_id", "parent")
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := WithRequestContext(parent, "trace_id", "first")
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := WithRequestContext(parent, "trace_id", "second")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		type result struct {
+			trace string
+			err   error
+		}
+		results := make(chan result, 2)
+		go func() {
+			value, err := Ref[requestContextProbe](rt, "concurrent-first").Snapshot(first)
+			results <- result{trace: value.Trace, err: err}
+		}()
+		go func() {
+			value, err := Ref[requestContextProbe](rt, "concurrent-second").Snapshot(second)
+			results <- result{trace: value.Trace, err: err}
+		}()
+		synctest.Wait()
+		seen := map[string]bool{}
+		for range 2 {
+			value := <-results
+			if value.err != nil {
+				t.Fatalf("concurrent Snapshot: %v", value.err)
+			}
+			seen[value.trace] = true
+		}
+		if !seen["first"] || !seen["second"] {
+			t.Fatalf("concurrent child traces = %#v, want first and second", seen)
+		}
+		if got, _ := RequestContextValue(parent, "trace_id"); got != "parent" {
+			t.Fatalf("parent trace after concurrent derivations = %v, want parent", got)
+		}
+	})
 }
 
 func TestRequestContext_LocalCancellationKeepsValuesReadable(t *testing.T) {

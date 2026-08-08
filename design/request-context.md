@@ -123,7 +123,9 @@ keeps the wire contract small, and prevents application object graphs from
 becoming part of the Call contract.
 
 Keys must be non-empty valid UTF-8 strings. A key is limited to 128 bytes. A
-key is an entry name, not a path or a reserved Runtime field.
+key is an entry name, not a path or a reserved Runtime field. String values
+must also be valid UTF-8. This keeps local and forwarded Calls equal because
+`encoding/json` replaces invalid string bytes during encoding.
 
 ## Encoding and size limits
 
@@ -316,10 +318,12 @@ gate before the feature can be called complete.
 ## Gap
 
 The two public helpers, immutable snapshots, scalar normalization, validation,
-and finite-float checks are implemented. Local Calls keep the caller's context;
-forwarded invoke requests carry the optional `request_context` field and the
-receiver validates and replaces its private snapshot before activation. Typed
-integer decoding preserves `int64` and `uint64` values. State, Reminder,
-lifecycle, cancellation, admission, and response boundaries keep their existing
-behavior. Focused tests cover the acceptance matrix; the remaining release
-gates are the repository commands listed above.
+and finite-float checks are implemented. String values are checked for valid
+UTF-8 before storage. Local Calls keep the caller's context; forwarded invoke
+requests carry the optional `request_context` field and the receiver validates
+and replaces its private snapshot before activation. Typed integer decoding
+preserves `int64` and `uint64` values, including exact forwarded boundary
+values. Focused tests cover these Request Context behaviors and the existing
+runtime and transport tests cover the shared admission, mailbox, cycle,
+shutdown, and cancellation rules. The matrix is not claimed to have a
+separate Request Context test for every shared-runtime row.

@@ -105,7 +105,12 @@ func normalizeRequestContextValue(value any) (any, error) {
 	switch value := value.(type) {
 	case nil:
 		return nil, nil
-	case bool, string:
+	case bool:
+		return value, nil
+	case string:
+		if !utf8.ValidString(value) {
+			return nil, fmt.Errorf("value is not valid UTF-8")
+		}
 		return value, nil
 	case int:
 		return int64(value), nil
