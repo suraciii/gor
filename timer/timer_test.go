@@ -160,6 +160,34 @@ func TestPoller_AdvancesToFirstFutureTime(t *testing.T) {
 	})
 }
 
+func TestNextDueAt_LargeDowntimeReturnsPromptly(t *testing.T) {
+	period := time.Nanosecond
+	dueAt := time.Unix(0, 0).UTC()
+	now := dueAt.Add(time.Hour)
+	reminder := store.Reminder{DueAt: dueAt, Interval: period}
+
+	result := make(chan time.Time, 1)
+	go func() {
+		result <- nextDueAt(reminder, now)
+	}()
+
+	select {
+	case got := <-result:
+		want := now.Add(period)
+		if !got.After(now) || !got.Equal(want) {
+			t.Fatalf("next due time = %s, want %s strictly after now", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nextDueAt did not return promptly")
+	}
+
+	future := now.Add(time.Hour)
+	reminder.DueAt = future
+	if got := nextDueAt(reminder, now); !got.Equal(future) {
+		t.Fatalf("future due time = %s, want unchanged %s", got, future)
+	}
+}
+
 func TestPoller_PassesPeriodicTickStatus(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Unix(250, 0).UTC()

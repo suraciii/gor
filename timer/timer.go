@@ -104,13 +104,38 @@ func (p *Poller) poll() {
 	}
 }
 
+const maxDuration = time.Duration(1<<63 - 1)
+
 func nextDueAt(reminder store.Reminder, now time.Time) time.Time {
-	if reminder.Interval <= 0 {
+	period := reminder.Interval
+	if period <= 0 {
 		return time.Time{}
 	}
-	next := reminder.DueAt.Add(reminder.Interval)
-	for !next.After(now) {
-		next = next.Add(reminder.Interval)
+	if reminder.DueAt.After(now) {
+		return reminder.DueAt
 	}
-	return next
+
+	elapsed := now.Sub(reminder.DueAt)
+	missed := elapsed / period
+	if missed == maxDuration {
+		return futureDueAt(now, period)
+	}
+	missed++
+	if missed > maxDuration/period {
+		return futureDueAt(now, period)
+	}
+
+	candidate := reminder.DueAt.Add(period * missed)
+	if !candidate.After(now) {
+		return futureDueAt(now, period)
+	}
+	return candidate
+}
+
+func futureDueAt(now time.Time, period time.Duration) time.Time {
+	fallback := now.Add(period)
+	if fallback.After(now) {
+		return fallback
+	}
+	return now.Add(time.Nanosecond)
 }
