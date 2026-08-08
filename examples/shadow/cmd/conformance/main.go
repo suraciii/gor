@@ -50,6 +50,9 @@ func run(ctx context.Context, args []string) (runErr error) {
 	if *waitTimeout <= 0 {
 		return errors.New("-timeout must be positive")
 	}
+	if err := validateDatabasePaths(*runtimePath, *businessPath); err != nil {
+		return err
+	}
 	if err := makeParent(*runtimePath); err != nil {
 		return fmt.Errorf("create Runtime database directory: %w", err)
 	}
@@ -154,6 +157,21 @@ func waitForRecovery(ctx context.Context, calls <-chan gor.CallObservation, time
 			return fmt.Errorf("wait for recovery Call: %w", waitContext.Err())
 		}
 	}
+}
+
+func validateDatabasePaths(runtimePath, businessPath string) error {
+	runtimeAbsolute, err := filepath.Abs(filepath.Clean(runtimePath))
+	if err != nil {
+		return fmt.Errorf("resolve Runtime database path: %w", err)
+	}
+	businessAbsolute, err := filepath.Abs(filepath.Clean(businessPath))
+	if err != nil {
+		return fmt.Errorf("resolve Application database path: %w", err)
+	}
+	if runtimeAbsolute == businessAbsolute {
+		return fmt.Errorf("runtime and application database paths must be different: both resolve to %q", runtimeAbsolute)
+	}
+	return nil
 }
 
 func makeParent(path string) error {

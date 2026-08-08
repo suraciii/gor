@@ -47,10 +47,12 @@ func (c *recoveryCoordinator) Start(ctx context.Context) error {
 }
 
 func (c *recoveryCoordinator) Stop(ctx context.Context) error {
-	if err := c.reminder.Cancel(ctx, RecoveryReminderName); err != nil {
+	// Clear State first. If the process stops before Cancel completes, Start
+	// sees a stopped coordinator and can safely restore the Reminder.
+	if err := c.status.Clear(ctx); err != nil {
 		return err
 	}
-	return c.status.Clear(ctx)
+	return c.reminder.Cancel(ctx, RecoveryReminderName)
 }
 
 func (c *recoveryCoordinator) Recover(ctx context.Context, tick gor.TickStatus) error {

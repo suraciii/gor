@@ -22,7 +22,8 @@ available.
 
 ```go
 type Device interface {
-    Report(ctx context.Context, actionID string, state string) error
+    Report(ctx context.Context, workshopID string, state string) error
+    ReportAction(ctx context.Context, actionID string, state string) error
     Shadow(ctx context.Context) (Shadow, error)
     ShadowExists(ctx context.Context) (bool, error)
     ClearShadow(ctx context.Context) error
@@ -131,10 +132,12 @@ confirms the `"running"` State. If `"running"` is already present and true,
 `Start` does nothing. This makes an optional startup check safe after a
 restart; it does not reset the Reminder's first tick time.
 
-`Stop` cancels the Reminder by name and clears the `"running"` State. A
-successful cancel removes the persisted Reminder. The example calls `Stop`
-only in the cancellation test; recovery after a process stop does not call
-`Stop` or rewrite the schedule.
+`Stop` clears the `"running"` State first and then cancels the Reminder by
+name. A successful cancel removes the persisted Reminder. If the process stops
+after State clear and before cancel, a restart sees a stopped coordinator and
+`Start` safely restores the Reminder. The example calls `Stop` only in the
+cancellation test; recovery after a process stop does not call `Stop` or
+rewrite the schedule.
 
 ### Save a pending action
 
@@ -145,10 +148,10 @@ ctx, err := gor.WithRequestContext(context.Background(), "trace_id", "trace-1")
 if err != nil {
     return err
 }
-err = gor.Ref[Device](rt, "device-1").Report(ctx, "report-1", "temperature=20")
+err = gor.Ref[Device](rt, "device-1").ReportAction(ctx, "report-1", "temperature=20")
 ```
 
-`Device.Report` performs these steps in order:
+`Device.ReportAction` performs these steps in order:
 
 1. Read the current shadow State.
 2. Write the new shadow with `State.Set`.
@@ -233,7 +236,7 @@ The example documents these intentional Unknown Results:
 | Boundary | Unknown result | Required handling |
 | --- | --- | --- |
 | Device `State.Set` or `State.Clear` | A non-context store error can mean that the write committed or did not commit. The activation is discarded. | Call again to load confirmed State. Retry a Business Action only with the same ActionID and a Safe Repeat rule. |
-| `ApplicationStore.SavePending` | The pending row can exist even when `Report` returns an error. | Read by ActionID before creating another action. Retry the same ActionID. |
+| `ApplicationStore.SavePending` | The pending row can exist even when `ReportAction` returns an error. | Read by ActionID before creating another action. Retry the same ActionID. |
 | `ApplicationStore.ApplyPending` | The application transaction can commit before its result reaches the Grain. | Retry the same ActionID. The unique receipt makes the retry a no-op. |
 | `Reminder.Set` or `Reminder.Cancel` | The unconditional write or delete can be complete when the caller sees an error. | Repeat Set by the same name or repeat Cancel. Do not edit Runtime tables. |
 | Call timeout or cancellation | The caller stopped waiting; the Grain method may have started and may have saved State or an action. | Treat the result as unknown. Query the application record and use the same ActionID before retry. |
